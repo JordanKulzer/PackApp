@@ -1,32 +1,68 @@
 {
   "expo": {
-    "name": "PackApp",
+    "name": "Pack",
     "slug": "PackApp",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
+    "scheme": "packapp",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#000000"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.jordankulzer.pack",
+      "usesAppleSignIn": true,
+      "infoPlist": {
+        "NSHealthShareUsageDescription": "Pack reads your activity data from Apple Health to automatically sync steps, workouts, and calories with your pack.",
+        "NSHealthUpdateUsageDescription": "Pack does not write data to Apple Health.",
+        "NSCameraUsageDescription": "Pack needs camera access so you can take photos to share with your pack.",
+        "NSPhotoLibraryUsageDescription": "Pack needs photo library access so you can select photos to share with your pack.",
+        "NSUserNotificationsUsageDescription": "Pack sends notifications when your pack members overtake you, react to your activity, or when your streak needs attention.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "entitlements": {
+        "com.apple.developer.healthkit": true,
+        "com.apple.developer.healthkit.access": [],
+        "aps-environment": "production"
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.jordankulzer.pack"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "scheme": "packapp",
-    "plugins": ["expo-router", "react-native-health", "expo-secure-store"],
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-apple-authentication",
+      "expo-notifications",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Pack needs photo library access so you can select photos to share with your pack.",
+          "cameraPermission": "Pack needs camera access so you can take photos to share with your pack."
+        }
+      ],
+      [
+        "react-native-health",
+        {
+          "isClinicalDataEnabled": false,
+          "healthSharePermission": "Pack reads your activity data from Apple Health to automatically sync steps, workouts, and calories with your pack.",
+          "healthUpdatePermission": "Pack does not write data to Apple Health."
+        }
+      ]
+    ],
     "extra": {
       "router": {},
       "eas": {
