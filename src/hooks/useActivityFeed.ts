@@ -14,6 +14,7 @@ export interface FeedItem {
   pointsEarned: number;
   createdAt: string;
   entryMethod: "manual" | "healthkit" | "oura" | "whoop";
+  photoUrl: string | null;   // Supabase Storage path (not a full URL)
   reactions: {
     type: ReactionType;
     count: number;
@@ -36,7 +37,7 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
 
     const { data: feedRows, error } = await supabase
       .from("activity_feed")
-      .select("id, pack_id, user_id, activity_type, value, points_earned, created_at, entry_method")
+      .select("id, pack_id, user_id, activity_type, value, points_earned, created_at, entry_method, photo_url")
       .eq("pack_id", packId)
       .order("created_at", { ascending: false })
       .limit(50);
@@ -102,6 +103,7 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
       pointsEarned: row.points_earned ?? 0,
       createdAt: row.created_at,
       entryMethod: (row.entry_method ?? "manual") as FeedItem["entryMethod"],
+      photoUrl: row.photo_url ?? null,
       reactions: REACTION_TYPES.map((type) => ({
         type,
         count: reactionsByItem[row.id]?.[type]?.count ?? 0,
@@ -243,7 +245,7 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
         }
       } else if (hadDifferent) {
         // Switch: delete old reaction, insert new one
-        const oldType = prevType as ReactionType;
+        const oldType = prevType!;
 
         const { error: delErr } = await supabase
           .from("activity_reactions")
@@ -329,5 +331,19 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
     [currentUserId]
   );
 
-  return { items, isLoading, toggleReaction };
+  const removePhotoFromItem = useCallback(
+    async (feedItemId: string) => {
+      // Optimistic UI update
+      setItems((prev) =>
+        prev.map((i) => (i.id === feedItemId ? { ...i, photoUrl: null } : i)),
+      );
+      await supabase
+        .from("activity_feed")
+        .update({ photo_url: null })
+        .eq("id", feedItemId);
+    },
+    [],
+  );
+
+  return { items, isLoading, toggleReaction, removePhotoFromItem };
 }

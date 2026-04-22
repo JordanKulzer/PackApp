@@ -4,7 +4,7 @@ import AppleHealthKit, {
 } from "react-native-health";
 import { Platform } from "react-native";
 import { supabase } from "./supabase";
-import { POINTS, getStreakMultiplier } from "./scoring";
+import { POINTS, WORKOUT_MAX_DAILY, workoutPoints, getStreakMultiplier } from "./scoring";
 import { computeStreakForRun } from "./computeStreak";
 import { notifyPackMembers } from "./notifications";
 import { detectAndSendThreatNotifications } from "./threatNotifications";
@@ -130,31 +130,80 @@ export async function getTodayActiveCalories(): Promise<number> {
   }
 }
 
-export async function getTodayWorkouts(): Promise<number> {
-  if (!nativeAvailable()) return 0;
+// Stable identifier for a single HK workout: startDate|endDate
+export interface WorkoutSample {
+  identifier: string;  // startDate|endDate — used for deduplication
+  startDate: string;
+  endDate: string;
+  activityType: number | null;  // HKWorkoutActivityType numeric value (null if unavailable)
+}
+
+// Map of HKWorkoutActivityType integers to human-readable names
+const HK_WORKOUT_TYPE_NAMES: Record<number, string> = {
+  1: "American Football", 2: "Archery", 3: "Australian Football", 4: "Badminton",
+  5: "Baseball", 6: "Basketball", 7: "Bowling", 8: "Boxing",
+  9: "Climbing", 10: "Cricket", 11: "Cross Country Skiing", 12: "Cross Training",
+  13: "Curling", 14: "Cycling", 16: "Elliptical", 17: "Equestrian Sports",
+  18: "Fencing", 19: "Fishing", 20: "Functional Strength Training", 21: "Golf",
+  22: "Gymnastics", 23: "Handball", 24: "Hiking", 25: "Hockey",
+  26: "Hunting", 27: "Lacrosse", 28: "Martial Arts", 29: "Mind and Body",
+  31: "Paddle Sports", 32: "Play", 33: "Preparation and Recovery", 34: "Racquetball",
+  35: "Rowing", 36: "Rugby", 37: "Running", 38: "Sailing",
+  39: "Skating Sports", 40: "Snow Sports", 41: "Soccer", 42: "Softball",
+  43: "Squash", 44: "StairClimbing", 45: "Surfing Sports", 46: "Swimming",
+  47: "Table Tennis", 48: "Tennis", 49: "Track and Field", 50: "Traditional Strength Training",
+  51: "Volleyball", 52: "Walking", 53: "Water Fitness", 54: "Water Polo",
+  55: "Water Sports", 56: "Wrestling", 57: "Yoga", 58: "Barre",
+  59: "Core Training", 60: "Dance", 62: "Flexibility", 63: "High Intensity Interval Training",
+  64: "Jump Rope", 65: "Kickboxing", 66: "Pilates", 68: "Stairs",
+  69: "Step Training", 70: "Wheelchair Walk Pace", 71: "Wheelchair Run Pace",
+  74: "Tai Chi", 75: "Mixed Cardio", 76: "Hand Cycling",
+};
+
+export function workoutTypeName(activityType: number | null): string {
+  if (activityType === null || activityType === 3000) return "Workout"; // 3000 = other
+  return HK_WORKOUT_TYPE_NAMES[activityType] ?? "Workout";
+}
+
+export async function getWorkoutSamples(since?: Date): Promise<WorkoutSample[]> {
+  if (!nativeAvailable()) return [];
   try {
-    return await new Promise<number>((resolve) => {
+    const start = since ?? startOfToday();
+    return await new Promise<WorkoutSample[]>((resolve) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (AppleHealthKit as any).getSamples(
         {
-          startDate: startOfToday().toISOString(),
+          startDate: start.toISOString(),
           endDate: new Date().toISOString(),
           type: "Workout",
         },
-        (error: string, results: HealthValue[]) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (error: string, results: any[]) => {
           if (error) {
-            console.error("[HealthKit] getSamples (Workout) error:", error);
-            resolve(0);
+            console.error("[HealthKit] getWorkoutSamples error:", error);
+            resolve([]);
           } else {
-            resolve((results ?? []).length);
+            resolve(
+              (results ?? []).map((r) => ({
+                identifier: `${r.startDate}|${r.endDate}`,
+                startDate: r.startDate,
+                endDate: r.endDate,
+                activityType: r.workoutActivityType ?? null,
+              })),
+            );
           }
         },
       );
     });
   } catch (err) {
-    console.error("[HealthKit] getTodayWorkouts exception:", err);
-    return 0;
+    console.error("[HealthKit] getWorkoutSamples exception:", err);
+    return [];
   }
+}
+
+export async function getTodayWorkouts(): Promise<number> {
+  const samples = await getWorkoutSamples(startOfToday());
+  return samples.length;
 }
 
 export async function getTodayWaterOz(): Promise<number> {
@@ -228,6 +277,7 @@ export async function syncHealthDataToSupabase(
   ]);
 
   // Step 2: Determine achievements
+  const cappedWorkouts = Math.min(workouts, WORKOUT_MAX_DAILY);
   const steps_achieved = pack.steps_enabled && steps >= pack.step_target;
   const workout_achieved = pack.workouts_enabled && workouts >= 1;
   const calories_achieved =
@@ -237,7 +287,7 @@ export async function syncHealthDataToSupabase(
   // Step 3: Base points (before multiplier)
   const basePoints =
     (steps_achieved ? POINTS.steps : 0) +
-    (workout_achieved ? POINTS.workout : 0) +
+    (pack.workouts_enabled ? workoutPoints(cappedWorkouts) : 0) +
     (calories_achieved ? POINTS.calories : 0) +
     (water_achieved ? POINTS.water : 0);
 
@@ -278,7 +328,7 @@ export async function syncHealthDataToSupabase(
       steps_count: Math.round(steps),
       calories_count: Math.round(calories),
       water_oz_count: Math.round(waterOz),
-      workout_count: workouts,
+      workout_count: cappedWorkouts,
       updated_at: new Date().toISOString(),
     },
     { onConflict: "run_id,user_id,score_date" },
@@ -295,7 +345,8 @@ export async function syncHealthDataToSupabase(
   }
 
   // Step 7: Log individual achieved activities to activity_logs
-  const activityRows: Array<{
+  // Steps / calories / water — one row per type per day (idempotent upsert)
+  const idempotentRows: Array<{
     user_id: string;
     activity_type: string;
     points_earned: number;
@@ -304,7 +355,7 @@ export async function syncHealthDataToSupabase(
   }> = [];
 
   if (steps_achieved) {
-    activityRows.push({
+    idempotentRows.push({
       user_id: userId,
       activity_type: "steps",
       points_earned: Math.round(POINTS.steps * streakMultiplier),
@@ -312,17 +363,8 @@ export async function syncHealthDataToSupabase(
       healthkit_data: { raw_value: Math.round(steps) },
     });
   }
-  if (workout_achieved) {
-    activityRows.push({
-      user_id: userId,
-      activity_type: "workout",
-      points_earned: Math.round(POINTS.workout * streakMultiplier),
-      activity_date: today,
-      healthkit_data: { raw_value: workouts },
-    });
-  }
   if (calories_achieved) {
-    activityRows.push({
+    idempotentRows.push({
       user_id: userId,
       activity_type: "calories",
       points_earned: Math.round(POINTS.calories * streakMultiplier),
@@ -331,7 +373,7 @@ export async function syncHealthDataToSupabase(
     });
   }
   if (water_achieved) {
-    activityRows.push({
+    idempotentRows.push({
       user_id: userId,
       activity_type: "water",
       points_earned: Math.round(POINTS.water * streakMultiplier),
@@ -340,14 +382,38 @@ export async function syncHealthDataToSupabase(
     });
   }
 
-  if (activityRows.length > 0) {
+  if (idempotentRows.length > 0) {
     const { error: logError } = await supabase
       .from("activity_logs")
-      .upsert(activityRows, {
-        onConflict: "user_id,activity_type,activity_date",
-      });
+      .upsert(idempotentRows, { onConflict: "user_id,activity_type,activity_date" });
     if (logError) {
       console.error("[HealthKit Sync] activity_logs upsert error:", logError);
+    }
+  }
+
+  // Workouts — one row per credited workout (up to WORKOUT_MAX_DAILY).
+  // syncWorkoutsToSupabase handles deduplication via synced_workout_ids;
+  // this path just ensures the count in activity_logs stays in sync with
+  // what daily_scores records after the aggregate sync.
+  if (workout_achieved) {
+    const { data: existingWorkoutLog } = await supabase
+      .from("activity_logs")
+      .select("id, healthkit_data")
+      .eq("user_id", userId)
+      .eq("activity_type", "workout")
+      .eq("activity_date", today)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (!existingWorkoutLog) {
+      // First workout row for today — insert once; syncWorkoutsToSupabase adds the rest
+      await supabase.from("activity_logs").insert({
+        user_id: userId,
+        activity_type: "workout",
+        points_earned: Math.round(POINTS.workout * streakMultiplier),
+        activity_date: today,
+        healthkit_data: { raw_value: cappedWorkouts, synced_workout_ids: [] },
+      });
     }
   }
 
@@ -365,36 +431,65 @@ export async function syncHealthDataToSupabase(
 
   const rawValues: Record<string, number> = {
     steps: Math.round(steps),
-    workout: workouts,
+    workout: cappedWorkouts,
     calories: Math.round(calories),
     water: Math.round(waterOz),
   };
 
   for (const { type, points } of achievedTypes) {
-    const { data: existingFeed } = await supabase
-      .from("activity_feed")
-      .select("id")
-      .eq("pack_id", packId)
-      .eq("user_id", userId)
-      .eq("activity_type", type)
-      .gte("created_at", todayStart.toISOString())
-      .maybeSingle();
+    if (type === "workout") {
+      // Allow up to WORKOUT_MAX_DAILY workout feed entries per day — one per workout.
+      const { count: existingWorkoutCount } = await supabase
+        .from("activity_feed")
+        .select("id", { count: "exact", head: true })
+        .eq("pack_id", packId)
+        .eq("user_id", userId)
+        .eq("activity_type", "workout")
+        .gte("created_at", todayStart.toISOString());
+      const workoutsToCredit = cappedWorkouts - (existingWorkoutCount ?? 0);
+      for (let i = 0; i < workoutsToCredit; i++) {
+        const { error: feedError } = await supabase.from("activity_feed").insert({
+          pack_id: packId,
+          user_id: userId,
+          activity_type: "workout",
+          value: cappedWorkouts,
+          points_earned: Math.round(POINTS.workout * streakMultiplier),
+          entry_method: "healthkit",
+        });
+        if (!feedError) {
+          notifyPackMembers(userId, packId, {
+            kind: "goal",
+            activityType: "workout",
+            pointsEarned: Math.round(POINTS.workout * streakMultiplier),
+          }).catch(() => {});
+        }
+      }
+    } else {
+      const { data: existingFeed } = await supabase
+        .from("activity_feed")
+        .select("id")
+        .eq("pack_id", packId)
+        .eq("user_id", userId)
+        .eq("activity_type", type)
+        .gte("created_at", todayStart.toISOString())
+        .maybeSingle();
 
-    if (!existingFeed) {
-      const { error: feedError } = await supabase.from("activity_feed").insert({
-        pack_id: packId,
-        user_id: userId,
-        activity_type: type,
-        value: rawValues[type] ?? 0,
-        points_earned: points,
-        entry_method: "healthkit",
-      });
-      if (!feedError) {
-        notifyPackMembers(userId, packId, {
-          kind: "goal",
-          activityType: type as "steps" | "workout" | "calories" | "water",
-          pointsEarned: points,
-        }).catch(() => {});
+      if (!existingFeed) {
+        const { error: feedError } = await supabase.from("activity_feed").insert({
+          pack_id: packId,
+          user_id: userId,
+          activity_type: type,
+          value: rawValues[type] ?? 0,
+          points_earned: points,
+          entry_method: "healthkit",
+        });
+        if (!feedError) {
+          notifyPackMembers(userId, packId, {
+            kind: "goal",
+            activityType: type as "steps" | "calories" | "water",
+            pointsEarned: points,
+          }).catch(() => {});
+        }
       }
     }
   }
@@ -450,4 +545,172 @@ export async function syncHealthDataToSupabase(
     streakDays,
     streakMultiplier,
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-workout deduplication sync
+//
+// Queries HealthKit for workouts from the past 2 days, credits any that haven't
+// been synced yet (identified by startDate|endDate stored in activity_logs
+// healthkit_data.synced_workout_ids), up to WORKOUT_MAX_DAILY per day per pack.
+//
+// SQL migration required before this runs correctly:
+//   ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS synced_workout_ids jsonb DEFAULT '[]'::jsonb;
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function syncWorkoutsToSupabase(userId: string): Promise<void> {
+  if (!nativeAvailable()) return;
+
+  // Query workouts from 2 days ago to catch any retroactive data
+  const twoDaysAgo = new Date();
+  twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+  twoDaysAgo.setHours(0, 0, 0, 0);
+
+  const samples = await getWorkoutSamples(twoDaysAgo);
+  if (samples.length === 0) return;
+
+  // Group samples by calendar date (use workout's endDate as the authoritative date)
+  const now = new Date();
+  const todayStr = now.toISOString().split("T")[0];
+  const yesterdayStr = new Date(now.getTime() - 86400000).toISOString().split("T")[0];
+
+  const byDate = new Map<string, WorkoutSample[]>();
+  for (const s of samples) {
+    const date = s.endDate.split("T")[0];
+    // Only credit today and yesterday — don't process future dates
+    if (date !== todayStr && date !== yesterdayStr) continue;
+    const existing = byDate.get(date) ?? [];
+    existing.push(s);
+    byDate.set(date, existing);
+  }
+
+  if (byDate.size === 0) return;
+
+  // Get all active packs for this user
+  const { data: memberships } = await supabase
+    .from("pack_members")
+    .select("pack_id")
+    .eq("user_id", userId)
+    .eq("is_active", true);
+
+  if (!memberships?.length) return;
+
+  for (const { pack_id } of memberships) {
+    const { data: pack } = await supabase
+      .from("packs")
+      .select("*")
+      .eq("id", pack_id)
+      .maybeSingle();
+    if (!pack?.workouts_enabled) continue;
+
+    const { data: run } = await supabase
+      .from("runs")
+      .select("id, start_date, end_date")
+      .eq("pack_id", pack_id)
+      .eq("status", "active")
+      .maybeSingle();
+    if (!run) continue;
+
+    for (const [date, daySamples] of byDate.entries()) {
+      // Read existing activity_logs row to get already-synced workout IDs
+      const { data: logRow } = await supabase
+        .from("activity_logs")
+        .select("id, healthkit_data")
+        .eq("user_id", userId)
+        .eq("activity_type", "workout")
+        .eq("activity_date", date)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const existing_hk = (logRow?.healthkit_data as any) ?? {};
+      const syncedIds: string[] = existing_hk.synced_workout_ids ?? [];
+
+      const newSamples = daySamples.filter((s) => !syncedIds.includes(s.identifier));
+      if (newSamples.length === 0) continue;
+
+      // Get current workout_count for this date/run
+      const { data: scoreRow } = await supabase
+        .from("daily_scores")
+        .select("workout_count, total_points, steps_achieved, calories_achieved, water_achieved, streak_multiplier")
+        .eq("run_id", run.id)
+        .eq("user_id", userId)
+        .eq("score_date", date)
+        .maybeSingle();
+
+      const currentCount = scoreRow?.workout_count ?? 0;
+      const slotsRemaining = WORKOUT_MAX_DAILY - currentCount;
+      if (slotsRemaining <= 0) continue;
+
+      const toCredit = newSamples.slice(0, slotsRemaining);
+      const newCount = currentCount + toCredit.length;
+      const newSyncedIds = [...syncedIds, ...toCredit.map((s) => s.identifier)];
+
+      const streakMultiplier = scoreRow?.streak_multiplier ?? 1;
+      const pointsDelta = toCredit.length * Math.round(POINTS.workout * streakMultiplier);
+      const newTotalPoints = (scoreRow?.total_points ?? 0) + pointsDelta;
+
+      // Upsert daily_scores with new workout count and updated total
+      await supabase.from("daily_scores").upsert(
+        {
+          run_id: run.id,
+          user_id: userId,
+          score_date: date,
+          workout_count: newCount,
+          workout_achieved: newCount >= 1,
+          total_points: newTotalPoints,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "run_id,user_id,score_date" },
+      );
+
+      // Update activity_logs — write synced_workout_ids back to the tracking row.
+      // The row was already read as logRow above; update it if it exists, insert if not.
+      if (logRow) {
+        await supabase
+          .from("activity_logs")
+          .update({
+            healthkit_data: { raw_value: newCount, synced_workout_ids: newSyncedIds },
+            points_earned: Math.round(POINTS.workout * streakMultiplier),
+          })
+          .eq("id", logRow.id);
+      } else {
+        await supabase.from("activity_logs").insert({
+          user_id: userId,
+          activity_type: "workout",
+          points_earned: Math.round(POINTS.workout * streakMultiplier),
+          activity_date: date,
+          healthkit_data: { raw_value: newCount, synced_workout_ids: newSyncedIds },
+        });
+      }
+
+      // Insert activity_feed entries for each newly credited workout
+      const todayStart = new Date(date + "T00:00:00");
+      const dayEnd = new Date(date + "T23:59:59");
+      const { count: existingFeedCount } = await supabase
+        .from("activity_feed")
+        .select("id", { count: "exact", head: true })
+        .eq("pack_id", pack_id)
+        .eq("user_id", userId)
+        .eq("activity_type", "workout")
+        .gte("created_at", todayStart.toISOString())
+        .lte("created_at", dayEnd.toISOString());
+
+      const feedSlotsRemaining = WORKOUT_MAX_DAILY - (existingFeedCount ?? 0);
+      const feedToInsert = Math.min(toCredit.length, feedSlotsRemaining);
+      for (let i = 0; i < feedToInsert; i++) {
+        await supabase.from("activity_feed").insert({
+          pack_id,
+          user_id: userId,
+          activity_type: "workout",
+          value: newCount,
+          points_earned: Math.round(POINTS.workout * streakMultiplier),
+          entry_method: "healthkit",
+        });
+      }
+
+      console.log(`[WorkoutSync] credited ${toCredit.length} new workout(s) for ${date} in pack ${pack_id}`);
+    }
+  }
 }

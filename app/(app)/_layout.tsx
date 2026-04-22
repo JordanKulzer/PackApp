@@ -113,7 +113,6 @@ export default function AppLayout() {
       <Tabs.Screen name="water" options={{ href: null, title: "" }} />
       <Tabs.Screen name="profile" options={{ title: "Profile" }} />
       <Tabs.Screen name="pack" options={{ href: null }} />
-      <Tabs.Screen name="paywall" options={{ href: null }} />
     </Tabs>
   );
 }

@@ -71,6 +71,8 @@ export default function RootLayout() {
   }, [session, isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <Stack screenOptions={{ headerShown: false }} />
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="paywall" options={{ presentation: "modal", gestureEnabled: true }} />
+    </Stack>
   );
 }

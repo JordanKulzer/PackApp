@@ -52,6 +52,7 @@ interface PackMemberDisplayProps {
   size: number;                 // ring diameter in px
   strokeWidth: number;
   animValue?: Animated.Value;   // if provided → animated arc; else static
+  showName?: boolean;           // default true; set false for compact strip rings
 }
 
 // Dim color for the initial letter when the member has no points yet.
@@ -74,6 +75,7 @@ export function PackMemberDisplay({
   size,
   strokeWidth,
   animValue,
+  showName = true,
 }: PackMemberDisplayProps) {
   const ringColor = getRingColor(userId, currentUserId, leaderId);
   const nameColor = getNameColor(userId, currentUserId);
@@ -180,15 +182,17 @@ export function PackMemberDisplay({
       )}
 
       {/* Name */}
-      <Text
-        style={[
-          s.name,
-          { fontSize: nameFontSize, fontWeight: nameFontWeight, color: nameColor },
-        ]}
-        numberOfLines={1}
-      >
-        {displayName}
-      </Text>
+      {showName && (
+        <Text
+          style={[
+            s.name,
+            { fontSize: nameFontSize, fontWeight: nameFontWeight, color: nameColor },
+          ]}
+          numberOfLines={1}
+        >
+          {displayName}
+        </Text>
+      )}
     </View>
   );
 }

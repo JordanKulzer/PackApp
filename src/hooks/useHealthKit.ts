@@ -5,6 +5,7 @@ import { supabase } from "../lib/supabase";
 import {
   requestHealthKitPermissions,
   syncHealthDataToSupabase,
+  syncWorkoutsToSupabase,
   logWaterToHealthKit,
 } from "../lib/healthkit";
 import type { Pack } from "../types/database";
@@ -70,8 +71,8 @@ export function useHealthKit(userId: string | null) {
       if (!packs || packs.length === 0) return;
 
       // For each pack, get active run and sync
-      await Promise.all(
-        (packs as Pack[]).map(async (pack) => {
+      await Promise.all([
+        ...((packs as Pack[]).map(async (pack) => {
           const { data: run } = await supabase
             .from("runs")
             .select("id")
@@ -84,8 +85,9 @@ export function useHealthKit(userId: string | null) {
           if (!run) return;
 
           await syncHealthDataToSupabase(uid, pack.id, run.id, pack);
-        }),
-      );
+        })),
+        syncWorkoutsToSupabase(uid),
+      ]);
 
       setLastSyncedAt(new Date());
     } catch (err) {

@@ -72,7 +72,7 @@ function maxRunPointsForPeriod(
   );
   let dailyMax = 0;
   if (pack.steps_enabled) dailyMax += 10;
-  if (pack.workouts_enabled) dailyMax += 15;
+  if (pack.workouts_enabled) dailyMax += 30; // up to 2 workouts × 15 pts
   if (pack.calories_enabled) dailyMax += 10;
   if (pack.water_enabled) dailyMax += 8;
   return dailyMax * days;
@@ -97,6 +97,10 @@ function packDailyMax(pack: Pack): number {
 // Uses PackMemberDisplay for consistent ring/badge/name rendering with Pack screen.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const STRIP_SIZE_CARD = 30;
+const STRIP_SW_CARD = 3;
+const STRIP_MAX_CARD = 5; // max visible strip rings before "+N" pill
+
 function MiniRings({
   scores,
   pack,
@@ -111,7 +115,7 @@ function MiniRings({
   currentUserId: string | undefined;
 }) {
   const top3 = scores.slice(0, 3);
-  const restCount = Math.max(0, scores.length - 3);
+  const rest = scores.slice(3); // ranks 4+
   const maxPoints = maxRunPointsForPeriod(pack, runStart, runEnd);
   const leaderId = scores[0]?.user_id;
 
@@ -124,8 +128,12 @@ function MiniRings({
     top3[2] ? { entry: top3[2], rank: 3 } : null,
   ];
 
+  const stripVisible = rest.slice(0, STRIP_MAX_CARD);
+  const stripMore = rest.length - stripVisible.length;
+
   return (
     <View style={miniRingS.wrapper}>
+      {/* Podium: [#2] [#1 elevated] [#3] */}
       <View style={miniRingS.row}>
         {podium.map((slot, pos) => {
           if (!slot) {
@@ -158,7 +166,35 @@ function MiniRings({
           );
         })}
       </View>
-      {restCount > 0 && <Text style={miniRingS.more}>+{restCount} more</Text>}
+
+      {/* Strip: ranks 4+ as a compact horizontal row */}
+      {stripVisible.length > 0 && (
+        <View style={miniRingS.strip}>
+          {stripVisible.map((entry, i) => {
+            const rank = i + 4;
+            const pct = miniRingPct(entry.weekly_points, maxPoints);
+            return (
+              <PackMemberDisplay
+                key={entry.user_id}
+                userId={entry.user_id}
+                displayName={entry.display_name}
+                progressPct={pct}
+                rank={rank}
+                currentUserId={currentUserId}
+                leaderId={leaderId}
+                size={STRIP_SIZE_CARD}
+                strokeWidth={STRIP_SW_CARD}
+                showName={false}
+              />
+            );
+          })}
+          {stripMore > 0 && (
+            <View style={miniRingS.morePill}>
+              <Text style={miniRingS.morePillText}>+{stripMore}</Text>
+            </View>
+          )}
+        </View>
+      )}
     </View>
   );
 }
@@ -171,13 +207,29 @@ const miniRingS = StyleSheet.create({
     alignItems: "flex-end",
     gap: 12,
   },
-  // #1 elevated above flanks — same visual principle as Pack screen podium
   elevated: { marginBottom: 10 },
-  more: {
+  strip: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    flexWrap: "nowrap",
+    gap: 10,
+    marginTop: 10,
+  },
+  morePill: {
+    backgroundColor: C.surfaceRaised,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 0.5,
+    borderColor: C.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  morePillText: {
     fontSize: 11,
-    color: C.textTertiary,
-    textAlign: "center",
-    marginTop: 6,
+    fontWeight: "700",
+    color: C.textSecondary,
   },
 });
 
@@ -510,7 +562,7 @@ export default function Home() {
   const handleNewPack = () => {
     if (!isPro && packs.length >= effectivePackLimit) {
       analytics.gateHit("pack_limit");
-      router.push("/(app)/paywall?trigger=pack_limit");
+      router.push("/paywall?trigger=pack_limit");
       return;
     }
     router.push("/(app)/pack/create");

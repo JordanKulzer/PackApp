@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
+  Alert,
   Animated,
   Easing,
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
+  Image,
   ScrollView,
   Share,
   ActivityIndicator,
@@ -49,6 +51,7 @@ import { useScoreStore } from "../../../src/stores/scoreStore";
 import type { Pack, Run } from "../../../src/types/database";
 import { colors } from "../../../src/theme/colors";
 import { PackMemberDisplay } from "../../../src/components/PackMemberDisplay";
+import { getSignedUrl, deletePhoto, reportPhoto } from "../../../src/lib/photoUpload";
 
 if (
   Platform.OS === "android" &&
@@ -1211,6 +1214,9 @@ function weeklyRingAbsolutePct(
 }
 
 
+const STRIP_SIZE_HEADER = 48;
+const STRIP_SW_HEADER = 4;
+
 function RingLeaderboard({
   entries,
   pack,
@@ -1247,7 +1253,7 @@ function RingLeaderboard({
   }, [entries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const top3 = entries.slice(0, 3);
-  const restCount = Math.max(0, entries.length - 3);
+  const rest = entries.slice(3); // ranks 4+
 
   // Only skip render when hook hasn't resolved yet (no member data at all)
   if (top3.length === 0) return null;
@@ -1333,7 +1339,41 @@ function RingLeaderboard({
         </View>
       )}
 
-      {restCount > 0 && <Text style={rlS.moreText}>+{restCount} more</Text>}
+      {/* Strip: ranks 4+ — scrollable horizontal row */}
+      {rest.length > 0 && (
+        <View style={rlS.stripWrapper}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={rlS.stripScroll}
+          >
+            {rest.map((entry, i) => {
+              const rank = i + 4;
+              const pct = weeklyRingAbsolutePct(entry.weekly_points, pack, activeRun);
+              const nameDisplay = formatName(entry.display_name, rank);
+              return (
+                <View key={entry.user_id} style={rlS.stripItem}>
+                  <PackMemberDisplay
+                    userId={entry.user_id}
+                    displayName={nameDisplay}
+                    progressPct={pct}
+                    rank={rank}
+                    currentUserId={currentUserId}
+                    leaderId={leaderId}
+                    size={STRIP_SIZE_HEADER}
+                    strokeWidth={STRIP_SW_HEADER}
+                    showName={false}
+                  />
+                  <Text style={rlS.stripRank}>#{rank}</Text>
+                  <Text style={rlS.stripPts}>{entry.weekly_points} pts</Text>
+                </View>
+              );
+            })}
+          </ScrollView>
+          {/* Fade at right edge signals scrollability */}
+          <View style={rlS.stripFade} pointerEvents="none" />
+        </View>
+      )}
 
       {/* Time context: anchors the weekly rings to the competition window */}
       {(() => {
@@ -1430,11 +1470,37 @@ const rlS = StyleSheet.create({
     color: C.textSecondary,
     fontWeight: "600",
   },
-  moreText: {
-    fontSize: 12,
+  stripWrapper: {
+    marginTop: 16,
+    position: "relative",
+  },
+  stripScroll: {
+    paddingHorizontal: 4,
+    gap: 16,
+    alignItems: "center",
+  },
+  stripItem: {
+    alignItems: "center",
+    gap: 4,
+  },
+  stripRank: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: C.textSecondary,
+  },
+  stripPts: {
+    fontSize: 10,
     color: C.textTertiary,
-    textAlign: "center",
-    marginTop: 14,
+    fontWeight: "500",
+  },
+  stripFade: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: 32,
+    backgroundColor: C.bg,
+    opacity: 0.75,
   },
   dayContext: {
     fontSize: 12,
@@ -1484,6 +1550,8 @@ interface DayMemberScore {
   caloriesAchieved: boolean;
   waterAchieved: boolean;
   workoutAchieved: boolean;
+  hasManualSteps: boolean;
+  hasManualCalories: boolean;
 }
 
 interface WeekDetailEntry {
@@ -1560,6 +1628,12 @@ function WeekDetailSheet({
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [dayScores, setDayScores] = useState<DayMemberScore[]>([]);
   const [dayLoading, setDayLoading] = useState(false);
+  const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
+
+  const toggleMember = useCallback((userId: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpandedMemberId((prev) => (prev === userId ? null : userId));
+  }, []);
 
   const days = React.useMemo(
     () =>
@@ -1591,12 +1665,13 @@ function WeekDetailSheet({
     let cancelled = false;
     setDayLoading(true);
     setDayScores([]);
+    setExpandedMemberId(null);
 
     (async () => {
       const { data } = await supabase
         .from("daily_scores")
         .select(
-          "user_id, total_points, steps_count, calories_count, water_oz_count, workout_count, steps_achieved, calories_achieved, water_achieved, workout_achieved",
+          "user_id, total_points, steps_count, calories_count, water_oz_count, workout_count, steps_achieved, calories_achieved, water_achieved, workout_achieved, has_manual_steps, has_manual_calories",
         )
         .eq("run_id", entry.runId)
         .eq("score_date", selectedDay);
@@ -1616,6 +1691,8 @@ function WeekDetailSheet({
           caloriesAchieved: row.calories_achieved,
           waterAchieved: row.water_achieved,
           workoutAchieved: row.workout_achieved,
+          hasManualSteps: row.has_manual_steps ?? false,
+          hasManualCalories: row.has_manual_calories ?? false,
         }))
         .sort((a, b) => b.totalPoints - a.totalPoints);
 
@@ -1644,6 +1721,35 @@ function WeekDetailSheet({
     pack.calories_enabled,
     pack.water_enabled,
   ].filter(Boolean).length;
+
+  // Merge all pack members with fetched day scores.
+  // Members without a score row appear at the bottom with zeros.
+  const allMemberScores = React.useMemo<(DayMemberScore & { hasNoData: boolean })[]>(() => {
+    const scoredIds = new Set(dayScores.map((s) => s.userId));
+    const withData = dayScores.map((s) => ({ ...s, hasNoData: false }));
+    const noData: (DayMemberScore & { hasNoData: boolean })[] = [];
+    memberNameMap.forEach((displayName, userId) => {
+      if (!scoredIds.has(userId)) {
+        noData.push({
+          userId,
+          displayName,
+          totalPoints: 0,
+          stepsCount: 0,
+          caloriesCount: 0,
+          waterOzCount: 0,
+          workoutCount: 0,
+          stepsAchieved: false,
+          caloriesAchieved: false,
+          waterAchieved: false,
+          workoutAchieved: false,
+          hasManualSteps: false,
+          hasManualCalories: false,
+          hasNoData: true,
+        });
+      }
+    });
+    return [...withData, ...noData];
+  }, [dayScores, memberNameMap]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Modal visible={!!entry} animationType="slide" onRequestClose={onClose}>
@@ -1761,42 +1867,112 @@ function WeekDetailSheet({
                     color={C.accent}
                     style={{ marginVertical: 16 }}
                   />
-                ) : dayScores.length === 0 ? (
-                  <Text style={wdS.emptyHint}>No activity logged this day</Text>
+                ) : allMemberScores.length === 0 ? (
+                  <Text style={wdS.emptyHint}>
+                    Day-by-day stats will appear here as your pack logs activity.
+                  </Text>
                 ) : (
-                  dayScores.map((score, idx) => {
+                  allMemberScores.map((score, idx) => {
                     const isMe = score.userId === currentUserId;
+                    const isFirst = idx === 0 && !score.hasNoData;
                     const doneCount = [
                       pack.steps_enabled && score.stepsAchieved,
                       pack.workouts_enabled && score.workoutAchieved,
                       pack.calories_enabled && score.caloriesAchieved,
                       pack.water_enabled && score.waterAchieved,
                     ].filter(Boolean).length;
-                    const isFirst = idx === 0;
 
+                    const isExpanded = expandedMemberId === score.userId;
                     return (
-                      <View
+                      <TouchableOpacity
                         key={score.userId}
-                        style={[wdS.dayRow, isMe && wdS.dayRowMe]}
+                        style={[wdS.memberCard, isMe && wdS.memberCardMe]}
+                        onPress={() => toggleMember(score.userId)}
+                        activeOpacity={0.75}
                       >
-                        <Text style={wdS.dayRank}>#{idx + 1}</Text>
-                        <View style={wdS.dayInfo}>
+                        {/* Header row: rank + name + pts + chevron */}
+                        <View style={wdS.memberHeaderRow}>
+                          <Text style={[wdS.dayRank, isFirst && wdS.dayRankFirst]}>
+                            #{idx + 1}
+                          </Text>
                           <Text
                             style={[wdS.dayName, isMe && wdS.dayNameMe]}
                             numberOfLines={1}
                           >
                             {formatName(score.displayName, idx + 1)}
                           </Text>
-                          {enabledCount > 0 && (
-                            <Text style={wdS.dayGoals}>
-                              {doneCount}/{enabledCount} goals
-                            </Text>
-                          )}
+                          <Text style={[wdS.dayPts, isFirst && wdS.dayPtsFirst]}>
+                            +{score.totalPoints} pts
+                          </Text>
+                          <Ionicons
+                            name={isExpanded ? "chevron-up" : "chevron-down"}
+                            size={14}
+                            color={C.textSecondary}
+                          />
                         </View>
-                        <Text style={[wdS.dayPts, isFirst && wdS.dayPtsFirst]}>
-                          +{score.totalPoints} pts
-                        </Text>
-                      </View>
+
+                        {/* Expanded: goals summary + per-activity breakdown */}
+                        {isExpanded && enabledCount > 0 && !score.hasNoData && (
+                          <Text style={wdS.dayGoals}>
+                            {doneCount}/{enabledCount} goals
+                          </Text>
+                        )}
+
+                        {isExpanded && (
+                          score.hasNoData ? (
+                            <Text style={wdS.noActivityText}>No activity logged.</Text>
+                          ) : (
+                            <View style={wdS.actList}>
+                              {pack.steps_enabled && (
+                                <View style={wdS.actRow}>
+                                  <Text style={wdS.actLabel}>Steps</Text>
+                                  <View style={wdS.actRight}>
+                                    {score.hasManualSteps && <ManualBadge />}
+                                    <Text style={[wdS.actValue, score.stepsAchieved && wdS.actValueDone]}>
+                                      {score.stepsCount.toLocaleString()} / {(pack.step_target ?? 10000).toLocaleString()}
+                                    </Text>
+                                    {score.stepsAchieved && <Text style={wdS.actCheck}>✓</Text>}
+                                  </View>
+                                </View>
+                              )}
+                              {pack.workouts_enabled && (
+                                <View style={wdS.actRow}>
+                                  <Text style={wdS.actLabel}>Workout</Text>
+                                  <View style={wdS.actRight}>
+                                    <Text style={[wdS.actValue, score.workoutAchieved && wdS.actValueDone]}>
+                                      {score.workoutCount} / 2
+                                    </Text>
+                                    {score.workoutAchieved && <Text style={wdS.actCheck}>✓</Text>}
+                                  </View>
+                                </View>
+                              )}
+                              {pack.calories_enabled && (
+                                <View style={wdS.actRow}>
+                                  <Text style={wdS.actLabel}>Calories</Text>
+                                  <View style={wdS.actRight}>
+                                    {score.hasManualCalories && <ManualBadge />}
+                                    <Text style={[wdS.actValue, score.caloriesAchieved && wdS.actValueDone]}>
+                                      {score.caloriesCount.toLocaleString()} / {(pack.calorie_target ?? 500).toLocaleString()} cal
+                                    </Text>
+                                    {score.caloriesAchieved && <Text style={wdS.actCheck}>✓</Text>}
+                                  </View>
+                                </View>
+                              )}
+                              {pack.water_enabled && (
+                                <View style={wdS.actRow}>
+                                  <Text style={wdS.actLabel}>Water</Text>
+                                  <View style={wdS.actRight}>
+                                    <Text style={[wdS.actValue, score.waterAchieved && wdS.actValueDone]}>
+                                      {score.waterOzCount} / {pack.water_target_oz ?? 64} oz
+                                    </Text>
+                                    {score.waterAchieved && <Text style={wdS.actCheck}>✓</Text>}
+                                  </View>
+                                </View>
+                              )}
+                            </View>
+                          )
+                        )}
+                      </TouchableOpacity>
                     );
                   })
                 )}
@@ -1896,21 +2072,24 @@ const wdS = StyleSheet.create({
     marginTop: 2,
   },
   todayDotActive: { backgroundColor: "rgba(255,255,255,0.7)" },
-  // Day member rows
+  // Day member cards
   dayList: { gap: 0 },
-  dayRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 10,
+  memberCard: {
+    paddingVertical: 12,
     borderBottomWidth: 0.5,
     borderBottomColor: C.border,
-    gap: 8,
+    gap: 4,
   },
-  dayRowMe: {
+  memberCardMe: {
     backgroundColor: colors.selfBgDim,
     borderRadius: 6,
     paddingHorizontal: 4,
     marginHorizontal: -4,
+  },
+  memberHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   dayRank: {
     width: 26,
@@ -1918,12 +2097,48 @@ const wdS = StyleSheet.create({
     fontWeight: "600",
     color: C.textTertiary,
   },
-  dayInfo: { flex: 1, gap: 1 },
-  dayName: { fontSize: 14, fontWeight: "600", color: C.textPrimary },
+  dayRankFirst: { color: colors.leader },
+  dayName: { flex: 1, fontSize: 14, fontWeight: "600", color: C.textPrimary },
   dayNameMe: { color: C.accent },
-  dayGoals: { fontSize: 11, color: C.textTertiary },
+  dayGoals: { fontSize: 11, color: C.textTertiary, marginLeft: 34 },
   dayPts: { fontSize: 13, fontWeight: "600", color: C.textSecondary },
   dayPtsFirst: { color: colors.leader },
+  noActivityText: {
+    fontSize: 12,
+    color: C.textTertiary,
+    marginLeft: 34,
+    marginTop: 2,
+  },
+  // Per-activity breakdown rows
+  actList: { marginLeft: 34, marginTop: 6, gap: 6 },
+  actRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  actLabel: {
+    fontSize: 13,
+    color: C.textSecondary,
+    width: 72,
+  },
+  actRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  actValue: {
+    fontSize: 13,
+    color: C.textTertiary,
+    textAlign: "right",
+  },
+  actValueDone: { color: C.success },
+  actCheck: {
+    fontSize: 12,
+    color: C.success,
+    fontWeight: "700",
+  },
 });
 
 // ── History list — current week + completed weeks, each tappable for detail ──
@@ -1953,7 +2168,7 @@ function PastRunsSection({
 
   const handleLockedRun = () => {
     analytics.gateHit("history");
-    router.push("/(app)/paywall?trigger=history");
+    router.push("/paywall?trigger=history");
   };
 
   return (
@@ -2401,23 +2616,36 @@ function EmojiPickerModal({
 
 // ── Feed card ──
 
+const REPORT_REASONS = ["Inappropriate", "Spam", "Nudity", "Violence"] as const;
+
 function FeedItemRow({
   item,
   currentUserId,
   onToggleReaction,
+  removePhotoFromItem,
 }: {
   item: FeedItem;
   currentUserId: string | undefined;
   onToggleReaction: (id: string, type: ReactionType) => Promise<void>;
+  removePhotoFromItem: (id: string) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [reactorEmoji, setReactorEmoji] = useState<ReactionType | null>(null);
+  const [signedPhotoUrl, setSignedPhotoUrl] = useState<string | null>(null);
+  const [fullscreenOpen, setFullscreenOpen] = useState(false);
+  const [photoMenuOpen, setPhotoMenuOpen] = useState(false);
+  const [reportMenuOpen, setReportMenuOpen] = useState(false);
 
   const isMe = item.userId === currentUserId;
   const name = formatName(item.displayName, 0);
   const initial = isMe
     ? "Y"
     : (item.displayName.trim().charAt(0) || "?").toUpperCase();
+
+  useEffect(() => {
+    if (!item.photoUrl) { setSignedPhotoUrl(null); return; }
+    getSignedUrl(item.photoUrl).then((url) => setSignedPhotoUrl(url)).catch(() => {});
+  }, [item.photoUrl]);
 
   // TODO: pass packWaterTarget as prop when available
   const WATER_TARGET_FALLBACK = 64;
@@ -2457,6 +2685,22 @@ function FeedItemRow({
   const phraseColor = isMe ? "#FFFFFF" : "#9CA3AF";
   const visibleChips = item.reactions.filter((rx) => rx.count > 0);
 
+  const handleDeletePhoto = async () => {
+    setPhotoMenuOpen(false);
+    if (item.photoUrl) {
+      deletePhoto(item.photoUrl).catch(() => {});
+    }
+    removePhotoFromItem(item.id);
+  };
+
+  const handleReport = (reason: string) => {
+    setReportMenuOpen(false);
+    if (currentUserId && item.photoUrl) {
+      reportPhoto(currentUserId, item.id, item.photoUrl, reason).catch(() => {});
+      Alert.alert("Reported", "Thanks for letting us know. We'll review this photo.");
+    }
+  };
+
   return (
     <View style={feedS.card}>
       {/* Top row: avatar + event text */}
@@ -2484,6 +2728,18 @@ function FeedItemRow({
           <Text style={feedS.time}>{getRelativeTime(item.createdAt)}</Text>
         </View>
       </View>
+
+      {/* Photo */}
+      {signedPhotoUrl && (
+        <TouchableOpacity
+          style={feedS.photoWrap}
+          onPress={() => { analytics.photoViewedFullscreen(item.id); setFullscreenOpen(true); }}
+          onLongPress={() => setPhotoMenuOpen(true)}
+          activeOpacity={0.92}
+        >
+          <Image source={{ uri: signedPhotoUrl }} style={feedS.photo} resizeMode="cover" />
+        </TouchableOpacity>
+      )}
 
       {/* Chips row: reaction summary + add button */}
       <View style={feedS.chipsRow}>
@@ -2529,6 +2785,71 @@ function FeedItemRow({
           onClose={() => setReactorEmoji(null)}
         />
       )}
+
+      {/* Full-screen photo viewer */}
+      {fullscreenOpen && (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setFullscreenOpen(false)}>
+          <Pressable style={feedS.fullscreenOverlay} onPress={() => setFullscreenOpen(false)}>
+            <Image source={{ uri: signedPhotoUrl! }} style={feedS.fullscreenImage} resizeMode="contain" />
+          </Pressable>
+        </Modal>
+      )}
+
+      {/* Photo context menu */}
+      {photoMenuOpen && (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setPhotoMenuOpen(false)}>
+          <Pressable style={feedS.sheetOverlay} onPress={() => setPhotoMenuOpen(false)}>
+            <Pressable style={feedS.contextSheet}>
+              <View style={feedS.sheetHandle} />
+              {isMe && (
+                <>
+                  <TouchableOpacity style={feedS.contextRow} onPress={handleDeletePhoto} activeOpacity={0.7}>
+                    <Ionicons name="trash-outline" size={18} color="#F87171" />
+                    <Text style={[feedS.contextRowText, { color: "#F87171" }]}>Delete photo</Text>
+                  </TouchableOpacity>
+                  <View style={feedS.contextDivider} />
+                </>
+              )}
+              <TouchableOpacity
+                style={feedS.contextRow}
+                onPress={() => { setPhotoMenuOpen(false); setReportMenuOpen(true); }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="flag-outline" size={18} color={C.textPrimary} />
+                <Text style={feedS.contextRowText}>Report photo</Text>
+              </TouchableOpacity>
+              <View style={feedS.contextDivider} />
+              <TouchableOpacity style={feedS.contextRow} onPress={() => setPhotoMenuOpen(false)} activeOpacity={0.7}>
+                <Text style={[feedS.contextRowText, { color: C.textTertiary }]}>Cancel</Text>
+              </TouchableOpacity>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      )}
+
+      {/* Report reason sheet */}
+      {reportMenuOpen && (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setReportMenuOpen(false)}>
+          <Pressable style={feedS.sheetOverlay} onPress={() => setReportMenuOpen(false)}>
+            <Pressable style={feedS.contextSheet}>
+              <View style={feedS.sheetHandle} />
+              <Text style={feedS.reportTitle}>Report photo</Text>
+              {REPORT_REASONS.map((reason, i) => (
+                <React.Fragment key={reason}>
+                  <TouchableOpacity style={feedS.contextRow} onPress={() => handleReport(reason)} activeOpacity={0.7}>
+                    <Text style={feedS.contextRowText}>{reason}</Text>
+                  </TouchableOpacity>
+                  {i < REPORT_REASONS.length - 1 && <View style={feedS.contextDivider} />}
+                </React.Fragment>
+              ))}
+              <View style={feedS.contextDivider} />
+              <TouchableOpacity style={feedS.contextRow} onPress={() => setReportMenuOpen(false)} activeOpacity={0.7}>
+                <Text style={[feedS.contextRowText, { color: C.textTertiary }]}>Cancel</Text>
+              </TouchableOpacity>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      )}
     </View>
   );
 }
@@ -2540,7 +2861,7 @@ function FeedTab({
   packId: string;
   currentUserId: string | undefined;
 }) {
-  const { items, isLoading, toggleReaction } = useActivityFeed(
+  const { items, isLoading, toggleReaction, removePhotoFromItem } = useActivityFeed(
     packId,
     currentUserId,
   );
@@ -2574,6 +2895,7 @@ function FeedTab({
           item={item}
           currentUserId={currentUserId}
           onToggleReaction={toggleReaction}
+          removePhotoFromItem={removePhotoFromItem}
         />
       ))}
     </View>
@@ -2806,6 +3128,61 @@ const feedS = StyleSheet.create({
     textAlign: "center",
     paddingHorizontal: 32,
   },
+
+  // ── Photo ──
+  photoWrap: {
+    marginTop: 10,
+    marginLeft: 48,
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  photo: {
+    width: "100%",
+    aspectRatio: 4 / 3,
+    backgroundColor: C.surfaceRaised,
+  },
+  fullscreenOverlay: {
+    flex: 1,
+    backgroundColor: "#000",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fullscreenImage: {
+    width: "100%",
+    height: "100%",
+  },
+
+  // ── Photo context / report sheets ──
+  contextSheet: {
+    backgroundColor: C.surfaceRaised,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === "ios" ? 34 : 16,
+    borderTopWidth: 0.5,
+    borderColor: C.border,
+  },
+  contextRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 16,
+  },
+  contextRowText: {
+    fontSize: 16,
+    color: C.textPrimary,
+  },
+  contextDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: C.border,
+  },
+  reportTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: C.textPrimary,
+    marginBottom: 4,
+  },
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2951,7 +3328,7 @@ export default function PackScreen() {
     const memberLimit = isPro ? PRO_MEMBER_LIMIT : FREE_MEMBER_LIMIT;
     if (!isPro && (packData.memberCount ?? 0) >= memberLimit) {
       analytics.gateHit("member_limit");
-      router.push("/(app)/paywall?trigger=member_limit");
+      router.push("/paywall?trigger=member_limit");
       return;
     }
     await Share.share({
@@ -3050,7 +3427,7 @@ export default function PackScreen() {
   if (!fullRoster.find((r) => r.user_id === user?.id)) {
     fullRoster.push({
       user_id: user?.id ?? "",
-      display_name: user?.display_name ?? "",
+      display_name: (user?.user_metadata?.display_name as string | undefined) ?? "",
       ...zero(),
     });
   }

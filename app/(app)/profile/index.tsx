@@ -13,12 +13,18 @@ import {
   Linking,
 } from "react-native";
 import * as Application from "expo-application";
+import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useAuthStore } from "../../../src/stores/authStore";
 import { useAuth } from "../../../src/hooks/useAuth";
 import { useHealthKit } from "../../../src/hooks/useHealthKit";
 import { colors } from "../../../src/theme/colors";
 import { PointsBadge } from "../../../src/components/PointsBadge";
+import {
+  AppleHealthIcon,
+  OuraIcon,
+  WhoopIcon,
+} from "../../../src/components/IntegrationIcons";
 import { supabase } from "../../../src/lib/supabase";
 import type { User } from "../../../src/types/database";
 
@@ -388,7 +394,7 @@ export default function Profile() {
             <TouchableOpacity
               style={styles.tierBadge}
               activeOpacity={0.7}
-              onPress={() => router.push("/(app)/paywall?trigger=profile")}
+              onPress={() => router.push("/paywall?trigger=profile")}
             >
               <Text style={styles.tierText}>
                 Free Tier <Text style={styles.upgradeText}>· Upgrade</Text>
@@ -429,7 +435,7 @@ export default function Profile() {
               activeOpacity={isAuthorized ? 1 : 0.7}
               disabled={hkRequesting || hkSyncing}
             >
-              <Text style={styles.rowIcon}>🍎</Text>
+              <AppleHealthIcon />
               <View style={styles.rowInfo}>
                 <Text style={styles.rowLabel}>Apple Health</Text>
                 <Text style={styles.rowDesc}>
@@ -454,51 +460,23 @@ export default function Profile() {
               )}
             </TouchableOpacity>
             <View style={styles.rowDivider} />
-            <TouchableOpacity
-              style={styles.row}
-              activeOpacity={0.7}
-              onPress={() =>
-                isPro
-                  ? undefined
-                  : router.push("/(app)/paywall?trigger=oura_integration")
-              }
-            >
-              <Text style={styles.rowIcon}>💍</Text>
+            <View style={styles.row}>
+              <OuraIcon />
               <View style={styles.rowInfo}>
                 <Text style={styles.rowLabel}>Oura Ring</Text>
-                <Text style={styles.rowDesc}>
-                  {isPro ? "Coming soon" : "Pro feature"}
-                </Text>
+                <Text style={styles.rowDesc}>Coming soon</Text>
               </View>
-              {isPro ? (
-                <Text style={styles.rowValue}>Soon</Text>
-              ) : (
-                <Text style={styles.rowValueLocked}>🔒</Text>
-              )}
-            </TouchableOpacity>
+              <Text style={styles.rowValue}>Soon</Text>
+            </View>
             <View style={styles.rowDivider} />
-            <TouchableOpacity
-              style={styles.row}
-              activeOpacity={0.7}
-              onPress={() =>
-                isPro
-                  ? undefined
-                  : router.push("/(app)/paywall?trigger=whoop_integration")
-              }
-            >
-              <Text style={styles.rowIcon}>⌚</Text>
+            <View style={styles.row}>
+              <WhoopIcon />
               <View style={styles.rowInfo}>
                 <Text style={styles.rowLabel}>Whoop</Text>
-                <Text style={styles.rowDesc}>
-                  {isPro ? "Coming soon" : "Pro feature"}
-                </Text>
+                <Text style={styles.rowDesc}>Coming soon</Text>
               </View>
-              {isPro ? (
-                <Text style={styles.rowValue}>Soon</Text>
-              ) : (
-                <Text style={styles.rowValueLocked}>🔒</Text>
-              )}
-            </TouchableOpacity>
+              <Text style={styles.rowValue}>Soon</Text>
+            </View>
           </View>
         </View>
 
@@ -511,7 +489,7 @@ export default function Profile() {
               onPress={() => router.push("/profile/notifications")}
               activeOpacity={0.7}
             >
-              <Text style={styles.rowIcon}>🔔</Text>
+              <Ionicons name="notifications-outline" size={22} color="#8B949E" />
               <View style={styles.rowInfo}>
                 <Text style={styles.rowLabel}>Notifications</Text>
                 <Text style={styles.rowDesc}>Manage what you hear about</Text>
@@ -692,13 +670,11 @@ const styles = StyleSheet.create({
     backgroundColor: C.border,
     marginLeft: 16,
   },
-  rowIcon: { fontSize: 20 },
   rowInfo: { flex: 1 },
   rowLabel: { fontSize: 15, fontWeight: "600", color: C.textPrimary },
   rowDesc: { fontSize: 13, color: C.textSecondary, marginTop: 1 },
   rowValue: { fontSize: 14, color: C.accent, fontWeight: "600" },
   rowValueSuccess: { color: C.success },
-  rowValueLocked: { fontSize: 16 },
   chevron: { fontSize: 20, color: C.textTertiary, fontWeight: "300" },
   dangerText: { color: C.danger },
   version: {

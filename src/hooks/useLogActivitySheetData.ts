@@ -12,6 +12,11 @@ export interface LogEntry {
   logged_at: string;
 }
 
+export interface WorkoutLogEntry {
+  logged_at: string;
+  entry_method: string | null;
+}
+
 export interface DailyScoreSnapshot {
   total_points: number;
   steps_achieved: boolean;
@@ -30,6 +35,7 @@ export interface DailyScoreSnapshot {
 
 export interface LogActivitySheetData {
   entries: LogEntry[];
+  workoutLogs: WorkoutLogEntry[];
   totalOz: number;
   waterTarget: number;
   stepTarget: number;
@@ -139,7 +145,7 @@ export function useLogActivitySheetData(
       const packId = member?.pack_id ?? null;
       if (!packId) {
         return {
-          entries, totalOz, waterTarget, stepTarget, calorieTarget,
+          entries, workoutLogs: [], totalOz, waterTarget, stepTarget, calorieTarget,
           hkAuthorized, stepsToday, caloriesToday,
           packRun: null, localScore: null, localWeeklyPoints: 0,
         };
@@ -155,14 +161,17 @@ export function useLogActivitySheetData(
 
       if (!run) {
         return {
-          entries, totalOz, waterTarget, stepTarget, calorieTarget,
+          entries, workoutLogs: [], totalOz, waterTarget, stepTarget, calorieTarget,
           hkAuthorized, stepsToday, caloriesToday,
           packRun: null, localScore: null, localWeeklyPoints: 0,
         };
       }
 
-      // Round 3: daily score rows in parallel (both depend on run.id)
-      const [scoreResult, weeklyResult] = await Promise.all([
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      // Round 3: daily score rows + today's workout feed entries in parallel
+      const [scoreResult, weeklyResult, workoutFeedResult] = await Promise.all([
         supabase
           .from("daily_scores")
           .select(
@@ -177,6 +186,14 @@ export function useLogActivitySheetData(
           .select("total_points")
           .eq("run_id", run.id)
           .eq("user_id", userId!),
+        supabase
+          .from("activity_feed")
+          .select("created_at, entry_method")
+          .eq("pack_id", packId)
+          .eq("user_id", userId!)
+          .eq("activity_type", "workout")
+          .gte("created_at", todayStart.toISOString())
+          .order("created_at", { ascending: true }),
       ]);
 
       const localScore = (scoreResult.data as DailyScoreSnapshot | null) ?? null;
@@ -184,9 +201,12 @@ export function useLogActivitySheetData(
         (sum: number, r: { total_points: number }) => sum + r.total_points,
         0,
       );
+      const workoutLogs: WorkoutLogEntry[] = (workoutFeedResult.data ?? []).map(
+        (r) => ({ logged_at: r.created_at, entry_method: r.entry_method }),
+      );
 
       return {
-        entries, totalOz, waterTarget, stepTarget, calorieTarget,
+        entries, workoutLogs, totalOz, waterTarget, stepTarget, calorieTarget,
         hkAuthorized, stepsToday, caloriesToday,
         packRun: { runId: run.id, packId },
         localScore,

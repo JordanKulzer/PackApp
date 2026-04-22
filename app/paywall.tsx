@@ -18,9 +18,9 @@ import {
   restorePurchases,
   PRO_MONTHLY_PRICE,
   PRO_ANNUAL_PRICE,
-} from "../../src/lib/revenuecat";
-import { analytics } from "../../src/lib/analytics";
-import { colors } from "../../src/theme/colors";
+} from "../src/lib/revenuecat";
+import { analytics } from "../src/lib/analytics";
+import { colors } from "../src/theme/colors";
 import type { PurchasesPackage } from "react-native-purchases";
 
 const C = {
@@ -44,7 +44,6 @@ const FEATURES = [
   { icon: "options-outline", text: "Custom step, calorie & water targets" },
   { icon: "star-outline", text: "Custom point values per activity" },
   { icon: "bar-chart-outline", text: "Full history & trends" },
-  { icon: "watch-outline", text: "Oura & Whoop integrations (coming soon)" },
 ];
 
 export default function Paywall() {
@@ -78,10 +77,13 @@ export default function Paywall() {
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleDismiss = useCallback(() => {
-    analytics.paywallDismissed(trigger as string);
-    router.back();
-  }, [trigger, router]);
+  const handleDismiss = useCallback(
+    (method: "cancel" | "x" | "swipe" | "hardware_back" = "cancel") => {
+      analytics.paywallDismissed(trigger as string, method);
+      router.back();
+    },
+    [trigger, router],
+  );
 
   const handlePurchase = async () => {
     const pkg = selectedPlan === "annual" ? annualPkg : monthlyPkg;
@@ -129,11 +131,24 @@ export default function Paywall() {
   const activePkg = selectedPlan === "annual" ? annualPkg : monthlyPkg;
 
   return (
-    <View style={[s.container, { paddingTop: insets.top }]}>
-      {/* Close */}
-      <TouchableOpacity style={s.closeBtn} onPress={handleDismiss} hitSlop={10}>
-        <Ionicons name="close" size={24} color={C.textSecondary} />
-      </TouchableOpacity>
+    <View style={[s.container, { paddingTop: 20 }]}>
+      {/* Dismiss header — Close (left) + X (right) */}
+      <View style={s.dismissRow}>
+        <TouchableOpacity
+          style={s.cancelBtn}
+          onPress={() => handleDismiss("cancel")}
+          hitSlop={10}
+        >
+          <Text style={s.cancelText}>Close</Text>
+        </TouchableOpacity>
+        {/* <TouchableOpacity
+          style={s.closeBtn}
+          onPress={() => handleDismiss("x")}
+          hitSlop={10}
+        >
+          <Ionicons name="close-circle" size={28} color={C.textSecondary} />
+        </TouchableOpacity> */}
+      </View>
 
       <ScrollView
         style={s.scroll}
@@ -142,6 +157,9 @@ export default function Paywall() {
           { paddingBottom: insets.bottom + 32 },
         ]}
         showsVerticalScrollIndicator={false}
+        onScrollEndDrag={({ nativeEvent }) => {
+          if (nativeEvent.contentOffset.y < -60) handleDismiss("swipe");
+        }}
       >
         {/* Header */}
         <View style={s.header}>
@@ -206,7 +224,11 @@ export default function Paywall() {
                     {annualPkg?.product.priceString ?? PRO_ANNUAL_PRICE}
                   </Text>
                   {selectedPlan === "annual" ? (
-                    <Ionicons name="checkmark-circle" size={20} color={C.accent} />
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={20}
+                      color={C.accent}
+                    />
                   ) : (
                     <View style={s.checkPlaceholder} />
                   )}
@@ -247,7 +269,11 @@ export default function Paywall() {
                     {monthlyPkg?.product.priceString ?? PRO_MONTHLY_PRICE}
                   </Text>
                   {selectedPlan === "monthly" ? (
-                    <Ionicons name="checkmark-circle" size={20} color={C.accent} />
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={20}
+                      color={C.accent}
+                    />
                   ) : (
                     <View style={s.checkPlaceholder} />
                   )}
@@ -328,15 +354,18 @@ export default function Paywall() {
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.bg },
-  closeBtn: {
-    position: "absolute",
-    top: 16,
-    right: 16,
-    zIndex: 10,
-    padding: 8,
+  dismissRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 8,
+    paddingTop: 8,
   },
+  cancelBtn: { padding: 8, minWidth: 60 },
+  cancelText: { fontSize: 16, color: C.textSecondary },
+  closeBtn: { padding: 8 },
   scroll: { flex: 1 },
-  content: { paddingHorizontal: 20, paddingTop: 60, gap: 24 },
+  content: { paddingHorizontal: 20, paddingTop: 16, gap: 24 },
 
   header: { alignItems: "center", gap: 10 },
   proBadge: {

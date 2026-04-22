@@ -3,7 +3,7 @@
 // These activities upsert daily_scores directly since there is no separate log table.
 
 import { supabase } from "./supabase";
-import { POINTS, getStreakMultiplier } from "./scoring";
+import { POINTS, WORKOUT_MAX_DAILY, workoutPoints, getStreakMultiplier } from "./scoring";
 import { computeStreakForRun } from "./computeStreak";
 import { notifyPackMembers } from "./notifications";
 import { detectAndSendThreatNotifications } from "./threatNotifications";
@@ -89,7 +89,13 @@ export async function syncManualActivityToDailyScores(
         newStepsCount = (existing?.steps_count ?? 0) + delta;
         steps_achieved = newStepsCount >= (pack.step_target ?? Infinity);
       } else if (activityType === "workout") {
-        newWorkoutCount = 1;
+        const currentCount = existing?.workout_count ?? 0;
+        if (currentCount >= WORKOUT_MAX_DAILY) {
+          throw new Error(
+            `You've already logged ${WORKOUT_MAX_DAILY} workouts today — max ${WORKOUT_MAX_DAILY} per day.`,
+          );
+        }
+        newWorkoutCount = currentCount + 1;
         workout_achieved = true;
       } else {
         newCaloriesCount = (existing?.calories_count ?? 0) + delta;
@@ -102,7 +108,7 @@ export async function syncManualActivityToDailyScores(
 
       const newTotalPoints = Math.round(
         ((steps_achieved   ? POINTS.steps   : 0) +
-         (workout_achieved ? POINTS.workout  : 0) +
+         workoutPoints(newWorkoutCount) +
          (calories_achieved ? POINTS.calories : 0) +
          (water_achieved   ? POINTS.water    : 0)) * multiplier,
       );
@@ -152,7 +158,7 @@ export async function syncManualActivityToDailyScores(
         activityType === "workout" ? workout_achieved :
                                      calories_achieved;
 
-      if (nowAchieved && !wasAchievedBefore) {
+      if (nowAchieved) {
         const basePoints =
           activityType === "steps"   ? POINTS.steps :
           activityType === "workout" ? POINTS.workout :
@@ -166,16 +172,31 @@ export async function syncManualActivityToDailyScores(
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
 
-        const { data: existingFeed } = await supabase
-          .from("activity_feed")
-          .select("id")
-          .eq("pack_id", pack.id)
-          .eq("user_id", userId)
-          .eq("activity_type", activityType)
-          .gte("created_at", todayStart.toISOString())
-          .maybeSingle();
+        // Workouts: allow up to WORKOUT_MAX_DAILY feed entries per day (one per workout).
+        // All other activities: one feed entry per day (only on first achievement).
+        let shouldInsertFeed = false;
+        if (activityType === "workout") {
+          const { count: existingCount } = await supabase
+            .from("activity_feed")
+            .select("id", { count: "exact", head: true })
+            .eq("pack_id", pack.id)
+            .eq("user_id", userId)
+            .eq("activity_type", "workout")
+            .gte("created_at", todayStart.toISOString());
+          shouldInsertFeed = (existingCount ?? 0) < WORKOUT_MAX_DAILY;
+        } else if (!wasAchievedBefore) {
+          const { data: existingFeed } = await supabase
+            .from("activity_feed")
+            .select("id")
+            .eq("pack_id", pack.id)
+            .eq("user_id", userId)
+            .eq("activity_type", activityType)
+            .gte("created_at", todayStart.toISOString())
+            .maybeSingle();
+          shouldInsertFeed = !existingFeed;
+        }
 
-        if (!existingFeed) {
+        if (shouldInsertFeed) {
           const { error: feedError } = await supabase.from("activity_feed").insert({
             pack_id: pack.id,
             user_id: userId,

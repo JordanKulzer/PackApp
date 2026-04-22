@@ -46,6 +46,14 @@ export const POINTS = {
   water: 8,
 } as const;
 
+// Maximum workouts credited per user per day
+export const WORKOUT_MAX_DAILY = 2;
+
+// Points for N workouts in a day (pre-multiplier)
+export function workoutPoints(count: number): number {
+  return Math.min(count, WORKOUT_MAX_DAILY) * POINTS.workout;
+}
+
 // Streak multiplier thresholds
 export function getStreakMultiplier(streakDays: number): number {
   if (streakDays >= 7) return 2.0;

@@ -72,7 +72,7 @@ export default function CreatePack() {
 
   const openPaywall = (trigger: string) => {
     analytics.gateHit(trigger);
-    router.push(`/(app)/paywall?trigger=${trigger}`);
+    router.push(`/paywall?trigger=${trigger}`);
   };
 
   const handleWindowPress = (opt: "weekly" | "monthly") => {
@@ -81,10 +81,6 @@ export default function CreatePack() {
       return;
     }
     setWindow(opt);
-  };
-
-  const handleTargetPress = () => {
-    if (!isPro) openPaywall("custom_targets");
   };
 
   const handleCreate = async () => {
@@ -106,41 +102,12 @@ export default function CreatePack() {
       const limit = effectivePackLimit;
       if (!isPro && (count ?? 0) >= limit) {
         analytics.gateHit("pack_limit");
-        router.push("/(app)/paywall?trigger=pack_limit");
+        router.push("/paywall?trigger=pack_limit");
         setIsLoading(false);
         return;
       }
 
-      const inviteCode = generateInviteCode();
-      const { data: pack, error } = await supabase
-        .from("packs")
-        .insert({
-          name: name.trim(),
-          created_by: user.id,
-          invite_code: inviteCode,
-          is_active: true,
-          steps_enabled: stepsEnabled,
-          workouts_enabled: workoutsEnabled,
-          calories_enabled: caloriesEnabled,
-          water_enabled: waterEnabled,
-          step_target: parseInt(stepTarget, 10) || 10000,
-          calorie_target: parseInt(calorieTarget, 10) || 500,
-          water_target_oz: parseInt(waterTarget, 10) || 64,
-          competition_window: window,
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      await supabase.from("pack_members").insert({
-        pack_id: pack.id,
-        user_id: user.id,
-        role: "admin",
-        is_active: true,
-      });
-
-      // Start the first run, aligned to the current week (Mon–Sun) or calendar month
+      // Compute run window dates
       const today = new Date();
       let runStart: Date;
       let runEnd: Date;
@@ -158,19 +125,28 @@ export default function CreatePack() {
         runEnd.setHours(23, 59, 59, 999);
       }
 
-      const { error: runError } = await supabase.from("runs").insert({
-        pack_id: pack.id,
-        start_date: runStart.toISOString().split("T")[0],
-        end_date: runEnd.toISOString().split("T")[0],
-        status: "active",
+      // Single atomic RPC: creates pack + pack_member + run in one transaction.
+      // Uses SECURITY DEFINER so RLS on runs doesn't block the insert.
+      const { data, error } = await supabase.rpc("create_pack_with_run", {
+        pack_name: name.trim(),
+        pack_invite_code: generateInviteCode(),
+        pack_window: window,
+        pack_steps_enabled: stepsEnabled,
+        pack_workouts_enabled: workoutsEnabled,
+        pack_calories_enabled: caloriesEnabled,
+        pack_water_enabled: waterEnabled,
+        pack_step_target: parseInt(stepTarget, 10) || 10000,
+        pack_calorie_target: parseInt(calorieTarget, 10) || 500,
+        pack_water_target_oz: parseInt(waterTarget, 10) || 64,
+        run_start_date: runStart.toISOString().split("T")[0],
+        run_end_date: runEnd.toISOString().split("T")[0],
       });
 
-      if (runError) {
-        console.error("[Pack Create] Failed to create run:", runError);
-      }
+      if (error) throw error;
 
-      router.dismiss();
-      router.push(`/(app)/pack/${pack.id}`);
+      const packId = (data as { pack_id: string }).pack_id;
+      // Replace create screen so Back from pack detail returns to Home, not here.
+      router.replace(`/(app)/pack/${packId}`);
     } catch (error) {
       console.error("[PACK CREATE ERROR]", JSON.stringify(error, null, 2));
       Alert.alert("Failed to create pack", JSON.stringify(error));
@@ -253,14 +229,7 @@ export default function CreatePack() {
 
         {/* Activities */}
         <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Activities</Text>
-            {isPro && (
-              <Text style={styles.proNote}>
-                Tap targets or point values to customize
-              </Text>
-            )}
-          </View>
+          <Text style={styles.sectionTitle}>Activities</Text>
           <View style={styles.card}>
             {/* Steps */}
             <ToggleRow
@@ -270,20 +239,14 @@ export default function CreatePack() {
               onValueChange={setStepsEnabled}
             />
             {stepsEnabled && (
-              <TouchableOpacity
-                activeOpacity={isPro ? 1 : 0.7}
-                onPress={isPro ? undefined : handleTargetPress}
-              >
-                <TextInput
-                  style={[styles.inlineInput, !isPro && styles.inputLocked]}
-                  placeholder="Step target"
-                  placeholderTextColor="#9CA3AF"
-                  keyboardType="number-pad"
-                  value={stepTarget}
-                  onChangeText={isPro ? setStepTarget : undefined}
-                  editable={isPro}
-                />
-              </TouchableOpacity>
+              <TextInput
+                style={styles.inlineInput}
+                placeholder="Step target"
+                placeholderTextColor="#9CA3AF"
+                keyboardType="number-pad"
+                value={stepTarget}
+                onChangeText={setStepTarget}
+              />
             )}
             {isPro && stepsEnabled && (
               editingPoints === "steps" ? (
@@ -353,20 +316,14 @@ export default function CreatePack() {
               onValueChange={setCaloriesEnabled}
             />
             {caloriesEnabled && (
-              <TouchableOpacity
-                activeOpacity={isPro ? 1 : 0.7}
-                onPress={isPro ? undefined : handleTargetPress}
-              >
-                <TextInput
-                  style={[styles.inlineInput, !isPro && styles.inputLocked]}
-                  placeholder="Calorie target"
-                  placeholderTextColor="#9CA3AF"
-                  keyboardType="number-pad"
-                  value={calorieTarget}
-                  onChangeText={isPro ? setCalorieTarget : undefined}
-                  editable={isPro}
-                />
-              </TouchableOpacity>
+              <TextInput
+                style={styles.inlineInput}
+                placeholder="Calorie target"
+                placeholderTextColor="#9CA3AF"
+                keyboardType="number-pad"
+                value={calorieTarget}
+                onChangeText={setCalorieTarget}
+              />
             )}
             {isPro && caloriesEnabled && (
               editingPoints === "calories" ? (
@@ -400,20 +357,14 @@ export default function CreatePack() {
               onValueChange={setWaterEnabled}
             />
             {waterEnabled && (
-              <TouchableOpacity
-                activeOpacity={isPro ? 1 : 0.7}
-                onPress={isPro ? undefined : handleTargetPress}
-              >
-                <TextInput
-                  style={[styles.inlineInput, styles.lastInline, !isPro && styles.inputLocked]}
-                  placeholder="Water target (oz)"
-                  placeholderTextColor="#9CA3AF"
-                  keyboardType="number-pad"
-                  value={waterTarget}
-                  onChangeText={isPro ? setWaterTarget : undefined}
-                  editable={isPro}
-                />
-              </TouchableOpacity>
+              <TextInput
+                style={[styles.inlineInput, styles.lastInline]}
+                placeholder="Water target (oz)"
+                placeholderTextColor="#9CA3AF"
+                keyboardType="number-pad"
+                value={waterTarget}
+                onChangeText={setWaterTarget}
+              />
             )}
             {isPro && waterEnabled && (
               editingPoints === "water" ? (
@@ -438,14 +389,6 @@ export default function CreatePack() {
             )}
           </View>
 
-          {!isPro && (
-            <TouchableOpacity style={styles.upgradeHint} onPress={() => openPaywall("custom_targets")}>
-              <Ionicons name="lock-closed-outline" size={13} color="#6B7280" />
-              <Text style={styles.upgradeHintText}>
-                Customize targets & point values with Pro
-              </Text>
-            </TouchableOpacity>
-          )}
         </View>
 
         <View style={styles.scoreInfo}>
