@@ -8,6 +8,7 @@ import { POINTS, WORKOUT_MAX_DAILY, workoutPoints, getStreakMultiplier } from ".
 import { computeStreakForRun } from "./computeStreak";
 import { notifyPackMembers } from "./notifications";
 import { detectAndSendThreatNotifications } from "./threatNotifications";
+import { packToday, packTodayStartUTC } from "./packDates";
 import type { Pack } from "../types/database";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -276,43 +277,67 @@ export async function syncHealthDataToSupabase(
     getTodayWaterOz(),
   ]);
 
-  // Step 2: Determine achievements
-  const cappedWorkouts = Math.min(workouts, WORKOUT_MAX_DAILY);
-  const steps_achieved = pack.steps_enabled && steps >= pack.step_target;
-  const workout_achieved = pack.workouts_enabled && workouts >= 1;
-  const calories_achieved =
-    pack.calories_enabled && calories >= pack.calorie_target;
-  const water_achieved = pack.water_enabled && waterOz >= pack.water_target_oz;
+  // Step 2: Compute today's date string in the pack's timezone
+  const today = packToday(pack.timezone ?? "UTC");
 
-  // Step 3: Base points (before multiplier)
-  const basePoints =
-    (steps_achieved ? POINTS.steps : 0) +
-    (pack.workouts_enabled ? workoutPoints(cappedWorkouts) : 0) +
-    (calories_achieved ? POINTS.calories : 0) +
-    (water_achieved ? POINTS.water : 0);
-
-  // Step 4: Calculate streak via shared utility
-  const now = new Date();
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-  const anyToday =
-    steps_achieved || workout_achieved || calories_achieved || water_achieved;
-  const streakDays = await computeStreakForRun(userId, runId, today, anyToday);
-
-  // Step 5: Apply multiplier
-  const streakMultiplier = getStreakMultiplier(streakDays);
-  const total_points = Math.round(basePoints * streakMultiplier);
-
-  // Step 5b: Snapshot existing today score before overwriting — needed for threat delta
-  const { data: existingToday } = await supabase
+  // Step 2a: Read prior row for delta computation and threat delta
+  const { data: priorRow } = await supabase
     .from("daily_scores")
-    .select("total_points")
+    .select(
+      "total_points, steps_count, calories_count, workout_count, hk_steps_count, hk_calories_count, hk_workout_count",
+    )
     .eq("run_id", runId)
     .eq("user_id", userId)
     .eq("score_date", today)
     .maybeSingle();
-  const oldTodayScore = existingToday?.total_points ?? 0;
 
-  // Step 6: Upsert to daily_scores
+  const oldTodayScore = priorRow?.total_points ?? 0;
+  const prevStepsCount = priorRow?.steps_count ?? 0;
+  const prevCaloriesCount = priorRow?.calories_count ?? 0;
+  const prevWorkoutCount = priorRow?.workout_count ?? 0;
+  const prevHkSteps = priorRow?.hk_steps_count ?? 0;
+  const prevHkCalories = priorRow?.hk_calories_count ?? 0;
+  const prevHkWorkouts = priorRow?.hk_workout_count ?? 0;
+
+  // Step 2b: HealthKit values are absolute snapshots. Add only the new increment
+  // since last sync so manual entries in steps_count / workout_count are preserved.
+  const cappedWorkouts = Math.min(workouts, WORKOUT_MAX_DAILY);
+  const newHkSteps = Math.round(steps);
+  const newHkCalories = Math.round(calories);
+  const newHkWorkouts = cappedWorkouts;
+
+  const hkStepsDelta = Math.max(0, newHkSteps - prevHkSteps);
+  const hkCaloriesDelta = Math.max(0, newHkCalories - prevHkCalories);
+  const hkWorkoutsDelta = Math.max(0, newHkWorkouts - prevHkWorkouts);
+
+  const newStepsCount = prevStepsCount + hkStepsDelta;
+  const newCaloriesCount = prevCaloriesCount + hkCaloriesDelta;
+  const newWorkoutCount = Math.min(prevWorkoutCount + hkWorkoutsDelta, WORKOUT_MAX_DAILY);
+
+  // Step 3: Determine achievements using combined (manual + HK) totals
+  const steps_achieved = pack.steps_enabled && newStepsCount >= pack.step_target;
+  const workout_achieved = pack.workouts_enabled && newWorkoutCount >= 1;
+  const calories_achieved = pack.calories_enabled && newCaloriesCount >= pack.calorie_target;
+  const water_achieved = pack.water_enabled && waterOz >= pack.water_target_oz;
+
+  // Step 4: Base points (before multiplier)
+  const basePoints =
+    (steps_achieved ? POINTS.steps : 0) +
+    (pack.workouts_enabled ? workoutPoints(newWorkoutCount) : 0) +
+    (calories_achieved ? POINTS.calories : 0) +
+    (water_achieved ? POINTS.water : 0);
+
+  // Step 5: Calculate streak via shared utility
+  const anyToday =
+    steps_achieved || workout_achieved || calories_achieved || water_achieved;
+  const packTz = pack.timezone ?? "UTC";
+  const streakDays = await computeStreakForRun(userId, runId, today, anyToday, packTz);
+
+  // Step 6: Apply multiplier
+  const streakMultiplier = getStreakMultiplier(streakDays);
+  const total_points = Math.round(basePoints * streakMultiplier);
+
+  // Step 7: Upsert to daily_scores
   const { error: upsertError } = await supabase.from("daily_scores").upsert(
     {
       run_id: runId,
@@ -325,10 +350,13 @@ export async function syncHealthDataToSupabase(
       workout_achieved,
       calories_achieved,
       water_achieved,
-      steps_count: Math.round(steps),
-      calories_count: Math.round(calories),
+      steps_count: newStepsCount,
+      calories_count: newCaloriesCount,
       water_oz_count: Math.round(waterOz),
-      workout_count: cappedWorkouts,
+      workout_count: newWorkoutCount,
+      hk_steps_count: newHkSteps,
+      hk_calories_count: newHkCalories,
+      hk_workout_count: newHkWorkouts,
       updated_at: new Date().toISOString(),
     },
     { onConflict: "run_id,user_id,score_date" },
@@ -382,12 +410,10 @@ export async function syncHealthDataToSupabase(
     });
   }
 
-  if (idempotentRows.length > 0) {
-    const { error: logError } = await supabase
-      .from("activity_logs")
-      .upsert(idempotentRows, { onConflict: "user_id,activity_type,activity_date" });
-    if (logError) {
-      console.error("[HealthKit Sync] activity_logs upsert error:", logError);
+  for (const row of idempotentRows) {
+    const { error: logError } = await supabase.from("activity_logs").insert(row);
+    if (logError && logError.code !== "23505") {
+      console.error("[HealthKit Sync] activity_logs insert error:", logError);
     }
   }
 
@@ -426,13 +452,12 @@ export async function syncHealthDataToSupabase(
   if (calories_achieved) achievedTypes.push({ type: "calories", points: Math.round(POINTS.calories * streakMultiplier) });
   if (water_achieved)    achievedTypes.push({ type: "water",    points: Math.round(POINTS.water    * streakMultiplier) });
 
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
+  const todayStart = packTodayStartUTC(pack.timezone ?? "UTC");
 
   const rawValues: Record<string, number> = {
-    steps: Math.round(steps),
-    workout: cappedWorkouts,
-    calories: Math.round(calories),
+    steps: newStepsCount,
+    workout: newWorkoutCount,
+    calories: newCaloriesCount,
     water: Math.round(waterOz),
   };
 
@@ -533,9 +558,15 @@ export async function syncHealthDataToSupabase(
 
   console.log("[HealthKit Sync] Success:", {
     packId,
-    steps,
-    calories,
-    workouts,
+    hkSteps: newHkSteps,
+    hkCalories: newHkCalories,
+    hkWorkouts: newHkWorkouts,
+    hkStepsDelta,
+    hkCaloriesDelta,
+    hkWorkoutsDelta,
+    totalSteps: newStepsCount,
+    totalCalories: newCaloriesCount,
+    totalWorkouts: newWorkoutCount,
     waterOz,
     steps_achieved,
     workout_achieved,
@@ -569,19 +600,14 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<void> {
   const samples = await getWorkoutSamples(twoDaysAgo);
   if (samples.length === 0) return;
 
-  // Group samples by calendar date (use workout's endDate as the authoritative date)
-  const now = new Date();
-  const todayStr = now.toISOString().split("T")[0];
-  const yesterdayStr = new Date(now.getTime() - 86400000).toISOString().split("T")[0];
-
+  // Group all samples by UTC date for initial bucketing — per-pack filtering
+  // below re-checks using pack timezone once we know which pack we're in.
   const byDate = new Map<string, WorkoutSample[]>();
   for (const s of samples) {
     const date = s.endDate.split("T")[0];
-    // Only credit today and yesterday — don't process future dates
-    if (date !== todayStr && date !== yesterdayStr) continue;
-    const existing = byDate.get(date) ?? [];
-    existing.push(s);
-    byDate.set(date, existing);
+    const bucket = byDate.get(date) ?? [];
+    bucket.push(s);
+    byDate.set(date, bucket);
   }
 
   if (byDate.size === 0) return;
@@ -611,7 +637,19 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<void> {
       .maybeSingle();
     if (!run) continue;
 
+    // Only credit today and yesterday in this pack's timezone
+    const packTz: string = pack.timezone ?? "UTC";
+    const todayStr = packToday(packTz);
+    const yesterdayStr = (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      return new Intl.DateTimeFormat("en-CA", {
+        timeZone: packTz, year: "numeric", month: "2-digit", day: "2-digit",
+      }).format(d);
+    })();
+
     for (const [date, daySamples] of byDate.entries()) {
+      if (date !== todayStr && date !== yesterdayStr) continue;
       // Read existing activity_logs row to get already-synced workout IDs
       const { data: logRow } = await supabase
         .from("activity_logs")
@@ -633,7 +671,7 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<void> {
       // Get current workout_count for this date/run
       const { data: scoreRow } = await supabase
         .from("daily_scores")
-        .select("workout_count, total_points, steps_achieved, calories_achieved, water_achieved, streak_multiplier")
+        .select("workout_count, total_points, steps_achieved, calories_achieved, water_achieved, streak_multiplier, hk_workout_count")
         .eq("run_id", run.id)
         .eq("user_id", userId)
         .eq("score_date", date)
@@ -658,6 +696,7 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<void> {
           user_id: userId,
           score_date: date,
           workout_count: newCount,
+          hk_workout_count: (scoreRow?.hk_workout_count ?? 0) + toCredit.length,
           workout_achieved: newCount >= 1,
           total_points: newTotalPoints,
           updated_at: new Date().toISOString(),

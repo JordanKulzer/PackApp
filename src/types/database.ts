@@ -39,6 +39,7 @@ export interface Pack {
   calorie_target: number;
   water_target_oz: number;
   competition_window: CompetitionWindow;
+  timezone: string;
   created_at: string;
 }
 
@@ -73,6 +74,15 @@ export interface DailyScore {
   workout_achieved: boolean;
   calories_achieved: boolean;
   water_achieved: boolean;
+  steps_count: number;
+  calories_count: number;
+  workout_count: number;
+  water_oz_count: number;
+  hk_steps_count: number;
+  hk_calories_count: number;
+  hk_workout_count: number;
+  has_manual_steps: boolean;
+  has_manual_calories: boolean;
   updated_at: string;
 }
 

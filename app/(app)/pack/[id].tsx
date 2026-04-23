@@ -11,7 +11,6 @@ import {
   ScrollView,
   Share,
   ActivityIndicator,
-  FlatList,
   LayoutAnimation,
   Modal,
   Platform,
@@ -20,9 +19,13 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import Svg, { Circle } from "react-native-svg";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ConfirmDialog } from "../../../src/components/ConfirmDialog";
+import { leavePack, deletePack, canUserDeletePack, transferPackOwnership } from "../../../src/lib/packLifecycle";
+import { notifyUser } from "../../../src/lib/notifications";
+import { showToast } from "../../../src/lib/toast";
+import { packToday, currentDayOfRun } from "../../../src/lib/packDates";
 import { useAuthStore } from "../../../src/stores/authStore";
 import { usePack } from "../../../src/hooks/usePack";
 import { usePackHistory } from "../../../src/hooks/usePackHistory";
@@ -45,7 +48,6 @@ import {
   buildGapLine,
   gainConsequenceText,
   rankWithTiebreakers,
-  TiebreakerReason,
 } from "../../../src/lib/competitionCopy";
 import { useScoreStore } from "../../../src/stores/scoreStore";
 import type { Pack, Run } from "../../../src/types/database";
@@ -84,11 +86,13 @@ const C = {
 interface MemberScore {
   user_id: string;
   display_name: string;
+  avatar_url?: string | null;
   // weekly_points: total accumulated this run — used for ranking + primary display
   weekly_points: number;
   // total_points: today's daily score only — used for "+X pts today" and daily bar
   total_points: number;
   streak_days: number;
+  streak_multiplier: number;
   updated_at: string | null;
   steps_achieved: boolean;
   workout_achieved: boolean;
@@ -106,18 +110,15 @@ interface WeeklyEntry {
   user_id: string;
   display_name: string;
   weekly_points: number;
+  avatar_url?: string | null;
 }
 
-interface PastWinner {
-  run_id: string;
-  week_label: string;
-  winner_name: string | null;
-}
 
 type ScoreRow = {
   user_id: string;
   total_points: number;
   streak_days: number;
+  streak_multiplier: number;
   updated_at: string | null;
   steps_achieved: boolean;
   workout_achieved: boolean;
@@ -144,12 +145,6 @@ function maxPossiblePoints(pack: Pack): number {
   return pts;
 }
 
-function toPercent(score: MemberScore, pack: Pack): number {
-  const max = maxPossiblePoints(pack);
-  if (max === 0) return 0;
-  return Math.min(100, Math.round((score.total_points / max) * 100));
-}
-
 function mapRows(
   data: ScoreRow[],
   nameMap: Record<string, string>,
@@ -161,6 +156,7 @@ function mapRows(
     weekly_points: weeklyTotals[row.user_id] ?? row.total_points,
     total_points: row.total_points, // today's daily score only
     streak_days: row.streak_days,
+    streak_multiplier: row.streak_multiplier ?? 1,
     updated_at: row.updated_at,
     steps_achieved: row.steps_achieved,
     workout_achieved: row.workout_achieved,
@@ -177,7 +173,7 @@ function mapRows(
 
 // No user join — display names are fetched in a separate explicit query
 const SCORE_SELECT =
-  "user_id, total_points, streak_days, updated_at, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, calories_count, water_oz_count, workout_count, has_manual_steps, has_manual_calories";
+  "user_id, total_points, streak_days, streak_multiplier, updated_at, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, calories_count, water_oz_count, workout_count, has_manual_steps, has_manual_calories";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Manual badge
@@ -665,67 +661,6 @@ function AnimatedSelfBar({ pct, color }: { pct: number; color: string }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Completion Ring — shown in expanded row header only
-// ─────────────────────────────────────────────────────────────────────────────
-
-function CompletionRing({ pct }: { pct: number }) {
-  const size = 44;
-  const strokeWidth = 4;
-  const radius = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference - Math.min(1, pct / 100) * circumference;
-  const color = pct >= 100 ? C.success : C.accent;
-
-  return (
-    <View
-      style={{
-        width: size,
-        height: size,
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <Svg
-        width={size}
-        height={size}
-        style={{ position: "absolute", transform: [{ rotate: "-90deg" }] }}
-      >
-        <Circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          stroke={C.border}
-          strokeWidth={strokeWidth}
-          fill="none"
-        />
-        {pct > 0 && (
-          <Circle
-            cx={size / 2}
-            cy={size / 2}
-            r={radius}
-            stroke={color}
-            strokeWidth={strokeWidth}
-            fill="none"
-            strokeDasharray={circumference}
-            strokeDashoffset={offset}
-            strokeLinecap="round"
-          />
-        )}
-      </Svg>
-      <Text
-        style={{
-          fontSize: 11,
-          fontWeight: "700",
-          color: pct >= 100 ? C.success : C.textTertiary,
-        }}
-      >
-        {pct}%
-      </Text>
-    </View>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Section 2 — Leaderboard List Row
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -748,7 +683,6 @@ function LeaderboardListRow({
   isCurrentUser,
   isExpanded,
   onToggle,
-  isTied = false,
   tieCaption = null,
 }: {
   score: MemberScore;
@@ -757,10 +691,8 @@ function LeaderboardListRow({
   isCurrentUser: boolean;
   isExpanded: boolean;
   onToggle: () => void;
-  isTied?: boolean;
   tieCaption?: string | null;
 }) {
-  const pct = toPercent(score, pack);
   const displayName = formatName(score.display_name, rank);
   const signal = rowSignal(score);
 
@@ -795,11 +727,6 @@ function LeaderboardListRow({
       <View style={lrS.mainRow}>
         <View style={lrS.rankBlock}>
           <Text style={lrS.rank}>#{rank}</Text>
-          {isTied && (
-            <View style={lrS.tiedPill}>
-              <Text style={lrS.tiedPillText}>Tied</Text>
-            </View>
-          )}
         </View>
         <View style={lrS.nameBlock}>
           <Text
@@ -923,20 +850,6 @@ const lrS = StyleSheet.create({
     fontSize: 13,
     color: C.textTertiary,
   },
-  tiedPill: {
-    backgroundColor: C.surfaceRaised,
-    borderRadius: 4,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    borderWidth: 0.5,
-    borderColor: C.border,
-  },
-  tiedPillText: {
-    fontSize: 9,
-    fontWeight: "700",
-    color: C.textTertiary,
-    letterSpacing: 0.3,
-  },
   tiebreakerCaption: {
     fontSize: 10,
     color: C.textTertiary,
@@ -1031,96 +944,6 @@ const lrS = StyleSheet.create({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Section 3 — Your Stats (dark)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function YourStatsSection({
-  score,
-  pack,
-}: {
-  score: MemberScore | null;
-  pack: Pack;
-}) {
-  const totalPts = score?.total_points ?? 0;
-  const maxPts = maxPossiblePoints(pack);
-  const streak = score?.streak_days ?? 0;
-
-  return (
-    <View style={ysS.section}>
-      <View style={ysS.topRow}>
-        <Text style={ysS.sectionLabel}>YOUR STATS</Text>
-        <View style={ysS.meta}>
-          <Text style={ysS.pts}>
-            {totalPts} / {maxPts} pts
-          </Text>
-          {streak > 0 && <Text style={ysS.streak}>🔥 {streak}</Text>}
-        </View>
-      </View>
-      <View style={ysS.bars}>
-        {pack.steps_enabled && (
-          <ProgressRow
-            label="Steps"
-            achieved={score?.steps_achieved ?? false}
-            current={score?.steps_count ?? 0}
-            target={pack.step_target}
-          />
-        )}
-        {pack.workouts_enabled && (
-          <ProgressRow
-            label="Workouts"
-            achieved={score?.workout_achieved ?? false}
-            current={score?.workout_count ?? 0}
-            target={1}
-          />
-        )}
-        {pack.calories_enabled && (
-          <ProgressRow
-            label="Calories"
-            achieved={score?.calories_achieved ?? false}
-            current={score?.calories_count ?? 0}
-            target={pack.calorie_target}
-          />
-        )}
-        {pack.water_enabled && (
-          <ProgressRow
-            label="Water"
-            achieved={score?.water_achieved ?? false}
-            current={score?.water_oz_count ?? 0}
-            target={pack.water_target_oz}
-            unit=" oz"
-          />
-        )}
-      </View>
-    </View>
-  );
-}
-
-const ysS = StyleSheet.create({
-  section: {
-    backgroundColor: C.surface,
-    borderTopWidth: 0.5,
-    borderTopColor: C.border,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    gap: 12,
-  },
-  topRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  sectionLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: C.textTertiary,
-    letterSpacing: 0.8,
-  },
-  meta: { flexDirection: "row", alignItems: "center", gap: 8 },
-  pts: { fontSize: 13, fontWeight: "700", color: C.textPrimary },
-  streak: { fontSize: 13, fontWeight: "600" },
-  bars: { gap: 2 },
-});
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Empty Members State (dark)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1174,30 +997,12 @@ const emS = StyleSheet.create({
 // represent base-rate progress. A user with a long streak can exceed the
 // expected max (ring caps at 100%), which correctly signals exceptional effort.
 
-function runLengthDays(run: Run): number {
-  const msPerDay = 1000 * 60 * 60 * 24;
-  return Math.max(
-    1,
-    Math.round(
-      (new Date(run.end_date).getTime() - new Date(run.start_date).getTime()) /
-        msPerDay,
-    ),
-  );
-}
-
-// Returns which calendar day of the run we're currently on (1-indexed, clamped).
-function currentDayOf(run: Run): { day: number; total: number } {
-  const msPerDay = 1000 * 60 * 60 * 24;
-  const elapsed = Math.floor(
-    (Date.now() - new Date(run.start_date).getTime()) / msPerDay,
-  );
-  const total = runLengthDays(run);
-  return { day: Math.min(Math.max(1, elapsed + 1), total), total };
-}
-
 function maxRunPoints(pack: Pack, run: Run): number {
-  // maxPossiblePoints(pack) gives the base-rate daily ceiling
-  return maxPossiblePoints(pack) * runLengthDays(run);
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const total = Math.round(
+    (new Date(run.end_date + "T12:00:00").getTime() - new Date(run.start_date + "T12:00:00").getTime()) / msPerDay
+  ) + 1;
+  return maxPossiblePoints(pack) * Math.max(1, total);
 }
 
 // Returns 0–100: the user's actual weekly progress toward the real run ceiling.
@@ -1213,9 +1018,6 @@ function weeklyRingAbsolutePct(
   return Math.min(100, Math.round((weeklyPoints / max) * 100));
 }
 
-
-const STRIP_SIZE_HEADER = 48;
-const STRIP_SW_HEADER = 4;
 
 function RingLeaderboard({
   entries,
@@ -1234,9 +1036,17 @@ function RingLeaderboard({
     new Animated.Value(0),
   ]);
 
+  // Sort for podium: pts desc, then alphabetical within same-pts groups for
+  // deterministic tie ordering. Used by both the animation effect and the render.
+  const sorted = [...entries].sort((a, b) =>
+    b.weekly_points !== a.weekly_points
+      ? b.weekly_points - a.weekly_points
+      : a.display_name.localeCompare(b.display_name),
+  );
+
   // Animate rings whenever entries update (initial load or after any log/sync)
   useEffect(() => {
-    const top3 = entries.slice(0, 3);
+    const top3 = sorted.slice(0, 3);
     if (top3.length === 0) return;
 
     Animated.parallel(
@@ -1252,21 +1062,24 @@ function RingLeaderboard({
     ).start();
   }, [entries]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const top3 = entries.slice(0, 3);
-  const rest = entries.slice(3); // ranks 4+
-
-  // Only skip render when hook hasn't resolved yet (no member data at all)
-  if (top3.length === 0) return null;
-
-  const layoutMode: "solo" | "duo" | "trio" =
-    top3.length === 1 ? "solo" : top3.length === 2 ? "duo" : "trio";
+  if (sorted.length === 0) return null;
 
   const SIZE_LEADER = 104;
   const SIZE_FLANK = 74;
   const SW_LEADER = 8;
   const SW_FLANK = 5;
 
-  const leaderId = entries[0]?.user_id;
+  const leaderId = sorted[0].user_id;
+  const memberCount = entries.length;
+
+  // Tie-group detection based on weekly_points
+  const topPts = sorted[0].weekly_points;
+  const tiedAtTop = sorted.filter(e => e.weekly_points === topPts);
+  const hasSoloLeader = tiedAtTop.length === 1;
+  const secondEntry = hasSoloLeader ? sorted.find(e => e.weekly_points < topPts) ?? null : null;
+  const tiedAtSecond = secondEntry
+    ? sorted.filter(e => e.weekly_points === secondEntry.weekly_points)
+    : [];
 
   // Not a React component — no hooks. Returns JSX for one ring slot.
   function ringSlot(
@@ -1301,9 +1114,8 @@ function RingLeaderboard({
           size={size}
           strokeWidth={sw}
           animValue={animRefs.current[animIdx]}
+          avatarUrl={entry.avatar_url}
         />
-
-        {/* Weekly point total — below ring/badge/name from PackMemberDisplay */}
         <Text style={[rlS.ringPts, isFirst && rlS.ringPtsFirst]}>
           {`${entry.weekly_points} pts`}
         </Text>
@@ -1311,84 +1123,77 @@ function RingLeaderboard({
     );
   }
 
+  // Tie-context prefix for the "Day N of N" line
+  const { day, total } = currentDayOfRun(activeRun, pack.timezone ?? "UTC");
+  const tiePrefix =
+    tiedAtTop.length >= 2
+      ? (tiedAtTop.length === 2 ? "TIED" : `${tiedAtTop.length} TIED`) + "  ·  "
+      : sorted[0].weekly_points > 0
+        ? `${sorted[0].weekly_points} pts lead  ·  `
+        : "";
+
   return (
     <View style={rlS.container}>
       <Text style={rlS.sectionLabel}>THIS WEEK</Text>
 
-      {/* 1 member: single centered ring */}
-      {layoutMode === "solo" && (
+      {/* 1 active member: single centered ring */}
+      {memberCount === 1 && (
         <View style={{ alignItems: "center" }}>
-          {ringSlot(top3[0], 1, 0, SIZE_LEADER, SW_LEADER, 1, false)}
+          {ringSlot(sorted[0], 1, 0, SIZE_LEADER, SW_LEADER, 1, false)}
         </View>
       )}
 
-      {/* 2 members: [#2 smaller] [#1 elevated] — matches trio/home rule: left=#2, center=#1 */}
-      {layoutMode === "duo" && (
-        <View style={rlS.podiumRow}>
-          {ringSlot(top3[1], 2, 1, SIZE_FLANK, SW_FLANK, 0.88, false)}
-          {ringSlot(top3[0], 1, 0, SIZE_LEADER, SW_LEADER, 1, true)}
-        </View>
-      )}
-
-      {/* 3+ members: [#2] [#1 elevated] [#3] */}
-      {layoutMode === "trio" && (
-        <View style={rlS.podiumRow}>
-          {ringSlot(top3[1], 2, 1, SIZE_FLANK, SW_FLANK, 0.88, false)}
-          {ringSlot(top3[0], 1, 0, SIZE_LEADER, SW_LEADER, 1, true)}
-          {ringSlot(top3[2], 3, 2, SIZE_FLANK, SW_FLANK, 0.76, false)}
-        </View>
-      )}
-
-      {/* Strip: ranks 4+ — scrollable horizontal row */}
-      {rest.length > 0 && (
-        <View style={rlS.stripWrapper}>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={rlS.stripScroll}
-          >
-            {rest.map((entry, i) => {
-              const rank = i + 4;
-              const pct = weeklyRingAbsolutePct(entry.weekly_points, pack, activeRun);
-              const nameDisplay = formatName(entry.display_name, rank);
-              return (
-                <View key={entry.user_id} style={rlS.stripItem}>
-                  <PackMemberDisplay
-                    userId={entry.user_id}
-                    displayName={nameDisplay}
-                    progressPct={pct}
-                    rank={rank}
-                    currentUserId={currentUserId}
-                    leaderId={leaderId}
-                    size={STRIP_SIZE_HEADER}
-                    strokeWidth={STRIP_SW_HEADER}
-                    showName={false}
-                  />
-                  <Text style={rlS.stripRank}>#{rank}</Text>
-                  <Text style={rlS.stripPts}>{entry.weekly_points} pts</Text>
-                </View>
-              );
-            })}
-          </ScrollView>
-          {/* Fade at right edge signals scrollability */}
-          <View style={rlS.stripFade} pointerEvents="none" />
-        </View>
-      )}
-
-      {/* Time context: anchors the weekly rings to the competition window */}
-      {(() => {
-        const { day, total } = currentDayOf(activeRun);
-        const leaderPts = top3[0].weekly_points;
+      {/* Top is tied: equal-size rings (up to 3), "+N more" if overflow */}
+      {memberCount > 1 && tiedAtTop.length >= 2 && (() => {
+        const display = tiedAtTop.slice(0, 3);
+        const overflow = tiedAtTop.length - display.length;
         return (
-          <Text style={rlS.dayContext}>
-            {leaderPts > 0 ? `${leaderPts} pts lead  ·  ` : ""}
-            {"Day "}
-            {day}
-            {" of "}
-            {total}
-          </Text>
+          <View>
+            <View style={rlS.podiumRow}>
+              {display.map((entry, i) =>
+                ringSlot(entry, 1, i, SIZE_LEADER, SW_LEADER, 1, false),
+              )}
+            </View>
+            {overflow > 0 && (
+              <Text style={rlS.tiedOverflow}>+{overflow} more tied</Text>
+            )}
+          </View>
         );
       })()}
+
+      {/* 2 members, clear leader: [#2 left] [#1 elevated] */}
+      {memberCount === 2 && hasSoloLeader && (
+        <View style={rlS.podiumRow}>
+          {ringSlot(sorted[1], 2, 1, SIZE_FLANK, SW_FLANK, 0.88, false)}
+          {ringSlot(sorted[0], 1, 0, SIZE_LEADER, SW_LEADER, 1, true)}
+        </View>
+      )}
+
+      {/* 3+ members, clear #1 + tie at #2: [tied-#2 left] [#1 center] [tied-#2 right] */}
+      {memberCount >= 3 && hasSoloLeader && tiedAtSecond.length >= 2 && (
+        <View style={rlS.podiumRow}>
+          {ringSlot(tiedAtSecond[0], 2, 1, SIZE_FLANK, SW_FLANK, 0.88, false)}
+          {ringSlot(sorted[0], 1, 0, SIZE_LEADER, SW_LEADER, 1, true)}
+          {ringSlot(tiedAtSecond[1], 2, 2, SIZE_FLANK, SW_FLANK, 0.88, false)}
+        </View>
+      )}
+
+      {/* 3+ members, normal: [#2] [#1 elevated] [#3] */}
+      {memberCount >= 3 && hasSoloLeader && tiedAtSecond.length < 2 && (
+        <View style={rlS.podiumRow}>
+          {sorted[1] && ringSlot(sorted[1], 2, 1, SIZE_FLANK, SW_FLANK, 0.88, false)}
+          {ringSlot(sorted[0], 1, 0, SIZE_LEADER, SW_LEADER, 1, true)}
+          {sorted[2] && ringSlot(sorted[2], 3, 2, SIZE_FLANK, SW_FLANK, 0.76, false)}
+        </View>
+      )}
+
+      <Text style={rlS.dayContext}>
+        {tiePrefix}
+        {"Day "}
+        {day}
+        {" of "}
+        {total}
+      </Text>
     </View>
   );
 }
@@ -1470,37 +1275,12 @@ const rlS = StyleSheet.create({
     color: C.textSecondary,
     fontWeight: "600",
   },
-  stripWrapper: {
-    marginTop: 16,
-    position: "relative",
-  },
-  stripScroll: {
-    paddingHorizontal: 4,
-    gap: 16,
-    alignItems: "center",
-  },
-  stripItem: {
-    alignItems: "center",
-    gap: 4,
-  },
-  stripRank: {
+  tiedOverflow: {
     fontSize: 11,
-    fontWeight: "700",
-    color: C.textSecondary,
-  },
-  stripPts: {
-    fontSize: 10,
     color: C.textTertiary,
-    fontWeight: "500",
-  },
-  stripFade: {
-    position: "absolute",
-    right: 0,
-    top: 0,
-    bottom: 0,
-    width: 32,
-    backgroundColor: C.bg,
-    opacity: 0.75,
+    fontWeight: "600",
+    textAlign: "center",
+    marginTop: 8,
   },
   dayContext: {
     fontSize: 12,
@@ -1531,8 +1311,10 @@ const MONTHS_SHORT = [
 ];
 
 function formatRunRange(startedAt: string, endedAt: string): string {
-  const s = new Date(startedAt);
-  const e = new Date(endedAt);
+  // Parse at noon local time to avoid UTC-midnight date shifting across timezones.
+  // Consistent with parseDayLabel which also uses T12:00:00.
+  const s = new Date(startedAt.split("T")[0] + "T12:00:00");
+  const e = new Date(endedAt.split("T")[0] + "T12:00:00");
   return `${MONTHS_SHORT[s.getMonth()]} ${s.getDate()} – ${MONTHS_SHORT[e.getMonth()]} ${e.getDate()}`;
 }
 
@@ -1629,6 +1411,7 @@ function WeekDetailSheet({
   const [dayScores, setDayScores] = useState<DayMemberScore[]>([]);
   const [dayLoading, setDayLoading] = useState(false);
   const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
+  const [activeDates, setActiveDates] = useState<Set<string>>(new Set());
 
   const toggleMember = useCallback((userId: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -1654,7 +1437,7 @@ function WeekDetailSheet({
     }
     const d = generateRunDays(entry.startedAt, entry.endedAt, entry.isActive);
     if (d.length === 0) return;
-    const todayStr = new Date().toISOString().split("T")[0];
+    const todayStr = packToday(pack.timezone ?? "UTC");
     setSelectedDay(d.includes(todayStr) ? todayStr : d[d.length - 1]);
     setDayScores([]);
   }, [entry?.runId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1704,6 +1487,26 @@ function WeekDetailSheet({
       cancelled = true;
     };
   }, [selectedDay, entry?.runId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch which days in this run the current user had any activity
+  useEffect(() => {
+    if (!entry?.runId || !currentUserId) return;
+    let cancelled = false;
+
+    (async () => {
+      const { data } = await supabase
+        .from("daily_scores")
+        .select("score_date")
+        .eq("run_id", entry.runId)
+        .eq("user_id", currentUserId)
+        .gt("total_points", 0);
+
+      if (cancelled) return;
+      setActiveDates(new Set((data ?? []).map((r) => r.score_date)));
+    })();
+
+    return () => { cancelled = true; };
+  }, [entry?.runId, currentUserId]);
 
   // Build summary standings for the sheet header section
   const summaryStandings = entry?.isActive
@@ -1823,38 +1626,26 @@ function WeekDetailSheet({
                 {days.map((day) => {
                   const { dayName, dateNum } = parseDayLabel(day);
                   const isSelected = day === selectedDay;
-                  const isToday =
-                    day === new Date().toISOString().split("T")[0];
+                  const isToday = day === packToday(pack.timezone ?? "UTC");
+                  const isBeforeRunStart = day < entry!.startedAt.split("T")[0];
+                  const hasActivity = activeDates.has(day);
+
                   return (
                     <TouchableOpacity
                       key={day}
-                      style={[wdS.dayBtn, isSelected && wdS.dayBtnActive]}
-                      onPress={() => setSelectedDay(day)}
+                      style={[
+                        wdS.dayBtn,
+                        isSelected && wdS.dayBtnActive,
+                        isBeforeRunStart && wdS.dayBtnDisabled,
+                      ]}
+                      onPress={() => !isBeforeRunStart && setSelectedDay(day)}
+                      disabled={isBeforeRunStart}
+                      activeOpacity={isBeforeRunStart ? 1 : 0.2}
                     >
-                      <Text
-                        style={[
-                          wdS.dayBtnName,
-                          isSelected && wdS.dayBtnNameActive,
-                        ]}
-                      >
-                        {dayName}
-                      </Text>
-                      <Text
-                        style={[
-                          wdS.dayBtnDate,
-                          isSelected && wdS.dayBtnDateActive,
-                        ]}
-                      >
-                        {dateNum}
-                      </Text>
-                      {isToday && (
-                        <View
-                          style={[
-                            wdS.todayDot,
-                            isSelected && wdS.todayDotActive,
-                          ]}
-                        />
-                      )}
+                      <Text style={[wdS.dayBtnName, isSelected && wdS.dayBtnNameActive, isBeforeRunStart && wdS.dayBtnTextDisabled]}>{dayName}</Text>
+                      <Text style={[wdS.dayBtnDate, isSelected && wdS.dayBtnDateActive, isBeforeRunStart && wdS.dayBtnTextDisabled]}>{dateNum}</Text>
+                      {isToday && <View style={[wdS.todayDot, isSelected && wdS.todayDotActive]} />}
+                      {hasActivity && !isBeforeRunStart && <View style={wdS.activityBar} />}
                     </TouchableOpacity>
                   );
                 })}
@@ -2051,6 +1842,7 @@ const wdS = StyleSheet.create({
   // Day picker
   dayPickerRow: { flexDirection: "row", gap: 6, paddingBottom: 14 },
   dayBtn: {
+    position: "relative",
     alignItems: "center",
     paddingHorizontal: 10,
     paddingVertical: 8,
@@ -2060,6 +1852,22 @@ const wdS = StyleSheet.create({
     gap: 1,
   },
   dayBtnActive: { backgroundColor: C.accent },
+  dayBtnDisabled: {
+    opacity: 0.35,
+    backgroundColor: "transparent",
+  },
+  dayBtnTextDisabled: {
+    color: C.textTertiary,
+  },
+  activityBar: {
+    position: "absolute",
+    bottom: 4,
+    left: 8,
+    right: 8,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: C.success,
+  },
   dayBtnName: { fontSize: 10, fontWeight: "600", color: C.textTertiary },
   dayBtnNameActive: { color: "#FFFFFF" },
   dayBtnDate: { fontSize: 14, fontWeight: "700", color: C.textSecondary },
@@ -2614,6 +2422,74 @@ function EmojiPickerModal({
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Streak Section
+// ─────────────────────────────────────────────────────────────────────────────
+
+function StreakSection({ members }: { members: MemberScore[] }) {
+  const streakers = members.filter((m) => m.streak_multiplier > 1);
+  if (streakers.length === 0) return null;
+
+  const sorted = [...streakers].sort((a, b) => {
+    const mDiff = b.streak_multiplier - a.streak_multiplier;
+    if (mDiff !== 0) return mDiff;
+    return b.streak_days - a.streak_days;
+  });
+
+  return (
+    <View style={streakS.container}>
+      <Text style={streakS.header}>🔥 ON A STREAK</Text>
+      {sorted.map((m) => (
+        <View key={m.user_id} style={streakS.row}>
+          <PackMemberDisplay
+            userId={m.user_id}
+            displayName={m.display_name}
+            progressPct={0}
+            rank={99}
+            currentUserId={undefined}
+            leaderId={undefined}
+            size={32}
+            strokeWidth={2}
+            avatarUrl={m.avatar_url}
+            showName={false}
+          />
+          <View style={streakS.textCol}>
+            <Text style={streakS.name}>{m.display_name}</Text>
+            <Text style={streakS.detail}>
+              {m.streak_days} {m.streak_days === 1 ? "day" : "days"} · {m.streak_multiplier}x points
+            </Text>
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+const transferS = StyleSheet.create({
+  pickerTitle: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: C.textSecondary,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+});
+
+const streakS = StyleSheet.create({
+  container: { marginTop: 24, marginHorizontal: 16, gap: 8 },
+  header: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: C.textTertiary,
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 6 },
+  textCol: { flex: 1, gap: 2 },
+  name: { fontSize: 14, fontWeight: "600", color: C.textPrimary },
+  detail: { fontSize: 12, color: C.textSecondary },
+});
+
 // ── Feed card ──
 
 const REPORT_REASONS = ["Inappropriate", "Spam", "Nudity", "Violence"] as const;
@@ -2638,9 +2514,7 @@ function FeedItemRow({
 
   const isMe = item.userId === currentUserId;
   const name = formatName(item.displayName, 0);
-  const initial = isMe
-    ? "Y"
-    : (item.displayName.trim().charAt(0) || "?").toUpperCase();
+  const initial = (item.displayName.trim().charAt(0) || "?").toUpperCase();
 
   useEffect(() => {
     if (!item.photoUrl) { setSignedPhotoUrl(null); return; }
@@ -2706,7 +2580,14 @@ function FeedItemRow({
       {/* Top row: avatar + event text */}
       <View style={feedS.cardTop}>
         <View style={feedS.avatar}>
-          <Text style={feedS.avatarText}>{initial}</Text>
+          {item.avatarUrl ? (
+            <Image
+              source={{ uri: item.avatarUrl }}
+              style={{ width: 36, height: 36, borderRadius: 18 }}
+            />
+          ) : (
+            <Text style={feedS.avatarText}>{initial}</Text>
+          )}
         </View>
         <View style={feedS.content}>
           <View style={feedS.line1Row}>
@@ -3210,6 +3091,28 @@ export default function PackScreen() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("compete");
 
+  // Pack lifecycle state
+  const [isCreator, setIsCreator] = useState(false);
+  const [showPackMenu, setShowPackMenu] = useState(false);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showTransferPicker, setShowTransferPicker] = useState(false);
+  const [transferTarget, setTransferTarget] = useState<{ id: string; name: string } | null>(null);
+
+  // Reset to Compete tab every time this screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      setActiveTab("compete");
+      pageScrollRef.current?.scrollTo({ x: 0, animated: false });
+    }, []),
+  );
+
+  // Determine if current user is the pack creator
+  useEffect(() => {
+    if (!user?.id || !id) return;
+    canUserDeletePack(user.id, id).then(setIsCreator).catch(() => {});
+  }, [user?.id, id]);
+
   const handleTabChange = (tab: TabId) => {
     const index = TAB_ORDER.indexOf(tab);
     setActiveTab(tab);
@@ -3227,8 +3130,7 @@ export default function PackScreen() {
   // ── Fetch scores: today's details + weekly totals (parallel) ─────────
 
   const fetchWeekly = useCallback(async (runId: string) => {
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const today = packToday(packData?.pack.timezone ?? "UTC");
 
     // Fetch today's daily detail rows (goal flags, counts, streak) and the
     // full run's totals (for ranking and primary point display) in parallel.
@@ -3366,16 +3268,18 @@ export default function PackScreen() {
   // the reliable post-RLS-fix source of truth for display names.
   // At runtime PostgREST returns the key as "users" (table name), not "user".
   const memberNameMap = new Map<string, string>();
+  const memberAvatarMap = new Map<string, string | null>();
   (packData?.members ?? []).forEach((m) => {
-    const name = (m as unknown as { users: { display_name: string } | null })
-      .users?.display_name;
-    if (name) memberNameMap.set(m.user_id, name);
+    const u = (m as unknown as { users: { display_name: string; avatar_url: string | null } | null }).users;
+    if (u?.display_name) memberNameMap.set(m.user_id, u.display_name);
+    memberAvatarMap.set(m.user_id, u?.avatar_url ?? null);
   });
 
-  // Apply names to scores fetched today
+  // Apply names and avatars to scores fetched today
   const namedScores: MemberScore[] = scores.map((s) => ({
     ...s,
     display_name: memberNameMap.get(s.user_id) ?? s.display_name,
+    avatar_url: memberAvatarMap.get(s.user_id) ?? null,
   }));
 
   // Build a full roster from ALL pack members so everyone is always visible,
@@ -3385,6 +3289,7 @@ export default function PackScreen() {
     weekly_points: 0,
     total_points: 0,
     streak_days: 0,
+    streak_multiplier: 1,
     updated_at: null,
     steps_achieved: false,
     workout_achieved: false,
@@ -3406,9 +3311,11 @@ export default function PackScreen() {
     return {
       user_id: m.user_id,
       display_name: memberNameMap.get(m.user_id) ?? "",
+      avatar_url: memberAvatarMap.get(m.user_id) ?? null,
       weekly_points: weeklyTotals[m.user_id] ?? 0,
       total_points: 0,
       streak_days: 0,
+      streak_multiplier: 1,
       updated_at: null,
       steps_achieved: false,
       workout_achieved: false,
@@ -3484,13 +3391,25 @@ export default function PackScreen() {
           </Text>
         </View>
         <View style={s.headerRight}>
-          <TouchableOpacity onPress={handleInvite} style={s.inviteBtn}>
-            <Ionicons
-              name="person-add-outline"
-              size={20}
-              color={C.textPrimary}
-            />
-          </TouchableOpacity>
+          <View style={s.headerActions}>
+            <TouchableOpacity onPress={handleInvite} style={s.inviteBtn}>
+              <Ionicons
+                name="person-add-outline"
+                size={20}
+                color={C.textPrimary}
+              />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setShowPackMenu(true)}
+              style={s.inviteBtn}
+            >
+              <Ionicons
+                name="ellipsis-horizontal"
+                size={20}
+                color={C.textPrimary}
+              />
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
 
@@ -3534,6 +3453,10 @@ export default function PackScreen() {
             />
           )}
 
+          {!scoresLoading && packData.activeRun && (
+            <StreakSection members={ranked} />
+          )}
+
           {!scoresLoading && (
             <DailySection
               ranked={ranked}
@@ -3562,7 +3485,6 @@ export default function PackScreen() {
                   isCurrentUser={score.user_id === user?.id}
                   isExpanded={expandedId === score.user_id}
                   onToggle={() => handleToggle(score.user_id)}
-                  isTied={score.isTied}
                   tieCaption={
                     score.tiebreaker === "streak"
                       ? "Leading by streak"
@@ -3610,6 +3532,189 @@ export default function PackScreen() {
           <View style={{ height: 40 }} />
         </ScrollView>
       </ScrollView>
+
+      {/* ── Pack action menu ─────────────────────────────────────────── */}
+      <Modal
+        visible={showPackMenu}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPackMenu(false)}
+      >
+        <Pressable
+          style={s.menuOverlay}
+          onPress={() => setShowPackMenu(false)}
+        >
+          <View style={s.menuSheet}>
+            {isCreator ? (
+              <>
+                <TouchableOpacity
+                  style={s.menuRow}
+                  onPress={() => {
+                    setShowPackMenu(false);
+                    setShowTransferPicker(true);
+                  }}
+                >
+                  <Ionicons name="person-add-outline" size={18} color={C.textSecondary} />
+                  <Text style={s.menuRowText}>Transfer Ownership</Text>
+                </TouchableOpacity>
+                <View style={s.menuDivider} />
+                <TouchableOpacity
+                  style={s.menuRow}
+                  onPress={() => {
+                    setShowPackMenu(false);
+                    setShowDeleteConfirm(true);
+                  }}
+                >
+                  <Ionicons name="trash-outline" size={18} color={C.danger} />
+                  <Text style={[s.menuRowText, s.menuRowTextDanger]}>
+                    Delete Pack
+                  </Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <TouchableOpacity
+                style={s.menuRow}
+                onPress={() => {
+                  setShowPackMenu(false);
+                  setShowLeaveConfirm(true);
+                }}
+              >
+                <Ionicons name="exit-outline" size={18} color={C.danger} />
+                <Text style={[s.menuRowText, s.menuRowTextDanger]}>
+                  Leave Pack
+                </Text>
+              </TouchableOpacity>
+            )}
+            <View style={s.menuDivider} />
+            <TouchableOpacity
+              style={s.menuRow}
+              onPress={() => setShowPackMenu(false)}
+            >
+              <Text style={s.menuRowText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </Pressable>
+      </Modal>
+
+      {/* ── Leave pack confirmation ───────────────────────────────────── */}
+      <ConfirmDialog
+        visible={showLeaveConfirm}
+        title="Leave this pack?"
+        message="You'll stop earning points and no longer see this pack's feed. Your history stays if you rejoin later."
+        confirmLabel="Leave"
+        confirmDestructive
+        onConfirm={async () => {
+          if (!user?.id || !id) return;
+          try {
+            await leavePack(user.id, id);
+            setShowLeaveConfirm(false);
+            showToast({ message: "Left pack", kind: "success" });
+            router.replace("/home");
+          } catch (err: unknown) {
+            setShowLeaveConfirm(false);
+            const msg =
+              err instanceof Error ? err.message : "Could not leave pack.";
+            Alert.alert("Cannot leave", msg);
+          }
+        }}
+        onCancel={() => setShowLeaveConfirm(false)}
+      />
+
+      {/* ── Delete pack confirmation ──────────────────────────────────── */}
+      <ConfirmDialog
+        visible={showDeleteConfirm}
+        title="Delete this pack?"
+        message="This permanently deletes the pack for everyone. All activity, scores, and photos will be lost. This cannot be undone."
+        confirmLabel="Delete"
+        confirmDestructive
+        onConfirm={async () => {
+          if (!user?.id || !id) return;
+          try {
+            await deletePack(id, user.id);
+            setShowDeleteConfirm(false);
+            showToast({ message: "Pack deleted", kind: "success" });
+            router.replace("/home");
+          } catch (err: unknown) {
+            setShowDeleteConfirm(false);
+            const msg =
+              err instanceof Error ? err.message : "Could not delete pack.";
+            Alert.alert("Delete failed", msg);
+          }
+        }}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
+
+      {/* ── Transfer ownership — member picker ───────────────────────── */}
+      <Modal
+        visible={showTransferPicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowTransferPicker(false)}
+      >
+        <Pressable
+          style={s.menuOverlay}
+          onPress={() => setShowTransferPicker(false)}
+        >
+          <View style={[s.menuSheet, { paddingBottom: 24 }]}>
+            <Text style={transferS.pickerTitle}>Transfer ownership to…</Text>
+            {(packData?.members ?? [])
+              .filter((m) => m.user_id !== user?.id && m.is_active)
+              .map((m) => {
+                const name = memberNameMap.get(m.user_id) ?? "Member";
+                return (
+                  <TouchableOpacity
+                    key={m.user_id}
+                    style={s.menuRow}
+                    onPress={() => {
+                      setTransferTarget({ id: m.user_id, name });
+                      setShowTransferPicker(false);
+                    }}
+                  >
+                    <Ionicons name="person-outline" size={18} color={C.textSecondary} />
+                    <Text style={s.menuRowText}>{name}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            <View style={s.menuDivider} />
+            <TouchableOpacity
+              style={s.menuRow}
+              onPress={() => setShowTransferPicker(false)}
+            >
+              <Text style={s.menuRowText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </Pressable>
+      </Modal>
+
+      {/* ── Transfer ownership — confirm ──────────────────────────────── */}
+      <ConfirmDialog
+        visible={transferTarget !== null}
+        title="Transfer ownership?"
+        message={`${transferTarget?.name ?? "This member"} will become the new pack owner. You'll still be a member but won't be able to delete the pack.`}
+        confirmLabel="Transfer"
+        onConfirm={async () => {
+          if (!user?.id || !id || !transferTarget) return;
+          const target = transferTarget;
+          setTransferTarget(null);
+          try {
+            await transferPackOwnership(id, target.id);
+            setIsCreator(false);
+            const actorName = packData?.pack
+              ? (memberNameMap.get(user.id) ?? "Someone")
+              : "Someone";
+            await notifyUser(target.id, actorName, id, {
+              kind: "ownership_transferred",
+              newOwnerName: target.name,
+            });
+            showToast({ message: "Ownership transferred", kind: "success" });
+          } catch (err: unknown) {
+            const msg =
+              err instanceof Error ? err.message : "Transfer failed.";
+            Alert.alert("Transfer failed", msg);
+          }
+        }}
+        onCancel={() => setTransferTarget(null)}
+      />
     </View>
   );
 }
@@ -3659,6 +3764,11 @@ const s = StyleSheet.create({
     flex: 1,
     alignItems: "flex-end",
   },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   inviteBtn: {
     width: 38,
     height: 38,
@@ -3689,5 +3799,38 @@ const s = StyleSheet.create({
     fontSize: 11,
     color: C.textTertiary,
     fontWeight: "500",
+  },
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "flex-end",
+    paddingBottom: 32,
+    paddingHorizontal: 16,
+  },
+  menuSheet: {
+    backgroundColor: C.surfaceRaised,
+    borderRadius: 16,
+    overflow: "hidden",
+    borderWidth: 0.5,
+    borderColor: C.border,
+  },
+  menuRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+  },
+  menuRowText: {
+    fontSize: 16,
+    fontWeight: "500",
+    color: C.textPrimary,
+  },
+  menuRowTextDanger: {
+    color: C.danger,
+  },
+  menuDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: C.border,
   },
 });

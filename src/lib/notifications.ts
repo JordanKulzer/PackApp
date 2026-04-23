@@ -12,7 +12,8 @@ const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 export type PackNotificationEvent =
   | { kind: "goal"; activityType: "steps" | "workout" | "calories" | "water"; pointsEarned: number }
   | { kind: "took_lead" }
-  | { kind: "all_goals"; totalPoints: number };
+  | { kind: "all_goals"; totalPoints: number }
+  | { kind: "ownership_transferred"; newOwnerName: string };
 
 function buildNotificationCopy(
   actorName: string,
@@ -28,6 +29,9 @@ function buildNotificationCopy(
   }
   if (event.kind === "took_lead") {
     return { title: actorName, body: "took the lead 👑" };
+  }
+  if (event.kind === "ownership_transferred") {
+    return { title: "Pack ownership transferred", body: `${actorName} made ${event.newOwnerName} the new pack owner` };
   }
   return { title: actorName, body: `completed all goals today 🔥 (${event.totalPoints} pts)` };
 }
@@ -82,6 +86,43 @@ export async function notifyPackMembers(
     });
   } catch (err) {
     console.error("[notifications] notifyPackMembers error:", err);
+  }
+}
+
+// Sends a push notification to a single user (e.g. new pack owner after transfer).
+export async function notifyUser(
+  recipientUserId: string,
+  actorName: string,
+  packId: string,
+  event: PackNotificationEvent,
+): Promise<void> {
+  try {
+    const [tokenMap, optedOut] = await Promise.all([
+      getTokensForUsers([recipientUserId]),
+      getOptedOutUsers([recipientUserId], "goal_completed"),
+    ]);
+
+    if (optedOut.has(recipientUserId)) return;
+
+    const { title, body } = buildNotificationCopy(actorName, event);
+    const tokens = tokenMap[recipientUserId] ?? [];
+    if (tokens.length === 0) return;
+
+    const messages = tokens.map((token) => ({
+      to: token,
+      title,
+      body,
+      sound: "default",
+      data: { packId },
+    }));
+
+    await fetch(EXPO_PUSH_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(messages),
+    });
+  } catch (err) {
+    console.error("[notifications] notifyUser error:", err);
   }
 }
 

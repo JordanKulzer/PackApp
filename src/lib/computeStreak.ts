@@ -1,14 +1,16 @@
 import { supabase } from "./supabase";
+import { packYesterday } from "./packDates";
 
 // Computes streak_days for a user within a specific run, counting backward
-// from yesterday to find consecutive days where any goal was achieved.
+// from yesterday (in pack timezone) to find consecutive days where any goal was achieved.
 // Returns the streak INCLUDING today if anyAchievedToday is true.
 // Extracted from healthkit.ts so manual log paths can use the same logic.
 export async function computeStreakForRun(
   userId: string,
   runId: string,
-  today: string,
+  today: string,         // YYYY-MM-DD in pack timezone
   anyAchievedToday: boolean,
+  packTimezone: string,  // IANA timezone for the pack
 ): Promise<number> {
   const { data: pastScores } = await supabase
     .from("daily_scores")
@@ -20,8 +22,10 @@ export async function computeStreakForRun(
 
   let streakDays = 0;
   if (pastScores && pastScores.length > 0) {
-    const cursor = new Date();
-    cursor.setDate(cursor.getDate() - 1); // start from yesterday
+    // Walk backward from yesterday in pack timezone
+    const yest = packYesterday(packTimezone);
+    const [y, m, d] = yest.split("-").map(Number);
+    const cursor = new Date(Date.UTC(y, m - 1, d));
 
     for (const row of pastScores) {
       const expected = cursor.toISOString().split("T")[0];
@@ -33,7 +37,7 @@ export async function computeStreakForRun(
         row.water_achieved;
       if (!anyHit) break;
       streakDays++;
-      cursor.setDate(cursor.getDate() - 1);
+      cursor.setUTCDate(cursor.getUTCDate() - 1);
     }
   }
 

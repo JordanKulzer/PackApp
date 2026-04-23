@@ -34,15 +34,20 @@ export function usePackHistory(packId: string) {
     setIsLoading(true);
 
     (async () => {
+      // Step 1: Fetch completed runs for this pack
       const { data: runs, error: runsError } = await supabase
-        .from("pack_runs")
-        .select("id, started_at, ended_at")
+        .from("runs")
+        .select("id, start_date, end_date")
         .eq("pack_id", packId)
         .eq("status", "completed")
-        .order("ended_at", { ascending: false })
+        .order("end_date", { ascending: false })
         .limit(10);
 
-      if (runsError || !runs || runs.length === 0) {
+      if (runsError) {
+        console.error("[usePackHistory] runs query error:", runsError);
+      }
+
+      if (!runs || runs.length === 0) {
         if (!cancelled) {
           setCompletedRuns([]);
           setIsLoading(false);
@@ -52,58 +57,80 @@ export function usePackHistory(packId: string) {
 
       const runIds = runs.map((r) => r.id);
 
-      const { data: snapshots } = await supabase
-        .from("leaderboard_snapshots")
-        .select("run_id, user_id, final_rank, total_points")
-        .in("run_id", runIds)
-        .order("final_rank", { ascending: true });
+      // Step 2: Fetch daily scores for those runs, joined to users for display_name
+      const { data: scores, error: scoresError } = await supabase
+        .from("daily_scores")
+        .select(
+          `
+          run_id,
+          user_id,
+          total_points,
+          users ( display_name )
+        `,
+        )
+        .in("run_id", runIds);
 
-      if (cancelled) return;
-
-      // Resolve display names in one query
-      const userIds = [...new Set((snapshots ?? []).map((s) => s.user_id))];
-      const userNameMap: Record<string, string> = {};
-
-      if (userIds.length > 0) {
-        const { data: usersData } = await supabase
-          .from("users")
-          .select("id, display_name")
-          .in("id", userIds);
-        (usersData ?? []).forEach((u) => {
-          userNameMap[u.id] = u.display_name;
-        });
+      if (scoresError) {
+        console.error("[usePackHistory] scores query error:", scoresError);
       }
 
       if (cancelled) return;
 
-      // Group snapshots by run
-      type SnapRow = { user_id: string; final_rank: number; total_points: number };
-      const snapshotsByRun: Record<string, SnapRow[]> = {};
-      (snapshots ?? []).forEach((snap) => {
-        if (!snapshotsByRun[snap.run_id]) snapshotsByRun[snap.run_id] = [];
-        snapshotsByRun[snap.run_id].push(snap);
-      });
+      // Step 3: Aggregate points per (run_id, user_id)
+      type UserTotal = {
+        userId: string;
+        displayName: string;
+        totalPoints: number;
+      };
+      const totalsByRun: Record<string, Map<string, UserTotal>> = {};
 
+      for (const row of scores ?? []) {
+        const runMap = totalsByRun[row.run_id] ?? new Map<string, UserTotal>();
+        const existing = runMap.get(row.user_id);
+
+        const displayName =
+          (row.users as { display_name?: string } | null)?.display_name ??
+          "Unknown";
+
+        if (existing) {
+          existing.totalPoints += row.total_points;
+        } else {
+          runMap.set(row.user_id, {
+            userId: row.user_id,
+            displayName,
+            totalPoints: row.total_points,
+          });
+        }
+
+        totalsByRun[row.run_id] = runMap;
+      }
+
+      // Step 4: Build the final result — ranked standings per run, winner is rank 1
       const result: CompletedRun[] = runs.map((run) => {
-        const runSnaps = snapshotsByRun[run.id] ?? [];
-        const top = runSnaps[0]; // already ordered final_rank asc
+        const runMap = totalsByRun[run.id] ?? new Map<string, UserTotal>();
+
+        const ranked = Array.from(runMap.values())
+          .sort((a, b) => b.totalPoints - a.totalPoints)
+          .map((entry, idx) => ({ ...entry, rank: idx + 1 }));
+
+        const top = ranked[0];
 
         return {
           runId: run.id,
-          startedAt: run.started_at,
-          endedAt: run.ended_at,
+          startedAt: run.start_date,
+          endedAt: run.end_date,
           winner: top
             ? {
-                userId: top.user_id,
-                displayName: userNameMap[top.user_id] ?? "Unknown",
-                totalPoints: top.total_points,
+                userId: top.userId,
+                displayName: top.displayName,
+                totalPoints: top.totalPoints,
               }
             : { userId: "", displayName: "—", totalPoints: 0 },
-          standings: runSnaps.map((snap) => ({
-            rank: snap.final_rank,
-            userId: snap.user_id,
-            displayName: userNameMap[snap.user_id] ?? "Unknown",
-            totalPoints: snap.total_points,
+          standings: ranked.map((entry) => ({
+            rank: entry.rank,
+            userId: entry.userId,
+            displayName: entry.displayName,
+            totalPoints: entry.totalPoints,
           })),
         };
       });

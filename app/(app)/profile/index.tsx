@@ -11,7 +11,13 @@ import {
   Modal,
   TextInput,
   Linking,
+  ActionSheetIOS,
+  Image,
+  Pressable,
+  Platform,
 } from "react-native";
+import { ConfirmDialog } from "../../../src/components/ConfirmDialog";
+import { showToast } from "../../../src/lib/toast";
 import * as Application from "expo-application";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -27,6 +33,12 @@ import {
 } from "../../../src/components/IntegrationIcons";
 import { supabase } from "../../../src/lib/supabase";
 import type { User } from "../../../src/types/database";
+import {
+  pickAvatarFromLibrary,
+  takeAvatarPhoto,
+  uploadAvatar,
+  deleteAvatar,
+} from "../../../src/lib/photoUpload";
 
 const C = {
   bg: "#0B0F14",
@@ -189,6 +201,71 @@ export default function Profile() {
   const [signingOut, setSigningOut] = useState(false);
   const [editNameVisible, setEditNameVisible] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
+  const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
+  const [showDeleteAccountConfirm, setShowDeleteAccountConfirm] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+
+  const handleAvatarPress = () => {
+    if (!user) return;
+    const hasAvatar = !!profile?.avatar_url;
+
+    const doUpload = async (picker: () => Promise<{ uri: string; width: number; height: number } | null>) => {
+      const photo = await picker();
+      if (!photo) return;
+      setAvatarUploading(true);
+      try {
+        const newUrl = await uploadAvatar(user.id, photo);
+        await supabase.from("users").update({ avatar_url: newUrl }).eq("id", user.id);
+        setProfile((prev) => (prev ? { ...prev, avatar_url: newUrl } : prev));
+        showToast({ message: "Profile photo updated", kind: "success" });
+      } catch (e) {
+        showToast({ message: (e as Error).message ?? "Upload failed", kind: "error" });
+      } finally {
+        setAvatarUploading(false);
+      }
+    };
+
+    const doRemove = async () => {
+      if (!user) return;
+      setAvatarUploading(true);
+      try {
+        await deleteAvatar(user.id);
+        await supabase.from("users").update({ avatar_url: null }).eq("id", user.id);
+        setProfile((prev) => (prev ? { ...prev, avatar_url: null } : prev));
+        showToast({ message: "Profile photo removed", kind: "success" });
+      } catch (e) {
+        showToast({ message: (e as Error).message ?? "Remove failed", kind: "error" });
+      } finally {
+        setAvatarUploading(false);
+      }
+    };
+
+    if (Platform.OS === "ios") {
+      const options = [
+        "Take Photo",
+        "Choose from Library",
+        ...(hasAvatar ? ["Remove Photo"] : []),
+        "Cancel",
+      ];
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options, cancelButtonIndex: options.length - 1, destructiveButtonIndex: hasAvatar ? 2 : undefined },
+        (idx) => {
+          if (idx === 0) doUpload(takeAvatarPhoto);
+          else if (idx === 1) doUpload(pickAvatarFromLibrary);
+          else if (hasAvatar && idx === 2) doRemove();
+        },
+      );
+    } else {
+      // Android fallback — simple Alert
+      const buttons: Parameters<typeof Alert.alert>[2] = [
+        { text: "Take Photo", onPress: () => doUpload(takeAvatarPhoto) },
+        { text: "Choose from Library", onPress: () => doUpload(pickAvatarFromLibrary) },
+        ...(hasAvatar ? [{ text: "Remove Photo", style: "destructive" as const, onPress: doRemove }] : []),
+        { text: "Cancel", style: "cancel" as const },
+      ];
+      Alert.alert("Profile Photo", undefined, buttons);
+    }
+  };
 
   const fetchProfile = useCallback(async () => {
     if (!user) return;
@@ -271,51 +348,9 @@ export default function Profile() {
     }
   };
 
-  const handleSignOut = () => {
-    Alert.alert("Sign Out", "Are you sure you want to sign out?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Sign Out",
-        style: "destructive",
-        onPress: async () => {
-          setSigningOut(true);
-          try {
-            await signOut();
-          } catch {
-            Alert.alert("Error", "Failed to sign out.");
-          } finally {
-            setSigningOut(false);
-          }
-        },
-      },
-    ]);
-  };
+  const handleSignOut = () => setShowSignOutConfirm(true);
 
-  const handleDeleteAccount = () => {
-    Alert.alert(
-      "Delete Account",
-      "This will permanently delete your account and all data. This cannot be undone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            setDeletingAccount(true);
-            try {
-              // TODO: implement delete_user_account RPC in Supabase
-              Alert.alert(
-                "Not available",
-                "Account deletion is coming soon. Please contact support@packapp.com to delete your account.",
-              );
-            } finally {
-              setDeletingAccount(false);
-            }
-          },
-        },
-      ],
-    );
-  };
+  const handleDeleteAccount = () => setShowDeleteAccountConfirm(true);
 
   const handleHealthKit = async () => {
     if (isAuthorized || hkRequesting) return;
@@ -364,13 +399,31 @@ export default function Profile() {
 
         {/* ── Avatar + identity ─────────────────────────────────────────── */}
         <View style={styles.avatarSection}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarInitials}>
-              {(profile?.display_name ?? user?.email ?? "?")
-                .charAt(0)
-                .toUpperCase()}
-            </Text>
-          </View>
+          <Pressable
+            style={styles.avatarWrap}
+            onPress={handleAvatarPress}
+            disabled={avatarUploading}
+          >
+            {profile?.avatar_url ? (
+              <Image
+                source={{ uri: profile.avatar_url }}
+                style={styles.avatarImage}
+              />
+            ) : (
+              <View style={styles.avatar}>
+                <Text style={styles.avatarInitials}>
+                  {(profile?.display_name ?? user?.email ?? "?")
+                    .charAt(0)
+                    .toUpperCase()}
+                </Text>
+              </View>
+            )}
+            {avatarUploading && (
+              <View style={styles.avatarOverlay}>
+                <ActivityIndicator color="#FFF" />
+              </View>
+            )}
+          </Pressable>
 
           <TouchableOpacity
             style={styles.nameRow}
@@ -572,6 +625,42 @@ export default function Profile() {
         onSave={handleSaveName}
         onCancel={() => setEditNameVisible(false)}
       />
+
+      <ConfirmDialog
+        visible={showSignOutConfirm}
+        title="Sign out?"
+        message="You'll need to sign in again to access your packs."
+        confirmLabel="Sign Out"
+        onConfirm={async () => {
+          setSigningOut(true);
+          setShowSignOutConfirm(false);
+          try {
+            await signOut();
+            showToast({ message: "Signed out", kind: "success" });
+          } catch {
+            Alert.alert("Error", "Failed to sign out.");
+          } finally {
+            setSigningOut(false);
+          }
+        }}
+        onCancel={() => setShowSignOutConfirm(false)}
+      />
+
+      <ConfirmDialog
+        visible={showDeleteAccountConfirm}
+        title="Delete your account?"
+        message="This permanently deletes your account, all your packs, activity, and photos. This cannot be undone."
+        confirmLabel="Delete Account"
+        confirmDestructive
+        onConfirm={async () => {
+          setShowDeleteAccountConfirm(false);
+          Alert.alert(
+            "Not available",
+            "Account deletion is coming soon. Please contact support@packapp.com to delete your account.",
+          );
+        }}
+        onCancel={() => setShowDeleteAccountConfirm(false)}
+      />
     </>
   );
 }
@@ -595,6 +684,13 @@ const styles = StyleSheet.create({
 
   // Avatar
   avatarSection: { alignItems: "center", gap: 6, paddingVertical: 8 },
+  avatarWrap: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    marginBottom: 4,
+    overflow: "hidden",
+  },
   avatar: {
     width: 80,
     height: 80,
@@ -604,7 +700,17 @@ const styles = StyleSheet.create({
     borderColor: C.border,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 4,
+  },
+  avatarImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+  },
+  avatarOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   avatarInitials: { fontSize: 32, fontWeight: "700", color: C.textPrimary },
   nameRow: { flexDirection: "row", alignItems: "center", gap: 8 },

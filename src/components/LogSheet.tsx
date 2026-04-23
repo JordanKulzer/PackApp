@@ -16,6 +16,7 @@ import {
   StyleSheet,
   UIManager,
 } from "react-native";
+import type { StyleProp, TextStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuthStore } from "../stores/authStore";
 import { useScoreStore } from "../stores/scoreStore";
@@ -23,6 +24,7 @@ import { supabase } from "../lib/supabase";
 import { POINTS, WORKOUT_MAX_DAILY, getStreakMultiplier } from "../lib/scoring";
 import { computeStreakForRun } from "../lib/computeStreak";
 import { syncManualActivityToDailyScores } from "../lib/logActivity";
+import { packToday, packTodayStartUTC } from "../lib/packDates";
 import { notifyPackMembers } from "../lib/notifications";
 import {
   getTodaySteps,
@@ -99,6 +101,25 @@ const mb = StyleSheet.create({
     alignSelf: "center",
   },
   text: { fontSize: 10, fontWeight: "700", color: C.textSecondary, letterSpacing: 0.3 },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HealthSourceBadge
+// ─────────────────────────────────────────────────────────────────────────────
+
+function HealthSourceBadge({ style }: { style?: StyleProp<TextStyle> }) {
+  return (
+    <View style={hsbS.row}>
+      <Text style={hsbS.icon}>♥</Text>
+      <Text style={[hsbS.label, style]}>Apple Health</Text>
+    </View>
+  );
+}
+
+const hsbS = StyleSheet.create({
+  row:   { flexDirection: "row", alignItems: "center", gap: 4 },
+  icon:  { fontSize: 11, color: "#FA2C4F" },
+  label: { fontSize: 11, color: C.textTertiary, fontWeight: "500" },
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -322,9 +343,6 @@ const sk = StyleSheet.create({
 
 async function syncWaterToDailyScores(userId: string): Promise<void> {
   try {
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-
     const { data: memberships, error: memberError } = await supabase
       .from("pack_members")
       .select("pack_id")
@@ -336,11 +354,13 @@ async function syncWaterToDailyScores(userId: string): Promise<void> {
     for (const membership of memberships) {
       const { data: pack } = await supabase
         .from("packs")
-        .select("id, water_enabled, water_target_oz")
+        .select("id, water_enabled, water_target_oz, timezone")
         .eq("id", membership.pack_id)
         .single();
 
       if (!pack || !pack.water_enabled) continue;
+
+      const today = packToday(pack.timezone ?? "UTC");
 
       const { data: run } = await supabase
         .from("runs")
@@ -351,11 +371,12 @@ async function syncWaterToDailyScores(userId: string): Promise<void> {
 
       if (!run) continue;
 
+      const deviceToday = new Intl.DateTimeFormat("en-CA").format(new Date());
       const { data: todayLogs } = await supabase
         .from("water_logs")
         .select("amount_oz")
         .eq("user_id", userId)
-        .eq("log_date", today);
+        .eq("log_date", deviceToday);
 
       const trueTotalOz = (todayLogs ?? []).reduce(
         (sum, row) => sum + row.amount_oz,
@@ -379,7 +400,7 @@ async function syncWaterToDailyScores(userId: string): Promise<void> {
         (existing?.steps_achieved ?? false) ||
         (existing?.workout_achieved ?? false) ||
         (existing?.calories_achieved ?? false);
-      const streakDays = await computeStreakForRun(userId, run.id, today, anyAchieved);
+      const streakDays = await computeStreakForRun(userId, run.id, today, anyAchieved, pack.timezone ?? "UTC");
       const multiplier = getStreakMultiplier(streakDays);
 
       const wCount = existing?.workout_count ?? 0;
@@ -413,8 +434,7 @@ async function syncWaterToDailyScores(userId: string): Promise<void> {
 
       if (water_achieved) {
         const wPoints = Math.round(POINTS.water * multiplier);
-        const todayStart = new Date();
-        todayStart.setHours(0, 0, 0, 0);
+        const todayStart = packTodayStartUTC(pack.timezone ?? "UTC");
 
         const { data: existingFeed, error: feedCheckError } = await supabase
           .from("activity_feed")
@@ -506,7 +526,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
   const patchMyScore = useScoreStore((s) => s.patchMyScore);
   const bumpLogVersion = useScoreStore((s) => s.bumpLogVersion);
 
-  const [packRun, setPackRun] = useState<{ runId: string; packId: string } | null>(null);
+  const [packRun, setPackRun] = useState<{ runId: string; packId: string; packTimezone: string } | null>(null);
   const [localWeeklyPoints, setLocalWeeklyPoints] = useState(0);
   const [localScore, setLocalScore] = useState<{
     total_points: number;
@@ -632,8 +652,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
   // ── Competitive feedback ───────────────────────────────────────────────────
 
   const fetchFeedback = async (uid: string, runId: string) => {
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const today = packToday(packRun?.packTimezone ?? "UTC");
 
     const { data: scores } = await supabase
       .from("daily_scores")
@@ -664,8 +683,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
         text = "You took the lead";
         positive = true;
         if (packRun?.packId) {
-          const todayStart = new Date();
-          todayStart.setHours(0, 0, 0, 0);
+          const todayStart = packTodayStartUTC(packRun.packTimezone ?? "UTC");
           const { data: existingLead } = await supabase
             .from("activity_feed")
             .select("id")
@@ -715,19 +733,22 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
       }
     }
 
-    setFeedback({ text, positive });
     feedbackAnim.setValue(0);
-    Animated.timing(feedbackAnim, {
-      toValue: 1,
-      duration: 350,
-      useNativeDriver: true,
-    }).start();
+    setFeedback({ text, positive });
+    requestAnimationFrame(() => {
+      Animated.timing(feedbackAnim, {
+        toValue: 1,
+        duration: 350,
+        useNativeDriver: true,
+      }).start();
+    });
   };
 
   // ── Photo upload ──────────────────────────────────────────────────────────
 
   const uploadPhotoInBackground = useCallback(
     (activityType: ActivityId, photo: PickedPhoto) => {
+      console.log("[uploadPhotoInBackground] called", { activityType, hasPhoto: !!photo });
       if (!userId || !packRun) return;
       const { packId } = packRun;
       setPhotos((prev) => {
@@ -735,12 +756,23 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
         delete next[activityType];
         return next;
       });
+      console.log("[uploadPhotoInBackground] starting uploadPhoto");
       uploadPhoto(userId, photo)
-        .then((path) => {
+        .then((storagePath) => {
+          console.log("[uploadPhotoInBackground] uploadPhoto done", { storagePath });
           analytics.photoAdded(activityType, packId);
-          return attachPhotoToLatestFeedEntry(userId, packId, activityType, path);
+          console.log("[uploadPhotoInBackground] calling attach", {
+            userId,
+            packId,
+            activityType,
+            storagePath,
+          });
+          return attachPhotoToLatestFeedEntry(userId, packId, activityType, storagePath).then(() => {
+            console.log("[uploadPhotoInBackground] attach returned");
+          });
         })
         .catch((err: unknown) => {
+          console.error("[LogSheet] photo upload failed:", err);
           analytics.photoUploadFailed(err instanceof Error ? err.message : "unknown");
           Alert.alert("Upload failed", "Your activity was saved but the photo couldn't be uploaded.");
         });
@@ -759,8 +791,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     setWorkoutSaving(true);
     Vibration.vibrate(40);
 
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     const newWorkoutCount = currentCount + 1;
 
     if (packRun) {
@@ -793,10 +823,10 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     }
 
     // Optimistically add a log entry for the expanded history
-    setWorkoutLogs((prev) => [...prev, { logged_at: now.toISOString(), entry_method: "manual" }]);
+    setWorkoutLogs((prev) => [...prev, { logged_at: new Date().toISOString(), entry_method: "manual" }]);
 
     try {
-      await syncManualActivityToDailyScores(userId, "workout", 1, today);
+      await syncManualActivityToDailyScores(userId, "workout", 1);
       if (photos.workout) uploadPhotoInBackground("workout", photos.workout);
       invalidateLogActivitySheetCache();
       bumpLogVersion();
@@ -830,9 +860,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     setManualStepsSaving(true);
     Vibration.vibrate(40);
 
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-
     const prevCount = localScore?.steps_count ?? 0;
     const newCount = prevCount + delta;
     const wasAchieved = localScore?.steps_achieved ?? false;
@@ -856,7 +883,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     setHasManualSteps(true);
 
     try {
-      await syncManualActivityToDailyScores(userId, "steps", delta, today);
+      await syncManualActivityToDailyScores(userId, "steps", delta);
       if (photos.steps) uploadPhotoInBackground("steps", photos.steps);
       invalidateLogActivitySheetCache();
       bumpLogVersion();
@@ -874,9 +901,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     if (!userId) return;
     setManualCalSaving(true);
     Vibration.vibrate(40);
-
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 
     const prevCount = localScore?.calories_count ?? 0;
     const newCount = prevCount + delta;
@@ -901,7 +925,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     setHasManualCalories(true);
 
     try {
-      await syncManualActivityToDailyScores(userId, "calories", delta, today);
+      await syncManualActivityToDailyScores(userId, "calories", delta);
       if (photos.calories) uploadPhotoInBackground("calories", photos.calories);
       invalidateLogActivitySheetCache();
       bumpLogVersion();
@@ -1023,11 +1047,15 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
 
   const stepsAchieved = localScore?.steps_achieved ?? false;
   const calAchieved = localScore?.calories_achieved ?? false;
-  const stepsBarPct = hkAuthorized && stepTarget > 0 && stepsToday !== null
-    ? (`${Math.round(Math.min(1, stepsToday / stepTarget) * 100)}%` as `${number}%`)
+  // Prefer the DB-backed localScore count (includes manual entries) over the raw
+  // HealthKit value, which never reflects manual additions.
+  const stepsDisplay: number | null = localScore?.steps_count ?? stepsToday;
+  const calDisplay: number | null = localScore?.calories_count ?? caloriesToday;
+  const stepsBarPct = hkAuthorized && stepTarget > 0 && stepsDisplay !== null
+    ? (`${Math.round(Math.min(1, stepsDisplay / stepTarget) * 100)}%` as `${number}%`)
     : "0%";
-  const calBarPct = hkAuthorized && calorieTarget > 0 && caloriesToday !== null
-    ? (`${Math.round(Math.min(1, caloriesToday / calorieTarget) * 100)}%` as `${number}%`)
+  const calBarPct = hkAuthorized && calorieTarget > 0 && calDisplay !== null
+    ? (`${Math.round(Math.min(1, calDisplay / calorieTarget) * 100)}%` as `${number}%`)
     : "0%";
 
   // ── Row right-side content helpers ────────────────────────────────────────
@@ -1054,7 +1082,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
           {hasManual && <ManualBadge />}
           {achieved && <Text style={s.rowCheck}>✓</Text>}
         </View>
-        <Text style={s.rowCaption}>Synced from Apple Health</Text>
+        <HealthSourceBadge style={s.rowCaption} />
       </View>
     );
   }
@@ -1097,7 +1125,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                 {/* ── STEPS ───────────────────────────────────────────── */}
                 <ActivityRow
                   label="Steps"
-                  rightContent={hkRowRight(stepsToday, stepTarget, "steps", stepsAchieved, hasManualSteps)}
+                  rightContent={hkRowRight(stepsDisplay, stepTarget, "steps", stepsAchieved, hasManualSteps)}
                   showChevron={hkAvailable && hkAuthorized}
                   isExpanded={expandedId === "steps"}
                   onPress={() => {
@@ -1110,7 +1138,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                   <View style={ar.barTrack}>
                     <View style={[ar.barFill, { width: stepsBarPct, backgroundColor: stepsAchieved ? C.success : C.accent }]} />
                   </View>
-                  <Text style={ar.caption}>♥ Synced from Apple Health</Text>
+                  <HealthSourceBadge style={ar.caption} />
                   {/* Manual entry */}
                   <View style={ar.inputRow}>
                     <TextInput
@@ -1215,7 +1243,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                 {/* ── ACTIVE CALORIES ─────────────────────────────────── */}
                 <ActivityRow
                   label="Active Calories"
-                  rightContent={hkRowRight(caloriesToday, calorieTarget, "cal", calAchieved, hasManualCalories)}
+                  rightContent={hkRowRight(calDisplay, calorieTarget, "cal", calAchieved, hasManualCalories)}
                   showChevron={hkAvailable && hkAuthorized}
                   isExpanded={expandedId === "calories"}
                   onPress={() => {
@@ -1227,7 +1255,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                   <View style={ar.barTrack}>
                     <View style={[ar.barFill, { width: calBarPct, backgroundColor: calAchieved ? C.success : C.accent }]} />
                   </View>
-                  <Text style={ar.caption}>♥ Synced from Apple Health</Text>
+                  <HealthSourceBadge style={ar.caption} />
                   <View style={ar.inputRow}>
                     <TextInput
                       style={ar.input}

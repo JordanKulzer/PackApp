@@ -6,6 +6,7 @@ import {
   getTodayActiveCalories,
   isHealthKitAvailable,
 } from "../lib/healthkit";
+import { packToday, packTodayStartUTC } from "../lib/packDates";
 
 export interface LogEntry {
   amount_oz: number;
@@ -43,7 +44,7 @@ export interface LogActivitySheetData {
   hkAuthorized: boolean;
   stepsToday: number | null;
   caloriesToday: number | null;
-  packRun: { runId: string; packId: string } | null;
+  packRun: { runId: string; packId: string; packTimezone: string } | null;
   localScore: DailyScoreSnapshot | null;
   localWeeklyPoints: number;
 }
@@ -85,9 +86,9 @@ export function useLogActivitySheetData(
     setError(null);
 
     async function load(): Promise<LogActivitySheetData> {
-      const n = new Date();
-      const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
       const hkAvailable = Platform.OS === "ios" && isHealthKitAvailable();
+      // Device-local today for water_logs display (water is logged with device-local date)
+      const deviceToday = new Intl.DateTimeFormat("en-CA").format(new Date());
 
       // Round 1: all independent sources in parallel, including HealthKit reads
       const [logsResult, memberResult, userResult, hkValues] = await Promise.all([
@@ -95,12 +96,12 @@ export function useLogActivitySheetData(
           .from("water_logs")
           .select("amount_oz, logged_at")
           .eq("user_id", userId!)
-          .eq("log_date", today)
+          .eq("log_date", deviceToday)
           .order("logged_at", { ascending: false }),
         supabase
           .from("pack_members")
           .select(
-            "pack_id, packs(water_target_oz, water_enabled, step_target, steps_enabled, calorie_target, calories_enabled)",
+            "pack_id, packs(water_target_oz, water_enabled, step_target, steps_enabled, calorie_target, calories_enabled, timezone)",
           )
           .eq("user_id", userId!)
           .eq("is_active", true)
@@ -128,6 +129,7 @@ export function useLogActivitySheetData(
           steps_enabled: boolean;
           calorie_target: number;
           calories_enabled: boolean;
+          timezone: string;
         } | null;
       } | null;
 
@@ -143,6 +145,10 @@ export function useLogActivitySheetData(
       const caloriesToday = hkAvailable && hkAuthorized ? calsRaw : null;
 
       const packId = member?.pack_id ?? null;
+      const packTimezone: string = p?.timezone ?? "UTC";
+      // Compute "today" in the pack's timezone for score_date queries
+      const today = packToday(packTimezone);
+
       if (!packId) {
         return {
           entries, workoutLogs: [], totalOz, waterTarget, stepTarget, calorieTarget,
@@ -167,8 +173,7 @@ export function useLogActivitySheetData(
         };
       }
 
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
+      const todayStart = packTodayStartUTC(packTimezone);
 
       // Round 3: daily score rows + today's workout feed entries in parallel
       const [scoreResult, weeklyResult, workoutFeedResult] = await Promise.all([
@@ -208,7 +213,7 @@ export function useLogActivitySheetData(
       return {
         entries, workoutLogs, totalOz, waterTarget, stepTarget, calorieTarget,
         hkAuthorized, stepsToday, caloriesToday,
-        packRun: { runId: run.id, packId },
+        packRun: { runId: run.id, packId, packTimezone },
         localScore,
         localWeeklyPoints,
       };

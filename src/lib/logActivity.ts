@@ -7,22 +7,20 @@ import { POINTS, WORKOUT_MAX_DAILY, workoutPoints, getStreakMultiplier } from ".
 import { computeStreakForRun } from "./computeStreak";
 import { notifyPackMembers } from "./notifications";
 import { detectAndSendThreatNotifications } from "./threatNotifications";
+import { packToday, packTodayStartUTC } from "./packDates";
 
 export type ManualActivityType = "steps" | "workout" | "calories";
 
 // Syncs a manual activity to daily_scores for every active pack the user belongs to.
 //   delta: amount to ADD for steps/calories; pass 1 for workout (binary achieved)
-//   today: YYYY-MM-DD
 //
-// Points rules (matches HealthKit sync behavior):
-//   - goal threshold crossed → award points once per day
-//   - overflow above threshold is stored but no extra points
-//   - streak multiplier already stored in daily_scores.streak_multiplier
+// "today" is computed per-pack using the pack's stored IANA timezone so that a
+// user at 11:30pm who just tipped into a new UTC day still gets credit for the
+// correct local day in their pack.
 export async function syncManualActivityToDailyScores(
   userId: string,
   activityType: ManualActivityType,
   delta: number,
-  today: string,
 ): Promise<void> {
   try {
     const { data: memberships } = await supabase
@@ -37,7 +35,7 @@ export async function syncManualActivityToDailyScores(
       const { data: pack } = await supabase
         .from("packs")
         .select(
-          "id, steps_enabled, workouts_enabled, calories_enabled, step_target, calorie_target",
+          "id, steps_enabled, workouts_enabled, calories_enabled, step_target, calorie_target, timezone",
         )
         .eq("id", pack_id)
         .maybeSingle();
@@ -50,6 +48,10 @@ export async function syncManualActivityToDailyScores(
         (activityType === "calories" && pack.calories_enabled);
 
       if (!enabled) continue;
+
+      // Compute "today" in this pack's timezone
+      const packTz: string = pack.timezone ?? "UTC";
+      const today = packToday(packTz);
 
       const { data: run } = await supabase
         .from("runs")
@@ -103,7 +105,7 @@ export async function syncManualActivityToDailyScores(
       }
 
       const anyAchieved = steps_achieved || workout_achieved || calories_achieved || water_achieved;
-      const streakDays = await computeStreakForRun(userId, run.id, today, anyAchieved);
+      const streakDays = await computeStreakForRun(userId, run.id, today, anyAchieved, packTz);
       const multiplier = getStreakMultiplier(streakDays);
 
       const newTotalPoints = Math.round(
@@ -169,8 +171,7 @@ export async function syncManualActivityToDailyScores(
           activityType === "workout" ? newWorkoutCount :
                                        newCaloriesCount;
 
-        const todayStart = new Date();
-        todayStart.setHours(0, 0, 0, 0);
+        const todayStart = packTodayStartUTC(packTz);
 
         // Workouts: allow up to WORKOUT_MAX_DAILY feed entries per day (one per workout).
         // All other activities: one feed entry per day (only on first achievement).

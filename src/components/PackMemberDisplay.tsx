@@ -1,5 +1,5 @@
 import React from "react";
-import { View, Text, StyleSheet, Animated } from "react-native";
+import { View, Text, StyleSheet, Animated, Image } from "react-native";
 import Svg, { Circle } from "react-native-svg";
 import { colors } from "../theme/colors";
 
@@ -53,6 +53,7 @@ interface PackMemberDisplayProps {
   strokeWidth: number;
   animValue?: Animated.Value;   // if provided → animated arc; else static
   showName?: boolean;           // default true; set false for compact strip rings
+  avatarUrl?: string | null;
 }
 
 // Dim color for the initial letter when the member has no points yet.
@@ -76,6 +77,7 @@ export function PackMemberDisplay({
   strokeWidth,
   animValue,
   showName = true,
+  avatarUrl,
 }: PackMemberDisplayProps) {
   const ringColor = getRingColor(userId, currentUserId, leaderId);
   const nameColor = getNameColor(userId, currentUserId);
@@ -150,14 +152,25 @@ export function PackMemberDisplay({
             )
           )}
         </Svg>
-        <Text
-          style={[
-            s.initial,
-            { fontSize: initialFontSize, color: hasPts ? ringColor : RING_EMPTY_COLOR },
-          ]}
-        >
-          {initial}
-        </Text>
+        {avatarUrl ? (
+          <Image
+            source={{ uri: avatarUrl }}
+            style={{
+              width: size - strokeWidth * 2,
+              height: size - strokeWidth * 2,
+              borderRadius: (size - strokeWidth * 2) / 2,
+            }}
+          />
+        ) : (
+          <Text
+            style={[
+              s.initial,
+              { fontSize: initialFontSize, color: hasPts ? ringColor : RING_EMPTY_COLOR },
+            ]}
+          >
+            {initial}
+          </Text>
+        )}
       </View>
 
       {/* Rank badge — top 3 only */}

@@ -45,17 +45,11 @@ export function rankWithTiebreakers<T extends RankedEntry>(
     const prevResult = i > 0 ? result[i - 1] : null;
     const next = i < sorted.length - 1 ? sorted[i + 1] : null;
 
-    // Genuine tie = same on all three tiebreaker fields
-    const tiedWithPrev =
-      !!prevRaw &&
-      prevRaw.weekly_points === member.weekly_points &&
-      (prevRaw.streak_days ?? 0) === (member.streak_days ?? 0) &&
-      (prevRaw.updated_at ?? null) === (member.updated_at ?? null);
+    // Dense rank by weekly_points only — same points = same rank regardless of streak/time.
+    const tiedWithPrevByPoints = !!prevRaw && prevRaw.weekly_points === member.weekly_points;
+    const rank = tiedWithPrevByPoints ? prevResult!.rank : i + 1;
 
-    // Competition ranking: share rank on genuine ties, skip on tiebreaker-resolved
-    const rank = tiedWithPrev ? prevResult!.rank : i + 1;
-
-    // Why do I beat the next same-pts person?
+    // Why am I positioned before the next same-pts person? (streak/time determines display order)
     let tiebreaker: TiebreakerReason = null;
     if (next && next.weekly_points === member.weekly_points) {
       const ms = member.streak_days ?? 0, ns = next.streak_days ?? 0;
@@ -66,13 +60,8 @@ export function rankWithTiebreakers<T extends RankedEntry>(
       }
     }
 
-    const tiedWithNext =
-      !!next &&
-      next.weekly_points === member.weekly_points &&
-      (next.streak_days ?? 0) === (member.streak_days ?? 0) &&
-      (next.updated_at ?? null) === (member.updated_at ?? null);
-
-    result.push({ ...member, rank, tiebreaker, isTied: tiedWithPrev || tiedWithNext });
+    const tiedWithNextByPoints = !!next && next.weekly_points === member.weekly_points;
+    result.push({ ...member, rank, tiebreaker, isTied: tiedWithPrevByPoints || tiedWithNextByPoints });
   }
 
   return result;
@@ -147,7 +136,7 @@ export function buildGapLine(
   if (myIndex < 0) return null;
 
   const me = ranked[myIndex];
-  const todaySuffix = todayPts > 0 ? ` · +${todayPts} today` : " · no points yet";
+  const todaySuffix = todayPts > 0 ? ` · +${todayPts} today` : " · no points today";
 
   // Solo pack
   if (ranked.length === 1) return todayPts > 0 ? `+${todayPts} pts today` : null;

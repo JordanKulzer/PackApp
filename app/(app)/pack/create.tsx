@@ -20,6 +20,7 @@ import { useIsPro } from "../../../src/hooks/useIsPro";
 import { analytics } from "../../../src/lib/analytics";
 import { colors } from "../../../src/theme/colors";
 import { POINTS } from "../../../src/lib/scoring";
+import { weekStartInPackTz, weekEndInPackTz, getDeviceTimezone } from "../../../src/lib/packDates";
 
 function generateInviteCode(): string {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -107,22 +108,21 @@ export default function CreatePack() {
         return;
       }
 
-      // Compute run window dates
-      const today = new Date();
-      let runStart: Date;
-      let runEnd: Date;
+      const packTz = getDeviceTimezone();
+
+      // Compute run window dates in the pack's timezone
+      let runStartDate: string;
+      let runEndDate: string;
 
       if (window === "monthly") {
-        runStart = new Date(today.getFullYear(), today.getMonth(), 1);
-        runEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        const now = new Intl.DateTimeFormat("en-CA", { timeZone: packTz }).format(new Date());
+        const [year, month] = now.split("-").map(Number);
+        const lastDay = new Date(year, month, 0).getDate();
+        runStartDate = `${year}-${String(month).padStart(2, "0")}-01`;
+        runEndDate = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
       } else {
-        const dayOfWeek = today.getDay();
-        runStart = new Date(today);
-        runStart.setDate(today.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1));
-        runStart.setHours(0, 0, 0, 0);
-        runEnd = new Date(runStart);
-        runEnd.setDate(runStart.getDate() + 6);
-        runEnd.setHours(23, 59, 59, 999);
+        runStartDate = weekStartInPackTz(packTz);
+        runEndDate = weekEndInPackTz(packTz);
       }
 
       // Single atomic RPC: creates pack + pack_member + run in one transaction.
@@ -131,6 +131,7 @@ export default function CreatePack() {
         pack_name: name.trim(),
         pack_invite_code: generateInviteCode(),
         pack_window: window,
+        pack_timezone: packTz,
         pack_steps_enabled: stepsEnabled,
         pack_workouts_enabled: workoutsEnabled,
         pack_calories_enabled: caloriesEnabled,
@@ -138,8 +139,8 @@ export default function CreatePack() {
         pack_step_target: parseInt(stepTarget, 10) || 10000,
         pack_calorie_target: parseInt(calorieTarget, 10) || 500,
         pack_water_target_oz: parseInt(waterTarget, 10) || 64,
-        run_start_date: runStart.toISOString().split("T")[0],
-        run_end_date: runEnd.toISOString().split("T")[0],
+        run_start_date: runStartDate,
+        run_end_date: runEndDate,
       });
 
       if (error) throw error;

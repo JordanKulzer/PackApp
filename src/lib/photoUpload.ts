@@ -1,5 +1,7 @@
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
+import * as FileSystem from "expo-file-system/legacy";
+import { decode as base64Decode } from "base64-arraybuffer";
 import { supabase } from "./supabase";
 import { analytics } from "./analytics";
 
@@ -93,19 +95,31 @@ export async function uploadPhoto(
   const compressedUri = await compressPhoto(photo);
   const path = uniquePath(userId);
 
-  const response = await fetch(compressedUri);
-  const blob = await response.blob();
+  const base64 = await FileSystem.readAsStringAsync(compressedUri, {
+    encoding: "base64",
+  });
+  const arrayBuffer = base64Decode(base64);
 
-  if (blob.size > MAX_BYTES) {
+  if (arrayBuffer.byteLength > MAX_BYTES) {
     throw new Error("Photo exceeds 5 MB — please choose a smaller image.");
   }
 
-  const arrayBuffer = await blob.arrayBuffer();
   const { error } = await supabase.storage
     .from(BUCKET)
     .upload(path, arrayBuffer, { contentType: "image/jpeg", upsert: false });
 
-  if (error) throw error;
+  if (error) {
+    console.error("[photoUpload] supabase upload error:", {
+      message: error.message,
+      name: error.name,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      statusCode: (error as any)?.statusCode,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      fullError: JSON.stringify(error, Object.getOwnPropertyNames(error)),
+    });
+    throw error;
+  }
+
   return path;
 }
 
@@ -148,6 +162,13 @@ export async function attachPhotoToLatestFeedEntry(
   activityType: string,
   storagePath: string,
 ): Promise<void> {
+  console.log("[attachPhotoToLatestFeedEntry] called", {
+    userId,
+    packId,
+    activityType,
+    storagePath,
+  });
+
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
 
@@ -163,12 +184,111 @@ export async function attachPhotoToLatestFeedEntry(
     .limit(1)
     .maybeSingle();
 
-  if (!entry) return;
+  console.log("[attachPhotoToLatestFeedEntry] feed entry query result", {
+    found: !!entry,
+    entryId: entry?.id,
+  });
 
-  await supabase
+  if (!entry) {
+    console.warn("[attachPhotoToLatestFeedEntry] no matching feed row — photo orphaned", {
+      userId,
+      packId,
+      activityType,
+    });
+    return;
+  }
+
+  const { error: updateError, data: updateData } = await supabase
     .from("activity_feed")
     .update({ photo_url: storagePath })
-    .eq("id", entry.id);
+    .eq("id", entry.id)
+    .select();
+
+  if (updateError) {
+    console.error("[attachPhotoToLatestFeedEntry] update failed", updateError);
+  } else {
+    console.log("[attachPhotoToLatestFeedEntry] update success", {
+      entryId: entry.id,
+      rowsAffected: updateData?.length ?? 0,
+    });
+  }
+}
+
+// ─── Report ───────────────────────────────────────────────────────────────────
+
+// ─── Avatar upload ────────────────────────────────────────────────────────────
+
+const AVATAR_BUCKET = "avatars";
+const AVATAR_SIZE = 400;
+
+export async function pickAvatarFromLibrary(): Promise<PickedPhoto | null> {
+  const granted = await requestLibraryPermission();
+  if (!granted) return null;
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ["images"],
+    allowsEditing: true,
+    aspect: [1, 1],
+    quality: 1,
+  });
+  if (result.canceled || result.assets.length === 0) return null;
+  const asset = result.assets[0];
+  return { uri: asset.uri, width: asset.width, height: asset.height };
+}
+
+export async function takeAvatarPhoto(): Promise<PickedPhoto | null> {
+  const granted = await requestCameraPermission();
+  if (!granted) return null;
+  const result = await ImagePicker.launchCameraAsync({
+    mediaTypes: ["images"],
+    allowsEditing: true,
+    aspect: [1, 1],
+    quality: 1,
+  });
+  if (result.canceled || result.assets.length === 0) return null;
+  const asset = result.assets[0];
+  return { uri: asset.uri, width: asset.width, height: asset.height };
+}
+
+/**
+ * Compress, upload, and return a cache-busted public URL for the user's avatar.
+ * Writes to avatars/{userId}/avatar.jpg with upsert:true.
+ */
+export async function uploadAvatar(userId: string, photo: PickedPhoto): Promise<string> {
+  const compressed = await ImageManipulator.manipulateAsync(
+    photo.uri,
+    [{ resize: { width: AVATAR_SIZE, height: AVATAR_SIZE } }],
+    { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG },
+  );
+
+  const base64 = await FileSystem.readAsStringAsync(compressed.uri, {
+    encoding: "base64",
+  });
+  const arrayBuffer = base64Decode(base64);
+
+  const path = `${userId}/avatar.jpg`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(AVATAR_BUCKET)
+    .upload(path, arrayBuffer, {
+      contentType: "image/jpeg",
+      upsert: true,
+      cacheControl: "3600",
+    });
+
+  if (uploadError) throw new Error(`Avatar upload failed: ${uploadError.message}`);
+
+  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
+  return `${data.publicUrl}?v=${Date.now()}`;
+}
+
+/**
+ * Delete the user's avatar from storage and clears users.avatar_url in the DB.
+ */
+export async function deleteAvatar(userId: string): Promise<void> {
+  const { error } = await supabase.storage
+    .from(AVATAR_BUCKET)
+    .remove([`${userId}/avatar.jpg`]);
+  if (error) throw new Error(`Avatar delete failed: ${error.message}`);
 }
 
 // ─── Report ───────────────────────────────────────────────────────────────────

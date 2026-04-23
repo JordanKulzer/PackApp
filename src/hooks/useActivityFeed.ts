@@ -9,6 +9,7 @@ export interface FeedItem {
   packId: string;
   userId: string;
   displayName: string;
+  avatarUrl: string | null;
   activityType: "steps" | "workout" | "calories" | "water" | "took_lead" | "all_goals";
   value: number;
   pointsEarned: number;
@@ -65,14 +66,16 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
       userIds.length > 0
         ? supabase
             .from("users")
-            .select("id, display_name")
+            .select("id, display_name, avatar_url")
             .in("id", userIds)
-        : Promise.resolve({ data: [] as { id: string; display_name: string }[] }),
+        : Promise.resolve({ data: [] as { id: string; display_name: string; avatar_url: string | null }[] }),
     ]);
 
     const nameMap: Record<string, string> = {};
+    const avatarMap: Record<string, string | null> = {};
     (usersResult.data ?? []).forEach((u) => {
       nameMap[u.id] = u.display_name;
+      avatarMap[u.id] = u.avatar_url ?? null;
     });
 
     // Group reactions by feed_item_id → reaction_type → { count, hasReacted }
@@ -98,6 +101,7 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
       packId: row.pack_id,
       userId: row.user_id,
       displayName: nameMap[row.user_id] ?? "Unknown",
+      avatarUrl: avatarMap[row.user_id] ?? null,
       activityType: row.activity_type as FeedItem["activityType"],
       value: row.value ?? 0,
       pointsEarned: row.points_earned ?? 0,

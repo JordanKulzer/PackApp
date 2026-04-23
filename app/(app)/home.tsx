@@ -46,6 +46,8 @@ interface HomeScore {
   user_id: string;
   display_name: string;
   weekly_points: number; // total accumulated this run — never daily
+  avatar_url?: string | null;
+  rank: number; // dense rank by weekly_points (1,1,3,3 style)
 }
 
 interface HomePackData {
@@ -114,64 +116,109 @@ function MiniRings({
   runEnd: string;
   currentUserId: string | undefined;
 }) {
-  const top3 = scores.slice(0, 3);
-  const rest = scores.slice(3); // ranks 4+
   const maxPoints = maxRunPointsForPeriod(pack, runStart, runEnd);
-  const leaderId = scores[0]?.user_id;
 
-  if (top3.length === 0) return null;
+  // Sort: pts desc, alpha within same-pts groups (deterministic tie order)
+  const sorted = [...scores].sort((a, b) =>
+    b.weekly_points !== a.weekly_points
+      ? b.weekly_points - a.weekly_points
+      : a.display_name.localeCompare(b.display_name),
+  );
 
-  // Podium order: [#2, #1, #3] — mirrors Pack screen layout at smaller scale
-  const podium: Array<{ entry: HomeScore; rank: number } | null> = [
-    top3[1] ? { entry: top3[1], rank: 2 } : null,
-    { entry: top3[0], rank: 1 },
-    top3[2] ? { entry: top3[2], rank: 3 } : null,
-  ];
+  if (sorted.length === 0) return null;
 
-  const stripVisible = rest.slice(0, STRIP_MAX_CARD);
-  const stripMore = rest.length - stripVisible.length;
+  const SIZE_LEADER = 52;
+  const SIZE_FLANK = 38;
+  const SW_LEADER = 5;
+  const SW_FLANK = 4;
+
+  const leaderId = sorted[0].user_id;
+  const memberCount = sorted.length;
+
+  const topPts = sorted[0].weekly_points;
+  const tiedAtTop = sorted.filter(e => e.weekly_points === topPts);
+  const hasSoloLeader = tiedAtTop.length === 1;
+  const secondEntry = hasSoloLeader ? sorted.find(e => e.weekly_points < topPts) ?? null : null;
+  const tiedAtSecond = secondEntry
+    ? sorted.filter(e => e.weekly_points === secondEntry.weekly_points)
+    : [];
+
+  function miniSlot(entry: HomeScore, rank: number, size: number, sw: number, elevated: boolean) {
+    const pct = miniRingPct(entry.weekly_points, maxPoints);
+    return (
+      <View
+        key={entry.user_id}
+        style={[{ width: size + 12, alignItems: "center" }, elevated && miniRingS.elevated]}
+      >
+        <PackMemberDisplay
+          userId={entry.user_id}
+          displayName={entry.display_name}
+          progressPct={pct}
+          rank={rank}
+          currentUserId={currentUserId}
+          leaderId={leaderId}
+          size={size}
+          strokeWidth={sw}
+          avatarUrl={entry.avatar_url}
+        />
+      </View>
+    );
+  }
+
+  // Ranks 4+ strip (only in the normal/non-tied path)
+  const showStrip = hasSoloLeader && tiedAtSecond.length < 2;
+  const stripEntries = showStrip ? sorted.slice(3) : [];
+  const stripVisible = stripEntries.slice(0, STRIP_MAX_CARD);
+  const stripMore = stripEntries.length - stripVisible.length;
 
   return (
     <View style={miniRingS.wrapper}>
-      {/* Podium: [#2] [#1 elevated] [#3] */}
-      <View style={miniRingS.row}>
-        {podium.map((slot, pos) => {
-          if (!slot) {
-            return <View key={`ph-${pos}`} style={{ width: 56 }} />;
-          }
-          const { entry, rank } = slot;
-          const isFirst = rank === 1;
-          const size = isFirst ? 52 : 38;
-          const sw = isFirst ? 5 : 4;
-          const pct = miniRingPct(entry.weekly_points, maxPoints);
-          return (
-            <View
-              key={entry.user_id}
-              style={[
-                { width: size + 12, alignItems: "center" },
-                isFirst && miniRingS.elevated,
-              ]}
-            >
-              <PackMemberDisplay
-                userId={entry.user_id}
-                displayName={entry.display_name}
-                progressPct={pct}
-                rank={rank}
-                currentUserId={currentUserId}
-                leaderId={leaderId}
-                size={size}
-                strokeWidth={sw}
-              />
-            </View>
-          );
-        })}
-      </View>
+      {/* 1 scoring member: centered */}
+      {memberCount === 1 && (
+        <View style={miniRingS.row}>
+          {miniSlot(sorted[0], 1, SIZE_LEADER, SW_LEADER, false)}
+        </View>
+      )}
 
-      {/* Strip: ranks 4+ as a compact horizontal row */}
+      {/* Top is tied: equal rings (up to 3) */}
+      {memberCount > 1 && tiedAtTop.length >= 2 && (
+        <View style={miniRingS.row}>
+          {tiedAtTop.slice(0, 3).map((entry) =>
+            miniSlot(entry, 1, SIZE_LEADER, SW_LEADER, false),
+          )}
+        </View>
+      )}
+
+      {/* 2 members, clear leader: [#2 left] [#1] */}
+      {memberCount === 2 && hasSoloLeader && (
+        <View style={miniRingS.row}>
+          {miniSlot(sorted[1], 2, SIZE_FLANK, SW_FLANK, false)}
+          {miniSlot(sorted[0], 1, SIZE_LEADER, SW_LEADER, true)}
+        </View>
+      )}
+
+      {/* 3+ members, clear #1 + tie at #2: [tied-#2] [#1] [tied-#2] */}
+      {memberCount >= 3 && hasSoloLeader && tiedAtSecond.length >= 2 && (
+        <View style={miniRingS.row}>
+          {miniSlot(tiedAtSecond[0], 2, SIZE_FLANK, SW_FLANK, false)}
+          {miniSlot(sorted[0], 1, SIZE_LEADER, SW_LEADER, true)}
+          {miniSlot(tiedAtSecond[1], 2, SIZE_FLANK, SW_FLANK, false)}
+        </View>
+      )}
+
+      {/* 3+ members, normal: [#2] [#1 elevated] [#3] */}
+      {memberCount >= 3 && hasSoloLeader && tiedAtSecond.length < 2 && (
+        <View style={miniRingS.row}>
+          {sorted[1] && miniSlot(sorted[1], 2, SIZE_FLANK, SW_FLANK, false)}
+          {miniSlot(sorted[0], 1, SIZE_LEADER, SW_LEADER, true)}
+          {sorted[2] && miniSlot(sorted[2], 3, SIZE_FLANK, SW_FLANK, false)}
+        </View>
+      )}
+
+      {/* Strip: ranks 4+ in normal layout only */}
       {stripVisible.length > 0 && (
         <View style={miniRingS.strip}>
           {stripVisible.map((entry, i) => {
-            const rank = i + 4;
             const pct = miniRingPct(entry.weekly_points, maxPoints);
             return (
               <PackMemberDisplay
@@ -179,12 +226,13 @@ function MiniRings({
                 userId={entry.user_id}
                 displayName={entry.display_name}
                 progressPct={pct}
-                rank={rank}
+                rank={i + 4}
                 currentUserId={currentUserId}
                 leaderId={leaderId}
                 size={STRIP_SIZE_CARD}
                 strokeWidth={STRIP_SW_CARD}
                 showName={false}
+                avatarUrl={entry.avatar_url}
               />
             );
           })}
@@ -406,15 +454,30 @@ function DarkPackCard({
     if (!myOptimistic || !currentUserId) return rawScores;
     const myIdx = rawScores.findIndex((s) => s.user_id === currentUserId);
     if (myIdx < 0) return rawScores;
-    const patched = rawScores.map((s, i) =>
-      i === myIdx ? { ...s, weekly_points: myOptimistic.weekly_points } : s,
-    );
-    return patched.sort((a, b) => b.weekly_points - a.weekly_points);
+    const patched = rawScores
+      .map((s, i) => i === myIdx ? { ...s, weekly_points: myOptimistic.weekly_points } : s)
+      .sort((a, b) => b.weekly_points - a.weekly_points);
+    // Recompute dense ranks after re-sort
+    let lastPts = -1, lastRank = 0;
+    return patched.map((s, i) => {
+      if (s.weekly_points !== lastPts) { lastRank = i + 1; lastPts = s.weekly_points; }
+      return { ...s, rank: lastRank };
+    });
   })();
 
   const myIndex = scores.findIndex((s) => s.user_id === currentUserId);
   const myScore = myIndex >= 0 ? scores[myIndex] : null;
-  const statusLine = buildRankStatus(scores, currentUserId);
+
+  // When the current user is leading and no one else has logged yet, show
+  // context-appropriate copy rather than the generic "Leading by N pts".
+  const onlyTopHasScored =
+    scores.length > 1 &&
+    (scores[0]?.weekly_points ?? 0) > 0 &&
+    scores.slice(1).every((s) => s.weekly_points === 0);
+  const statusLine =
+    onlyTopHasScored && scores[0]?.user_id === currentUserId
+      ? "You're leading · Others haven't logged yet"
+      : buildRankStatus(scores, currentUserId);
   const urgency = data
     ? buildUrgencyHint(scores, currentUserId, packDailyMax(pack), data.runEnd)
     : null;
@@ -582,59 +645,90 @@ export default function Home() {
 
     await Promise.all(
       packList.map(async (pack) => {
-        // Fetch the active run with date range (needed for weekly max denominator)
-        const { data: run } = await supabase
-          .from("runs")
-          .select("id, start_date, end_date")
-          .eq("pack_id", pack.id)
-          .eq("status", "active")
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
+        // Fetch active run + all active pack members in parallel
+        const [runResult, membersResult] = await Promise.all([
+          supabase
+            .from("runs")
+            .select("id, start_date, end_date")
+            .eq("pack_id", pack.id)
+            .eq("status", "active")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+          supabase
+            .from("pack_members")
+            .select("user_id")
+            .eq("pack_id", pack.id)
+            .eq("is_active", true),
+        ]);
 
-        if (!run) return;
+        if (!runResult.data) return;
+        const run = runResult.data;
+        const memberIds = (membersResult.data ?? []).map((m) => m.user_id);
+        if (memberIds.length === 0) return;
 
-        // Weekly totals: all daily_scores for this run, no date filter
-        const { data: allScores } = await supabase
-          .from("daily_scores")
-          .select("user_id, total_points")
-          .eq("run_id", run.id);
+        // Fetch weekly scores + user info for all members in parallel
+        const [scoresResult, usersResult] = await Promise.all([
+          supabase
+            .from("daily_scores")
+            .select("user_id, total_points")
+            .eq("run_id", run.id),
+          supabase
+            .from("users")
+            .select("id, display_name, avatar_url")
+            .in("id", memberIds),
+        ]);
 
-        if (!allScores || allScores.length === 0) return;
-
-        // Aggregate per user across all run dates
+        // Aggregate weekly totals per user across all run dates
         const totals: Record<string, number> = {};
-        allScores.forEach((row) => {
+        (scoresResult.data ?? []).forEach((row) => {
           totals[row.user_id] = (totals[row.user_id] ?? 0) + row.total_points;
         });
 
-        // Resolve display names
-        const userIds = Object.keys(totals);
+        // Build name/avatar maps
         const nameMap: Record<string, string> = {};
-        const { data: userRows, error: usersError } = await supabase
-          .from("users")
-          .select("id, display_name")
-          .in("id", userIds);
-
-        if (usersError) {
+        const avatarMap: Record<string, string | null> = {};
+        if (usersResult.error) {
           console.warn(
             "[fetchScores] Could not read display names — check RLS policy on users table:",
-            usersError,
+            usersResult.error,
           );
-        } else if (userRows) {
-          userRows.forEach((u) => {
+        } else {
+          (usersResult.data ?? []).forEach((u) => {
             if (u.display_name) nameMap[u.id] = u.display_name;
+            avatarMap[u.id] = u.avatar_url ?? null;
           });
         }
 
-        const sorted: HomeScore[] = Object.entries(totals)
-          .map(([user_id, weekly_points]) => ({ user_id, weekly_points }))
-          .sort((a, b) => b.weekly_points - a.weekly_points)
-          .map((entry, i) => ({
+        // All active members, 0 pts for those who haven't logged yet
+        const unsorted = memberIds.map((uid) => ({
+          user_id: uid,
+          weekly_points: totals[uid] ?? 0,
+        }));
+
+        // Sort: weekly_points DESC, display_name ASC (deterministic tie order)
+        unsorted.sort((a, b) => {
+          const ptsDiff = b.weekly_points - a.weekly_points;
+          if (ptsDiff !== 0) return ptsDiff;
+          return (nameMap[a.user_id] ?? "").localeCompare(nameMap[b.user_id] ?? "");
+        });
+
+        // Dense rank by weekly_points (1,1,3,3 style)
+        let lastPts = -1;
+        let lastRank = 0;
+        const sorted: HomeScore[] = unsorted.map((entry, i) => {
+          if (entry.weekly_points !== lastPts) {
+            lastRank = i + 1;
+            lastPts = entry.weekly_points;
+          }
+          return {
             user_id: entry.user_id,
-            display_name: formatName(nameMap[entry.user_id], i + 1),
+            display_name: formatName(nameMap[entry.user_id], lastRank),
             weekly_points: entry.weekly_points,
-          }));
+            avatar_url: avatarMap[entry.user_id] ?? null,
+            rank: lastRank,
+          };
+        });
 
         result[pack.id] = {
           scores: sorted,

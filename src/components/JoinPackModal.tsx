@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import { useAuthStore } from "../stores/authStore";
 import { supabase } from "../lib/supabase";
+import { packToday } from "../lib/packDates";
 import { ensureUserProfile } from "../lib/ensureUserProfile";
 import { colors } from "../theme/colors";
 
@@ -65,7 +66,7 @@ export function JoinPackModal({ visible, onClose, onJoined }: JoinPackModalProps
       // Step 1: Find pack by invite code
       const { data: pack, error: packError } = await supabase
         .from("packs")
-        .select("id, name, is_active")
+        .select("id, name, is_active, timezone")
         .eq("invite_code", normalizedCode)
         .single();
 
@@ -137,8 +138,7 @@ export function JoinPackModal({ visible, onClose, onJoined }: JoinPackModalProps
       console.log("[JoinPackModal] Active run:", { activeRun, runError });
 
       if (activeRun) {
-        const now = new Date();
-        const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        const today = packToday((pack as { timezone?: string }).timezone ?? "UTC");
 
         const { error: scoreError } = await supabase.from("daily_scores").upsert(
           {

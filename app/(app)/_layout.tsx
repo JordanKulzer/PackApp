@@ -1,16 +1,19 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   View,
   TouchableOpacity,
   Text,
   StyleSheet,
   Platform,
+  AppState,
 } from "react-native";
 import { Redirect, Tabs } from "expo-router";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuthStore } from "../../src/stores/authStore";
 import { LogSheet } from "../../src/components/LogSheet";
+import { Toast } from "../../src/components/Toast";
+import { rolloverExpiredRuns } from "../../src/lib/runRollover";
 
 function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const [logSheetVisible, setLogSheetVisible] = useState(false);
@@ -98,22 +101,47 @@ function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
 
 export default function AppLayout() {
   const session = useAuthStore((s) => s.session);
+  const user = useAuthStore((s) => s.user);
+  const appState = useRef(AppState.currentState);
+
+  useEffect(() => {
+    if (!user?.id) return;
+
+    // Run on mount (app open)
+    rolloverExpiredRuns(user.id).catch((e) =>
+      console.warn("[runRollover] launch:", e),
+    );
+
+    const sub = AppState.addEventListener("change", (next) => {
+      if (appState.current.match(/inactive|background/) && next === "active") {
+        rolloverExpiredRuns(user.id!).catch((e) =>
+          console.warn("[runRollover] foreground:", e),
+        );
+      }
+      appState.current = next;
+    });
+
+    return () => sub.remove();
+  }, [user?.id]);
 
   if (!session) {
     return <Redirect href="/(auth)/sign-in" />;
   }
 
   return (
-    <Tabs
-      tabBar={(props) => <CustomTabBar {...props} />}
-      screenOptions={{ headerShown: false }}
-    >
-      <Tabs.Screen name="home" options={{ title: "Home" }} />
-      {/* Center slot — hidden from navigation, just a spacer for the tab bar */}
-      <Tabs.Screen name="water" options={{ href: null, title: "" }} />
-      <Tabs.Screen name="profile" options={{ title: "Profile" }} />
-      <Tabs.Screen name="pack" options={{ href: null }} />
-    </Tabs>
+    <>
+      <Tabs
+        tabBar={(props) => <CustomTabBar {...props} />}
+        screenOptions={{ headerShown: false }}
+      >
+        <Tabs.Screen name="home" options={{ title: "Home" }} />
+        {/* Center slot — hidden from navigation, just a spacer for the tab bar */}
+        <Tabs.Screen name="water" options={{ href: null, title: "" }} />
+        <Tabs.Screen name="profile" options={{ title: "Profile" }} />
+        <Tabs.Screen name="pack" options={{ href: null }} />
+      </Tabs>
+      <Toast />
+    </>
   );
 }
 
