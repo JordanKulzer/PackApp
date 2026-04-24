@@ -14,6 +14,7 @@ import { useAuthStore } from "../../src/stores/authStore";
 import { LogSheet } from "../../src/components/LogSheet";
 import { Toast } from "../../src/components/Toast";
 import { rolloverExpiredRuns } from "../../src/lib/runRollover";
+import { useCurrentUser } from "../../src/context/CurrentUserContext";
 
 function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const [logSheetVisible, setLogSheetVisible] = useState(false);
@@ -102,6 +103,7 @@ function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
 export default function AppLayout() {
   const session = useAuthStore((s) => s.session);
   const user = useAuthStore((s) => s.user);
+  const { user: currentUser, loading: ctxLoading } = useCurrentUser();
   const appState = useRef(AppState.currentState);
 
   useEffect(() => {
@@ -126,6 +128,14 @@ export default function AppLayout() {
 
   if (!session) {
     return <Redirect href="/(auth)/sign-in" />;
+  }
+
+  if (ctxLoading) {
+    return null;
+  }
+
+  if (currentUser && !currentUser.hasCompletedOnboarding) {
+    return <Redirect href="/(onboarding)/welcome" />;
   }
 
   return (

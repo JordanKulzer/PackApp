@@ -8,6 +8,7 @@ import {
   addNotificationResponseListener,
 } from "../src/lib/notifications";
 import { initAnalytics } from "../src/lib/analytics";
+import { CurrentUserProvider } from "../src/context/CurrentUserContext";
 
 initAnalytics();
 
@@ -71,8 +72,10 @@ export default function RootLayout() {
   }, [session, isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="paywall" options={{ presentation: "modal", gestureEnabled: true }} />
-    </Stack>
+    <CurrentUserProvider>
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="paywall" options={{ presentation: "modal", gestureEnabled: true }} />
+      </Stack>
+    </CurrentUserProvider>
   );
 }
