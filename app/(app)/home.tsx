@@ -119,7 +119,6 @@ function MiniRings({
   currentUserId: string | undefined;
 }) {
   const { user: currentUser } = useCurrentUser();
-  console.log('[MiniRings] render. currentUser.displayName =', currentUser?.displayName);
   const maxPoints = maxRunPointsForPeriod(pack, runStart, runEnd);
 
   // Sort: pts desc, alpha within same-pts groups (deterministic tie order)

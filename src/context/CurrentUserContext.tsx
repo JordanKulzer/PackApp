@@ -5,7 +5,6 @@ export interface CurrentUserProfile {
   id: string;
   displayName: string;
   avatarUrl: string | null;
-  email: string | null;
 }
 
 interface CurrentUserContextValue {
@@ -21,57 +20,40 @@ export function CurrentUserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  console.log('[Provider] render. user.displayName =', user?.displayName);
-
   const refresh = useCallback(async () => {
-    console.log('[Context] refresh() START');
     const { data: session } = await supabase.auth.getUser();
     if (!session?.user) {
-      console.log('[Context] refresh() no session, setting user to null');
       setUser(null);
       setLoading(false);
       return;
     }
     const { data, error } = await supabase
       .from("users")
-      .select("id, display_name, avatar_url, email")
+      .select("id, display_name, avatar_url")
       .eq("id", session.user.id)
       .single();
     if (error || !data) {
-      console.log('[Context] refresh() ERROR or no data:', error?.message);
       setUser(null);
     } else {
-      console.log('[Context] refresh() DB returned display_name:', data.display_name);
       setUser({
         id: data.id,
         displayName: data.display_name,
         avatarUrl: data.avatar_url,
-        email: data.email,
       });
     }
     setLoading(false);
   }, []);
 
   const applyLocal = useCallback((patch: Partial<CurrentUserProfile>) => {
-    console.log('[Context] applyLocal() patch:', JSON.stringify(patch));
-    setUser((prev) => {
-      const next = prev ? { ...prev, ...patch } : prev;
-      console.log('[Context] applyLocal() new displayName:', next?.displayName);
-      return next;
-    });
+    setUser((prev) => (prev ? { ...prev, ...patch } : prev));
   }, []);
 
   useEffect(() => {
-    console.log('[Provider] MOUNT');
     refresh();
     const { data: sub } = supabase.auth.onAuthStateChange(() => {
-      console.log('[Provider] auth state change, refreshing');
       refresh();
     });
-    return () => {
-      console.log('[Provider] UNMOUNT');
-      sub.subscription.unsubscribe();
-    };
+    return () => sub.subscription.unsubscribe();
   }, [refresh]);
 
   return (

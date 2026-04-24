@@ -339,26 +339,18 @@ export default function Profile() {
   };
 
   const handleSaveName = async (newName: string) => {
-    console.log('[Profile] handleSaveName START, newName =', newName);
     setEditNameVisible(false);
-    if (!user) {
-      console.log('[Profile] handleSaveName ABORT, no user');
-      return;
-    }
+    if (!user) return;
     applyLocal({ displayName: newName });
-    console.log('[Profile] handleSaveName applyLocal called, awaiting DB update');
     const { error } = await supabase
       .from("users")
       .update({ display_name: newName })
       .eq("id", user.id);
     if (error) {
-      console.log('[Profile] handleSaveName DB update FAILED:', error.message);
       await refreshCurrentUser();
       Alert.alert("Error", "Failed to update display name.");
     } else {
-      console.log('[Profile] handleSaveName DB update SUCCESS, calling refreshCurrentUser');
       await refreshCurrentUser();
-      console.log('[Profile] handleSaveName refreshCurrentUser complete');
     }
   };
 
