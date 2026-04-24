@@ -25,6 +25,8 @@ import type { Pack } from "../../src/types/database";
 import { JoinPackModal } from "../../src/components/JoinPackModal";
 import { colors } from "../../src/theme/colors";
 import { analytics } from "../../src/lib/analytics";
+import { useCurrentUser } from "../../src/context/CurrentUserContext";
+import { useRefreshCurrentUserOnFocus } from "../../src/hooks/useRefreshCurrentUserOnFocus";
 
 const C = {
   bg: "#0B0F14",
@@ -116,6 +118,8 @@ function MiniRings({
   runEnd: string;
   currentUserId: string | undefined;
 }) {
+  const { user: currentUser } = useCurrentUser();
+  console.log('[MiniRings] render. currentUser.displayName =', currentUser?.displayName);
   const maxPoints = maxRunPointsForPeriod(pack, runStart, runEnd);
 
   // Sort: pts desc, alpha within same-pts groups (deterministic tie order)
@@ -145,6 +149,9 @@ function MiniRings({
 
   function miniSlot(entry: HomeScore, rank: number, size: number, sw: number, elevated: boolean) {
     const pct = miniRingPct(entry.weekly_points, maxPoints);
+    const isMe = entry.user_id === currentUser?.id;
+    const displayName = isMe && currentUser ? currentUser.displayName : entry.display_name;
+    const avatarUrl = isMe && currentUser ? currentUser.avatarUrl : entry.avatar_url;
     return (
       <View
         key={entry.user_id}
@@ -152,14 +159,14 @@ function MiniRings({
       >
         <PackMemberDisplay
           userId={entry.user_id}
-          displayName={entry.display_name}
+          displayName={displayName}
           progressPct={pct}
           rank={rank}
           currentUserId={currentUserId}
           leaderId={leaderId}
           size={size}
           strokeWidth={sw}
-          avatarUrl={entry.avatar_url}
+          avatarUrl={avatarUrl}
         />
       </View>
     );
@@ -220,11 +227,14 @@ function MiniRings({
         <View style={miniRingS.strip}>
           {stripVisible.map((entry, i) => {
             const pct = miniRingPct(entry.weekly_points, maxPoints);
+            const isMe = entry.user_id === currentUser?.id;
+            const stripName = isMe && currentUser ? currentUser.displayName : entry.display_name;
+            const stripAvatar = isMe && currentUser ? currentUser.avatarUrl : entry.avatar_url;
             return (
               <PackMemberDisplay
                 key={entry.user_id}
                 userId={entry.user_id}
-                displayName={entry.display_name}
+                displayName={stripName}
                 progressPct={pct}
                 rank={i + 4}
                 currentUserId={currentUserId}
@@ -232,7 +242,7 @@ function MiniRings({
                 size={STRIP_SIZE_CARD}
                 strokeWidth={STRIP_SW_CARD}
                 showName={false}
-                avatarUrl={entry.avatar_url}
+                avatarUrl={stripAvatar}
               />
             );
           })}
@@ -612,6 +622,7 @@ const card = StyleSheet.create({
 export default function Home() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
+  useRefreshCurrentUserOnFocus();
   const { packs, isLoading, refetch } = useUserPacks(user?.id ?? null);
   const { isPro, effectivePackLimit } = useIsPro();
   const [refreshing, setRefreshing] = useState(false);

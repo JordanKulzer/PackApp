@@ -33,6 +33,7 @@ import {
 } from "../../../src/components/IntegrationIcons";
 import { supabase } from "../../../src/lib/supabase";
 import type { User } from "../../../src/types/database";
+import { useCurrentUser } from "../../../src/context/CurrentUserContext";
 import {
   pickAvatarFromLibrary,
   takeAvatarPhoto,
@@ -187,6 +188,7 @@ const modal = StyleSheet.create({
 export default function Profile() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
+  const { applyLocal, refresh: refreshCurrentUser, user: currentUser } = useCurrentUser();
   const { signOut } = useAuth();
   const {
     isAuthorized,
@@ -216,7 +218,8 @@ export default function Profile() {
       try {
         const newUrl = await uploadAvatar(user.id, photo);
         await supabase.from("users").update({ avatar_url: newUrl }).eq("id", user.id);
-        setProfile((prev) => (prev ? { ...prev, avatar_url: newUrl } : prev));
+        applyLocal({ avatarUrl: newUrl });
+        await refreshCurrentUser();
         showToast({ message: "Profile photo updated", kind: "success" });
       } catch (e) {
         showToast({ message: (e as Error).message ?? "Upload failed", kind: "error" });
@@ -231,7 +234,8 @@ export default function Profile() {
       try {
         await deleteAvatar(user.id);
         await supabase.from("users").update({ avatar_url: null }).eq("id", user.id);
-        setProfile((prev) => (prev ? { ...prev, avatar_url: null } : prev));
+        applyLocal({ avatarUrl: null });
+        await refreshCurrentUser();
         showToast({ message: "Profile photo removed", kind: "success" });
       } catch (e) {
         showToast({ message: (e as Error).message ?? "Remove failed", kind: "error" });
@@ -335,16 +339,26 @@ export default function Profile() {
   };
 
   const handleSaveName = async (newName: string) => {
+    console.log('[Profile] handleSaveName START, newName =', newName);
     setEditNameVisible(false);
-    if (!user) return;
+    if (!user) {
+      console.log('[Profile] handleSaveName ABORT, no user');
+      return;
+    }
+    applyLocal({ displayName: newName });
+    console.log('[Profile] handleSaveName applyLocal called, awaiting DB update');
     const { error } = await supabase
       .from("users")
       .update({ display_name: newName })
       .eq("id", user.id);
     if (error) {
+      console.log('[Profile] handleSaveName DB update FAILED:', error.message);
+      await refreshCurrentUser();
       Alert.alert("Error", "Failed to update display name.");
     } else {
-      setProfile((prev) => (prev ? { ...prev, display_name: newName } : prev));
+      console.log('[Profile] handleSaveName DB update SUCCESS, calling refreshCurrentUser');
+      await refreshCurrentUser();
+      console.log('[Profile] handleSaveName refreshCurrentUser complete');
     }
   };
 
@@ -404,15 +418,15 @@ export default function Profile() {
             onPress={handleAvatarPress}
             disabled={avatarUploading}
           >
-            {profile?.avatar_url ? (
+            {(currentUser?.avatarUrl ?? profile?.avatar_url) ? (
               <Image
-                source={{ uri: profile.avatar_url }}
+                source={{ uri: currentUser?.avatarUrl ?? profile?.avatar_url! }}
                 style={styles.avatarImage}
               />
             ) : (
               <View style={styles.avatar}>
                 <Text style={styles.avatarInitials}>
-                  {(profile?.display_name ?? user?.email ?? "?")
+                  {(currentUser?.displayName ?? profile?.display_name ?? user?.email ?? "?")
                     .charAt(0)
                     .toUpperCase()}
                 </Text>
@@ -431,7 +445,7 @@ export default function Profile() {
             activeOpacity={0.7}
           >
             <Text style={styles.displayName}>
-              {profile?.display_name ?? "—"}
+              {currentUser?.displayName ?? profile?.display_name ?? "—"}
             </Text>
             <Text style={styles.editHint}>Edit</Text>
           </TouchableOpacity>
@@ -621,7 +635,7 @@ export default function Profile() {
 
       <EditNameModal
         visible={editNameVisible}
-        current={profile?.display_name ?? ""}
+        current={currentUser?.displayName ?? profile?.display_name ?? ""}
         onSave={handleSaveName}
         onCancel={() => setEditNameVisible(false)}
       />
