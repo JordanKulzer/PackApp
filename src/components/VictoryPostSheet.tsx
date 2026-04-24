@@ -12,8 +12,11 @@ import {
   Pressable,
   Platform,
   ActionSheetIOS,
+  KeyboardAvoidingView,
+  ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   pickAvatarFromLibrary,
   takeAvatarPhoto,
@@ -29,8 +32,8 @@ const C = {
   textPrimary: "#E6EDF3",
   textSecondary: "#8B949E",
   textTertiary: "#484F58",
-  accent: "#2F81F7",
-  gold: "#D4A017",
+  accent: "#2563EB",
+  gold: "#fbbf24",
 } as const;
 
 interface Props {
@@ -44,16 +47,6 @@ interface Props {
   onPosted: () => void;
 }
 
-function relativeDate(dateStr: string): string {
-  const d = new Date(dateStr + "T00:00:00Z");
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const diff = Math.round((today.getTime() - d.getTime()) / 86400000);
-  if (diff === 0) return "today";
-  if (diff === 1) return "yesterday";
-  return `${diff} days ago`;
-}
-
 export function VictoryPostSheet({
   feedItemId,
   userId,
@@ -64,32 +57,32 @@ export function VictoryPostSheet({
   onClose,
   onPosted,
 }: Props) {
+  const insets = useSafeAreaInsets();
   const [localUri, setLocalUri] = useState<string | null>(null);
   const [caption, setCaption] = useState("");
   const [posting, setPosting] = useState(false);
 
+  const charsLeft = 140 - caption.length;
+  const counterColor = charsLeft <= 10 ? "#ef4444" : C.textTertiary;
+
   const handlePickPhoto = () => {
-    const doUpload = async (picker: typeof pickAvatarFromLibrary) => {
+    const pick = async (picker: typeof pickAvatarFromLibrary) => {
       const photo = await picker();
-      if (!photo) return;
-      setLocalUri(photo.uri);
+      if (photo) setLocalUri(photo.uri);
     };
 
     if (Platform.OS === "ios") {
       ActionSheetIOS.showActionSheetWithOptions(
-        {
-          options: ["Take Photo", "Choose from Library", "Cancel"],
-          cancelButtonIndex: 2,
-        },
+        { options: ["Take Photo", "Choose from Library", "Cancel"], cancelButtonIndex: 2 },
         (idx) => {
-          if (idx === 0) doUpload(takeAvatarPhoto);
-          else if (idx === 1) doUpload(pickAvatarFromLibrary);
+          if (idx === 0) pick(takeAvatarPhoto);
+          else if (idx === 1) pick(pickAvatarFromLibrary);
         },
       );
     } else {
       Alert.alert("Add photo", undefined, [
-        { text: "Take Photo", onPress: () => doUpload(takeAvatarPhoto) },
-        { text: "Choose from Library", onPress: () => doUpload(pickAvatarFromLibrary) },
+        { text: "Take Photo", onPress: () => pick(takeAvatarPhoto) },
+        { text: "Choose from Library", onPress: () => pick(pickAvatarFromLibrary) },
         { text: "Cancel", style: "cancel" },
       ]);
     }
@@ -140,62 +133,96 @@ export function VictoryPostSheet({
       onRequestClose={handleClose}
     >
       <Pressable style={s.overlay} onPress={handleClose} />
-      <View style={s.sheet}>
-        {/* Header */}
-        <View style={s.header}>
-          <View style={s.handle} />
-          <Text style={s.title}>Share your victory</Text>
-          <TouchableOpacity style={s.closeBtn} onPress={handleClose} hitSlop={8}>
-            <Ionicons name="close" size={20} color={C.textSecondary} />
-          </TouchableOpacity>
-        </View>
 
-        {/* Subtitle */}
-        <Text style={s.subtitle}>
-          {packName} · {winningPoints} pts · {relativeDate(scoreDate)}
-        </Text>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={s.kav}
+      >
+        <View style={[s.sheet, { paddingBottom: insets.bottom + 20 }]}>
+          {/* Drag handle */}
+          <View style={s.handleWrap}>
+            <View style={s.handle} />
+          </View>
 
-        {/* Photo picker area */}
-        <TouchableOpacity
-          style={s.photoPicker}
-          onPress={handlePickPhoto}
-          activeOpacity={0.8}
-        >
-          {localUri ? (
-            <Image source={{ uri: localUri }} style={s.photoPreview} resizeMode="cover" />
-          ) : (
-            <View style={s.photoPlaceholder}>
-              <Ionicons name="camera-outline" size={32} color={C.textTertiary} />
-              <Text style={s.photoHint}>Tap to add a photo</Text>
+          {/* Header */}
+          <View style={s.header}>
+            <Text style={s.title}>Share your victory</Text>
+            <TouchableOpacity style={s.closeBtn} onPress={handleClose} hitSlop={10}>
+              <Ionicons name="close" size={24} color={C.textSecondary} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            style={s.scroll}
+            contentContainerStyle={s.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Context pill */}
+            <View style={s.contextPill}>
+              <Text style={s.contextPillText}>
+                🏆 {packName} · {winningPoints} pts · Yesterday
+              </Text>
             </View>
-          )}
-        </TouchableOpacity>
 
-        {/* Caption input */}
-        <TextInput
-          style={s.captionInput}
-          placeholder="What did it take? (optional)"
-          placeholderTextColor={C.textTertiary}
-          value={caption}
-          onChangeText={(t) => setCaption(t.slice(0, 140))}
-          multiline
-          maxLength={140}
-        />
+            {/* Photo picker */}
+            <TouchableOpacity
+              style={s.photoPicker}
+              onPress={handlePickPhoto}
+              activeOpacity={0.8}
+            >
+              {localUri ? (
+                <>
+                  <Image source={{ uri: localUri }} style={s.photoPreview} resizeMode="cover" />
+                  <TouchableOpacity
+                    style={s.removePhotoBtn}
+                    onPress={() => setLocalUri(null)}
+                    hitSlop={8}
+                  >
+                    <Ionicons name="close-circle" size={24} color="#FFF" />
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <View style={s.photoPlaceholder}>
+                  <Ionicons name="camera-outline" size={32} color={C.textTertiary} />
+                  <Text style={s.photoHint}>Tap to add a photo</Text>
+                </View>
+              )}
+            </TouchableOpacity>
 
-        {/* Post button */}
-        <TouchableOpacity
-          style={[s.postBtn, (!localUri || posting) && s.postBtnDisabled]}
-          onPress={handlePost}
-          disabled={!localUri || posting}
-          activeOpacity={0.85}
-        >
-          {posting ? (
-            <ActivityIndicator color="#FFF" />
-          ) : (
-            <Text style={s.postBtnText}>Post</Text>
-          )}
-        </TouchableOpacity>
-      </View>
+            {/* Caption */}
+            <TextInput
+              style={s.captionInput}
+              placeholder="What did it take?"
+              placeholderTextColor={C.textTertiary}
+              value={caption}
+              onChangeText={(t) => setCaption(t.slice(0, 140))}
+              multiline
+              maxLength={140}
+              numberOfLines={2}
+            />
+            <Text style={[s.charCounter, { color: counterColor }]}>
+              {caption.length}/140
+            </Text>
+          </ScrollView>
+
+          {/* Post button — outside ScrollView so it stays above keyboard */}
+          <View style={s.footer}>
+            <TouchableOpacity
+              style={[s.postBtn, (!localUri || posting) && s.postBtnDisabled]}
+              onPress={handlePost}
+              disabled={!localUri || posting}
+              activeOpacity={0.85}
+            >
+              {posting ? (
+                <ActivityIndicator color="#FFF" />
+              ) : (
+                <Text style={s.postBtnText}>Post</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -203,89 +230,122 @@ export function VictoryPostSheet({
 const s = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: "rgba(0,0,0,0.6)",
+  },
+  kav: {
+    justifyContent: "flex-end",
   },
   sheet: {
     backgroundColor: C.surface,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     borderTopWidth: 0.5,
     borderColor: C.border,
-    paddingBottom: 32,
+    maxHeight: "90%",
   },
-  header: {
+  handleWrap: {
     alignItems: "center",
-    paddingTop: 10,
-    paddingHorizontal: 16,
-    paddingBottom: 10,
-    borderBottomWidth: 0.5,
-    borderBottomColor: C.border,
+    paddingTop: 12,
+    paddingBottom: 4,
   },
   handle: {
     width: 36,
     height: 4,
     borderRadius: 2,
     backgroundColor: C.border,
-    marginBottom: 10,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingVertical: 16,
   },
   title: {
-    fontSize: 15,
-    fontWeight: "600",
+    fontSize: 18,
+    fontWeight: "700",
     color: C.textPrimary,
   },
   closeBtn: {
-    position: "absolute",
-    right: 16,
-    top: 14,
+    padding: 2,
   },
-  subtitle: {
+  scroll: {
+    flexShrink: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+  },
+  contextPill: {
+    alignSelf: "center",
+    backgroundColor: "rgba(251,191,36,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(251,191,36,0.3)",
+    borderRadius: 9999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginBottom: 24,
+  },
+  contextPillText: {
     fontSize: 13,
-    color: C.textSecondary,
-    textAlign: "center",
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+    fontWeight: "500",
+    color: C.gold,
   },
   photoPicker: {
-    marginHorizontal: 16,
-    borderRadius: 12,
+    width: "100%",
+    aspectRatio: 1,
+    minHeight: 280,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.15)",
+    borderStyle: "dashed",
+    borderRadius: 16,
     overflow: "hidden",
-    height: 220,
-    backgroundColor: C.surfaceRaised,
-    borderWidth: 1,
-    borderColor: C.border,
-    marginBottom: 12,
+    marginBottom: 16,
   },
   photoPreview: {
     width: "100%",
     height: "100%",
   },
+  removePhotoBtn: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+  },
   photoPlaceholder: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
+    gap: 10,
   },
   photoHint: {
-    fontSize: 13,
+    fontSize: 15,
+    fontWeight: "500",
     color: C.textTertiary,
   },
   captionInput: {
-    marginHorizontal: 16,
-    backgroundColor: C.surfaceRaised,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: C.border,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 12,
     fontSize: 14,
     color: C.textPrimary,
-    minHeight: 60,
-    maxHeight: 100,
-    marginBottom: 16,
+    minHeight: 72,
+    maxHeight: 112,
+    textAlignVertical: "top",
+  },
+  charCounter: {
+    fontSize: 12,
+    textAlign: "right",
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  footer: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
   },
   postBtn: {
-    marginHorizontal: 16,
-    height: 50,
+    height: 52,
     backgroundColor: C.accent,
     borderRadius: 12,
     alignItems: "center",
@@ -296,7 +356,7 @@ const s = StyleSheet.create({
   },
   postBtnText: {
     fontSize: 16,
-    fontWeight: "700",
+    fontWeight: "600",
     color: "#FFF",
   },
 });

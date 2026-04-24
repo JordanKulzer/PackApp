@@ -522,17 +522,21 @@ function DarkPackCard({
 
       {/* Victory banner */}
       {unpostedWin && (
-        <TouchableOpacity
-          style={card.victoryBanner}
-          onPress={() => setVictorySheetOpen(true)}
-          activeOpacity={0.8}
-        >
-          <View style={card.victoryBannerLeft}>
+        <>
+          <View style={card.victoryBanner}>
             <Text style={card.victoryBannerIcon}>🏆</Text>
-            <Text style={card.victoryBannerText}>You won yesterday — share the moment</Text>
+            <Text style={card.victoryBannerText}>Yesterday's winner</Text>
+            <TouchableOpacity
+              style={card.victoryPostBtn}
+              onPress={() => setVictorySheetOpen(true)}
+              activeOpacity={0.8}
+              hitSlop={6}
+            >
+              <Text style={card.victoryPostBtnText}>Post</Text>
+            </TouchableOpacity>
           </View>
-          <Text style={card.victoryBannerAction}>Post</Text>
-        </TouchableOpacity>
+          <View style={card.victoryBannerDivider} />
+        </>
       )}
 
       {hasActivity && data ? (
@@ -653,35 +657,34 @@ const card = StyleSheet.create({
   victoryBanner: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#2A1F00",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    marginBottom: 10,
-    borderWidth: 0.5,
-    borderColor: "#5C4000",
-  },
-  victoryBannerLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    flex: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
   },
   victoryBannerIcon: {
-    fontSize: 14,
+    fontSize: 16,
   },
   victoryBannerText: {
-    fontSize: 12,
-    fontWeight: "500",
-    color: "#D4A017",
     flex: 1,
+    fontSize: 14,
+    fontWeight: "600",
+    color: C.textPrimary,
   },
-  victoryBannerAction: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#D4A017",
-    marginLeft: 8,
+  victoryPostBtn: {
+    backgroundColor: "#2563EB",
+    borderRadius: 9999,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+  },
+  victoryPostBtnText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#FFF",
+  },
+  victoryBannerDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: C.border,
+    marginBottom: 10,
   },
 });
 
