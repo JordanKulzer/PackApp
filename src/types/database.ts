@@ -3,7 +3,7 @@
 
 export type SubscriptionTier = "free" | "pro";
 export type CompetitionWindow = "weekly" | "monthly";
-export type ActivityType = "steps" | "workout" | "calories" | "water";
+export type ActivityType = "steps" | "workout" | "calories" | "water" | "daily_winner";
 export type RunStatus = "active" | "completed";
 export type MemberRole = "admin" | "member";
 export type NotificationType =
@@ -102,6 +102,27 @@ export interface WaterLog {
   amount_oz: number;
   log_date: string;
   logged_at: string;
+}
+
+export interface DailyWinner {
+  id: string;
+  pack_id: string;
+  run_id: string;
+  score_date: string;
+  winner_user_ids: string[];
+  winning_points: number;
+  computed_at: string;
+}
+
+export interface FeedComment {
+  id: string;
+  feed_item_id: string;
+  parent_id: string | null;
+  user_id: string;
+  body: string;
+  is_deleted: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 // Leaderboard row — joined query result

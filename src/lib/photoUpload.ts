@@ -291,6 +291,52 @@ export async function deleteAvatar(userId: string): Promise<void> {
   if (error) throw new Error(`Avatar delete failed: ${error.message}`);
 }
 
+// ─── Victory photo ────────────────────────────────────────────────────────────
+
+const VICTORY_BUCKET = "activity_photos";
+const VICTORY_MAX_EDGE = 800;
+
+// Uploads a victory post photo. Returns the storage path, or null on failure.
+// Requires the activity_photos bucket to exist (reuses existing bucket).
+export async function uploadVictoryPhoto(
+  userId: string,
+  feedItemId: string,
+  localUri: string,
+): Promise<string | null> {
+  try {
+    const compressed = await ImageManipulator.manipulateAsync(
+      localUri,
+      [{ resize: { width: VICTORY_MAX_EDGE, height: VICTORY_MAX_EDGE } }],
+      { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG },
+    );
+
+    const base64 = await FileSystem.readAsStringAsync(compressed.uri, {
+      encoding: "base64",
+    });
+    const arrayBuffer = base64Decode(base64);
+
+    const path = `victory/${userId}/${feedItemId}.jpg`;
+
+    const { error } = await supabase.storage
+      .from(VICTORY_BUCKET)
+      .upload(path, arrayBuffer, {
+        contentType: "image/jpeg",
+        upsert: true,
+        cacheControl: "3600",
+      });
+
+    if (error) {
+      console.error("[uploadVictoryPhoto] upload error:", error.message);
+      return null;
+    }
+
+    return path;
+  } catch (e) {
+    console.error("[uploadVictoryPhoto] error:", (e as Error).message);
+    return null;
+  }
+}
+
 // ─── Report ───────────────────────────────────────────────────────────────────
 
 export async function reportPhoto(

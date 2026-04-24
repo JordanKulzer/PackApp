@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -9,7 +9,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import Svg, { Circle } from "react-native-svg";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { useAuthStore } from "../../src/stores/authStore";
 import { useScoreStore } from "../../src/stores/scoreStore";
 import { useUserPacks } from "../../src/hooks/usePack";
@@ -27,6 +27,9 @@ import { colors } from "../../src/theme/colors";
 import { analytics } from "../../src/lib/analytics";
 import { useCurrentUser } from "../../src/context/CurrentUserContext";
 import { useRefreshCurrentUserOnFocus } from "../../src/hooks/useRefreshCurrentUserOnFocus";
+import { computeDailyWinnersForPack } from "../../src/lib/dailyWinners";
+import { useUnpostedWins, UnpostedWin } from "../../src/hooks/useUnpostedWins";
+import { VictoryPostSheet } from "../../src/components/VictoryPostSheet";
 
 const C = {
   bg: "#0B0F14",
@@ -446,13 +449,20 @@ function DarkPackCard({
   pack,
   data,
   currentUserId,
+  currentUserAuthId,
+  unpostedWin,
+  onWinPosted,
   onPress,
 }: {
   pack: Pack;
   data: HomePackData | undefined;
   currentUserId: string | undefined;
+  currentUserAuthId: string | undefined;
+  unpostedWin: UnpostedWin | undefined;
+  onWinPosted: () => void;
   onPress: () => void;
 }) {
+  const [victorySheetOpen, setVictorySheetOpen] = useState(false);
   const myOptimistic = useScoreStore((s) => s.myScores[pack.id]);
 
   const rawScores = data?.scores ?? [];
@@ -510,6 +520,21 @@ function DarkPackCard({
         </View>
       </View>
 
+      {/* Victory banner */}
+      {unpostedWin && (
+        <TouchableOpacity
+          style={card.victoryBanner}
+          onPress={() => setVictorySheetOpen(true)}
+          activeOpacity={0.8}
+        >
+          <View style={card.victoryBannerLeft}>
+            <Text style={card.victoryBannerIcon}>🏆</Text>
+            <Text style={card.victoryBannerText}>You won yesterday — share the moment</Text>
+          </View>
+          <Text style={card.victoryBannerAction}>Post</Text>
+        </TouchableOpacity>
+      )}
+
       {hasActivity && data ? (
         <>
           {/* Row 2 — Mini weekly rings: visual competitive snapshot */}
@@ -538,6 +563,19 @@ function DarkPackCard({
         </>
       ) : (
         <Text style={card.noActivity}>No activity yet this week</Text>
+      )}
+
+      {unpostedWin && victorySheetOpen && (
+        <VictoryPostSheet
+          feedItemId={unpostedWin.feedItemId}
+          userId={currentUserAuthId ?? ""}
+          packName={pack.name}
+          winningPoints={unpostedWin.winningPoints}
+          scoreDate={unpostedWin.scoreDate}
+          visible={victorySheetOpen}
+          onClose={() => setVictorySheetOpen(false)}
+          onPosted={() => { setVictorySheetOpen(false); onWinPosted(); }}
+        />
       )}
     </TouchableOpacity>
   );
@@ -612,6 +650,39 @@ const card = StyleSheet.create({
     fontWeight: "700",
     color: C.textPrimary,
   },
+  victoryBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#2A1F00",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 10,
+    borderWidth: 0.5,
+    borderColor: "#5C4000",
+  },
+  victoryBannerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flex: 1,
+  },
+  victoryBannerIcon: {
+    fontSize: 14,
+  },
+  victoryBannerText: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#D4A017",
+    flex: 1,
+  },
+  victoryBannerAction: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#D4A017",
+    marginLeft: 8,
+  },
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -629,8 +700,17 @@ export default function Home() {
     {},
   );
   const [joinModalVisible, setJoinModalVisible] = useState(false);
+  const { wins: unpostedWins, refresh: refreshWins } = useUnpostedWins(user?.id);
 
   const logVersion = useScoreStore((s) => s.logVersion);
+
+  useFocusEffect(
+    useCallback(() => {
+      packs.forEach((pack) => {
+        computeDailyWinnersForPack(pack.id).catch(() => {});
+      });
+    }, [packs]),
+  );
 
   const handleNewPack = () => {
     if (!isPro && packs.length >= effectivePackLimit) {
@@ -802,6 +882,9 @@ export default function Home() {
             pack={item}
             data={packDataMap[item.id]}
             currentUserId={user?.id}
+            currentUserAuthId={user?.id}
+            unpostedWin={unpostedWins.find((w) => w.packId === item.id)}
+            onWinPosted={refreshWins}
             onPress={() => router.push(`/(app)/pack/${item.id}`)}
           />
         )}

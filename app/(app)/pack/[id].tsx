@@ -54,6 +54,9 @@ import type { Pack, Run } from "../../../src/types/database";
 import { colors } from "../../../src/theme/colors";
 import { PackMemberDisplay } from "../../../src/components/PackMemberDisplay";
 import { getSignedUrl, deletePhoto, reportPhoto } from "../../../src/lib/photoUpload";
+import { CommentsSheet } from "../../../src/components/CommentsSheet";
+import { useCurrentUser } from "../../../src/context/CurrentUserContext";
+import { useRefreshCurrentUserOnFocus } from "../../../src/hooks/useRefreshCurrentUserOnFocus";
 
 if (
   Platform.OS === "android" &&
@@ -1030,6 +1033,7 @@ function RingLeaderboard({
   activeRun: Run;
   currentUserId: string | undefined;
 }) {
+  const { user: currentUser } = useCurrentUser();
   const animRefs = React.useRef([
     new Animated.Value(0),
     new Animated.Value(0),
@@ -1093,7 +1097,9 @@ function RingLeaderboard({
   ) {
     const isFirst = rank === 1;
     const pct = weeklyRingAbsolutePct(entry.weekly_points, pack, activeRun);
-    const nameDisplay = formatName(entry.display_name, rank);
+    const isMe = entry.user_id === currentUser?.id;
+    const nameDisplay = formatName(isMe && currentUser ? currentUser.displayName : entry.display_name, rank);
+    const avatarUrl = isMe && currentUser ? currentUser.avatarUrl : entry.avatar_url;
 
     return (
       <View
@@ -1114,7 +1120,7 @@ function RingLeaderboard({
           size={size}
           strokeWidth={sw}
           animValue={animRefs.current[animIdx]}
-          avatarUrl={entry.avatar_url}
+          avatarUrl={avatarUrl}
         />
         <Text style={[rlS.ringPts, isFirst && rlS.ringPtsFirst]}>
           {`${entry.weekly_points} pts`}
@@ -1406,6 +1412,7 @@ function WeekDetailSheet({
   currentUserId: string | undefined;
   onClose: () => void;
 }) {
+  const { user: currentUser } = useCurrentUser();
   const { top } = useSafeAreaInsets();
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [dayScores, setDayScores] = useState<DayMemberScore[]>([]);
@@ -1602,7 +1609,10 @@ function WeekDetailSheet({
                       style={[wdS.sName, isMe && wdS.sNameMe]}
                       numberOfLines={1}
                     >
-                      {formatName(standing.displayName ?? null, standing.rank)}
+                      {formatName(
+                        isMe && currentUser ? currentUser.displayName : (standing.displayName ?? null),
+                        standing.rank,
+                      )}
                     </Text>
                     <Text style={[wdS.sPts, isFirst && wdS.sPtsGold]}>
                       {standing.totalPoints} pts
@@ -1690,7 +1700,10 @@ function WeekDetailSheet({
                             style={[wdS.dayName, isMe && wdS.dayNameMe]}
                             numberOfLines={1}
                           >
-                            {formatName(score.displayName, idx + 1)}
+                            {formatName(
+                              isMe && currentUser ? currentUser.displayName : score.displayName,
+                              idx + 1,
+                            )}
                           </Text>
                           <Text style={[wdS.dayPts, isFirst && wdS.dayPtsFirst]}>
                             +{score.totalPoints} pts
@@ -2427,6 +2440,7 @@ function EmojiPickerModal({
 // ─────────────────────────────────────────────────────────────────────────────
 
 function StreakSection({ members }: { members: MemberScore[] }) {
+  const { user: currentUser } = useCurrentUser();
   const streakers = members.filter((m) => m.streak_multiplier > 1);
   if (streakers.length === 0) return null;
 
@@ -2439,28 +2453,33 @@ function StreakSection({ members }: { members: MemberScore[] }) {
   return (
     <View style={streakS.container}>
       <Text style={streakS.header}>🔥 ON A STREAK</Text>
-      {sorted.map((m) => (
+      {sorted.map((m) => {
+        const isMe = m.user_id === currentUser?.id;
+        const displayName = isMe && currentUser ? currentUser.displayName : m.display_name;
+        const avatarUrl = isMe && currentUser ? currentUser.avatarUrl : m.avatar_url;
+        return (
         <View key={m.user_id} style={streakS.row}>
           <PackMemberDisplay
             userId={m.user_id}
-            displayName={m.display_name}
+            displayName={displayName}
             progressPct={0}
             rank={99}
             currentUserId={undefined}
             leaderId={undefined}
             size={32}
             strokeWidth={2}
-            avatarUrl={m.avatar_url}
+            avatarUrl={avatarUrl}
             showName={false}
           />
           <View style={streakS.textCol}>
-            <Text style={streakS.name}>{m.display_name}</Text>
+            <Text style={streakS.name}>{displayName}</Text>
             <Text style={streakS.detail}>
               {m.streak_days} {m.streak_days === 1 ? "day" : "days"} · {m.streak_multiplier}x points
             </Text>
           </View>
         </View>
-      ))}
+        );
+      })}
     </View>
   );
 }
@@ -2497,24 +2516,31 @@ const REPORT_REASONS = ["Inappropriate", "Spam", "Nudity", "Violence"] as const;
 function FeedItemRow({
   item,
   currentUserId,
+  currentUserName,
   onToggleReaction,
   removePhotoFromItem,
 }: {
   item: FeedItem;
   currentUserId: string | undefined;
+  currentUserName: string;
   onToggleReaction: (id: string, type: ReactionType) => Promise<void>;
   removePhotoFromItem: (id: string) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [reactorEmoji, setReactorEmoji] = useState<ReactionType | null>(null);
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const [localCommentCount, setLocalCommentCount] = useState(item.commentCount);
   const [signedPhotoUrl, setSignedPhotoUrl] = useState<string | null>(null);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const [photoMenuOpen, setPhotoMenuOpen] = useState(false);
   const [reportMenuOpen, setReportMenuOpen] = useState(false);
 
+  const { user: currentUser } = useCurrentUser();
   const isMe = item.userId === currentUserId;
-  const name = formatName(item.displayName, 0);
-  const initial = (item.displayName.trim().charAt(0) || "?").toUpperCase();
+  const resolvedName = isMe && currentUser ? currentUser.displayName : item.displayName;
+  const resolvedAvatar = isMe && currentUser ? currentUser.avatarUrl : item.avatarUrl;
+  const name = formatName(resolvedName, 0);
+  const initial = (resolvedName.trim().charAt(0) || "?").toUpperCase();
 
   useEffect(() => {
     if (!item.photoUrl) { setSignedPhotoUrl(null); return; }
@@ -2552,6 +2578,9 @@ function FeedItemRow({
           ? ` completed all ${item.value} goals today`
           : " completed all goals today";
       break;
+    case "daily_winner":
+      activityPhrase = " 🏆 won yesterday";
+      break;
     default:
       activityPhrase = ` completed ${item.activityType}`;
   }
@@ -2580,9 +2609,9 @@ function FeedItemRow({
       {/* Top row: avatar + event text */}
       <View style={feedS.cardTop}>
         <View style={feedS.avatar}>
-          {item.avatarUrl ? (
+          {resolvedAvatar ? (
             <Image
-              source={{ uri: item.avatarUrl }}
+              source={{ uri: resolvedAvatar }}
               style={{ width: 36, height: 36, borderRadius: 18 }}
             />
           ) : (
@@ -2590,30 +2619,32 @@ function FeedItemRow({
           )}
         </View>
         <View style={feedS.content}>
-          <View style={feedS.line1Row}>
-            <Text style={feedS.line1Text}>
-              <Text style={isMe ? feedS.nameTextSelf : feedS.nameText}>
-                {name}
-              </Text>
-              <Text style={{ color: phraseColor }}>{activityPhrase}</Text>
+          <Text style={feedS.line1Text}>
+            <Text style={isMe ? feedS.nameTextSelf : feedS.nameText}>
+              {name}
             </Text>
-            {item.pointsEarned > 0 && (
-              <View style={feedS.ptsRow}>
-                <Text style={feedS.ptsInline}>+{item.pointsEarned} pts</Text>
-                {item.entryMethod === "manual" &&
-                  (item.activityType === "steps" ||
-                    item.activityType === "calories") && <ManualBadge />}
-              </View>
-            )}
-          </View>
-          <Text style={feedS.time}>{getRelativeTime(item.createdAt)}</Text>
+            <Text style={{ color: phraseColor }}>{activityPhrase}</Text>
+          </Text>
+          <Text style={feedS.time}>
+            {item.activityType === "daily_winner"
+              ? `${item.pointsEarned} pts · yesterday`
+              : getRelativeTime(item.createdAt)}
+          </Text>
         </View>
+        {item.pointsEarned > 0 && item.activityType !== "daily_winner" && (
+          <View style={feedS.ptsPill}>
+            {item.entryMethod === "manual" &&
+              (item.activityType === "steps" ||
+                item.activityType === "calories") && <ManualBadge />}
+            <Text style={feedS.ptsPillText}>+{item.pointsEarned} pts</Text>
+          </View>
+        )}
       </View>
 
       {/* Photo */}
       {signedPhotoUrl && (
         <TouchableOpacity
-          style={feedS.photoWrap}
+          style={item.activityType === "daily_winner" ? feedS.victoryPhotoWrap : feedS.photoWrap}
           onPress={() => { analytics.photoViewedFullscreen(item.id); setFullscreenOpen(true); }}
           onLongPress={() => setPhotoMenuOpen(true)}
           activeOpacity={0.92}
@@ -2621,6 +2652,11 @@ function FeedItemRow({
           <Image source={{ uri: signedPhotoUrl }} style={feedS.photo} resizeMode="cover" />
         </TouchableOpacity>
       )}
+
+      {/* Caption (daily_winner enriched post only) */}
+      {item.activityType === "daily_winner" && item.caption ? (
+        <Text style={feedS.victoryCaption}>{item.caption}</Text>
+      ) : null}
 
       {/* Chips row: reaction summary + add button */}
       <View style={feedS.chipsRow}>
@@ -2645,9 +2681,23 @@ function FeedItemRow({
           onPress={() => setPickerOpen(true)}
           hitSlop={4}
         >
-          <Text style={feedS.addBtnText}>+</Text>
+          <Ionicons name="happy-outline" size={18} color="#6B7280" />
         </Pressable>
       </View>
+
+      {/* Comment tap target */}
+      <TouchableOpacity
+        style={feedS.commentTap}
+        onPress={() => setCommentsOpen(true)}
+        hitSlop={4}
+      >
+        <Ionicons name="chatbubble-outline" size={13} color={C.textTertiary} />
+        <Text style={feedS.commentTapText}>
+          {localCommentCount > 0
+            ? `${localCommentCount} comment${localCommentCount === 1 ? "" : "s"}`
+            : "Add a comment…"}
+        </Text>
+      </TouchableOpacity>
 
       {/* Emoji picker */}
       {pickerOpen && (
@@ -2731,6 +2781,19 @@ function FeedItemRow({
           </Pressable>
         </Modal>
       )}
+
+      {/* Comments sheet */}
+      <CommentsSheet
+        feedItemId={item.id}
+        feedItemUserId={item.userId}
+        feedItemSummary={`${name}${activityPhrase}`}
+        packId={item.packId}
+        currentUserId={currentUserId}
+        currentUserName={currentUserName}
+        visible={commentsOpen}
+        onClose={() => setCommentsOpen(false)}
+        onCommentAdded={() => setLocalCommentCount((n) => n + 1)}
+      />
     </View>
   );
 }
@@ -2738,9 +2801,11 @@ function FeedItemRow({
 function FeedTab({
   packId,
   currentUserId,
+  currentUserName,
 }: {
   packId: string;
   currentUserId: string | undefined;
+  currentUserName: string;
 }) {
   const { items, isLoading, toggleReaction, removePhotoFromItem } = useActivityFeed(
     packId,
@@ -2775,6 +2840,7 @@ function FeedTab({
           key={item.id}
           item={item}
           currentUserId={currentUserId}
+          currentUserName={currentUserName}
           onToggleReaction={toggleReaction}
           removePhotoFromItem={removePhotoFromItem}
         />
@@ -2897,6 +2963,32 @@ const feedS = StyleSheet.create({
     color: "#6B7280",
     lineHeight: 20,
   },
+  ptsPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(59,130,246,0.12)",
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    flexShrink: 0,
+  },
+  ptsPillText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: colors.accent,
+  },
+  commentTap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 6,
+    marginLeft: 48,
+  },
+  commentTapText: {
+    fontSize: 12,
+    color: C.textTertiary,
+  },
 
   // ── Shared sheet base ──
   sheetOverlay: {
@@ -3017,10 +3109,21 @@ const feedS = StyleSheet.create({
     borderRadius: 10,
     overflow: "hidden",
   },
+  victoryPhotoWrap: {
+    marginTop: 10,
+    borderRadius: 10,
+    overflow: "hidden",
+  },
   photo: {
     width: "100%",
     aspectRatio: 4 / 3,
     backgroundColor: C.surfaceRaised,
+  },
+  victoryCaption: {
+    marginTop: 8,
+    fontSize: 14,
+    color: C.textSecondary,
+    lineHeight: 20,
   },
   fullscreenOverlay: {
     flex: 1,
@@ -3074,6 +3177,7 @@ export default function PackScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
+  useRefreshCurrentUserOnFocus();
   const { isPro } = useIsPro();
   const { data: packData, isLoading: packLoading } = usePack(id ?? null);
   const { syncNow, isSyncing } = useHealthKit(user?.id ?? null);
@@ -3510,7 +3614,11 @@ export default function PackScreen() {
           contentContainerStyle={s.content}
           showsVerticalScrollIndicator={false}
         >
-          <FeedTab packId={pack.id} currentUserId={user?.id} />
+          <FeedTab
+            packId={pack.id}
+            currentUserId={user?.id}
+            currentUserName={ranked.find((r) => r.user_id === user?.id)?.display_name ?? "Pack member"}
+          />
           <View style={{ height: 40 }} />
         </ScrollView>
 

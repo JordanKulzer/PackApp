@@ -10,12 +10,15 @@ export interface FeedItem {
   userId: string;
   displayName: string;
   avatarUrl: string | null;
-  activityType: "steps" | "workout" | "calories" | "water" | "took_lead" | "all_goals";
+  activityType: "steps" | "workout" | "calories" | "water" | "took_lead" | "all_goals" | "daily_winner";
   value: number;
   pointsEarned: number;
   createdAt: string;
-  entryMethod: "manual" | "healthkit" | "oura" | "whoop";
+  entryMethod: "manual" | "healthkit" | "oura" | "whoop" | "system";
   photoUrl: string | null;   // Supabase Storage path (not a full URL)
+  caption: string | null;
+  scoreDate: string | null;
+  commentCount: number;
   reactions: {
     type: ReactionType;
     count: number;
@@ -38,7 +41,7 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
 
     const { data: feedRows, error } = await supabase
       .from("activity_feed")
-      .select("id, pack_id, user_id, activity_type, value, points_earned, created_at, entry_method, photo_url")
+      .select("id, pack_id, user_id, activity_type, value, points_earned, created_at, entry_method, photo_url, caption, score_date, comment_count")
       .eq("pack_id", packId)
       .order("created_at", { ascending: false })
       .limit(50);
@@ -108,6 +111,9 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
       createdAt: row.created_at,
       entryMethod: (row.entry_method ?? "manual") as FeedItem["entryMethod"],
       photoUrl: row.photo_url ?? null,
+      caption: row.caption ?? null,
+      scoreDate: row.score_date ?? null,
+      commentCount: row.comment_count ?? 0,
       reactions: REACTION_TYPES.map((type) => ({
         type,
         count: reactionsByItem[row.id]?.[type]?.count ?? 0,
@@ -175,6 +181,22 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
                 ),
               };
             })
+          );
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "feed_comments" },
+        (payload) => {
+          const r = payload.new as { feed_item_id: string; user_id: string };
+          // Skip own comments — already applied optimistically via onCommentAdded.
+          if (r.user_id === currentUserId) return;
+          setItems((prev) =>
+            prev.map((item) =>
+              item.id === r.feed_item_id
+                ? { ...item, commentCount: item.commentCount + 1 }
+                : item
+            )
           );
         }
       )
