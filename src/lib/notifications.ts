@@ -5,85 +5,52 @@ import { supabase } from "./supabase";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Competitive pack notifications
+//
+// Dispatch is server-side: invokes the `notify-pack-event` Supabase Edge
+// Function which resolves recipients, checks per-user opt-out prefs, and
+// POSTs to the Expo push API. The actor is identified by the function from
+// the verified JWT — callers cannot spoof a different actor.
 // ─────────────────────────────────────────────────────────────────────────────
-
-const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 
 export type PackNotificationEvent =
   | { kind: "goal"; activityType: "steps" | "workout" | "calories" | "water"; pointsEarned: number }
   | { kind: "took_lead" }
   | { kind: "all_goals"; totalPoints: number }
-  | { kind: "ownership_transferred"; newOwnerName: string };
+  | { kind: "ownership_transferred"; newOwnerName: string }
+  | { kind: "new_comment"; bodyPreview: string }
+  // Scaffolded but disconnected (Pass 7a). Edge Function and prefs UI both
+  // know about this kind, but no client-side caller fires it yet. When
+  // join-ping wiring lands (likely at JoinPackModal:118 and join/[code].tsx:113),
+  // this type is the contract.
+  | { kind: "new_member"; newMemberName: string; packName: string };
 
-function buildNotificationCopy(
-  actorName: string,
-  event: PackNotificationEvent,
-): { title: string; body: string } {
-  if (event.kind === "goal") {
-    const label =
-      event.activityType === "steps"    ? "their step goal" :
-      event.activityType === "workout"  ? "a workout" :
-      event.activityType === "calories" ? "their calorie goal" :
-                                          "their water goal";
-    return { title: actorName, body: `completed ${label} (+${event.pointsEarned} pts)` };
+type InvokeResponse = { sent?: number; skipped?: number; errors?: unknown[] } | null | undefined;
+
+function logExpoErrors(label: string, data: InvokeResponse): void {
+  const errors = data && typeof data === "object" ? (data as { errors?: unknown[] }).errors : undefined;
+  if (errors && errors.length > 0) {
+    console.warn(`[notifications] ${label} expo errors:`, errors);
   }
-  if (event.kind === "took_lead") {
-    return { title: actorName, body: "took the lead 👑" };
-  }
-  if (event.kind === "ownership_transferred") {
-    return { title: "Pack ownership transferred", body: `${actorName} made ${event.newOwnerName} the new pack owner` };
-  }
-  return { title: actorName, body: `completed all goals today 🔥 (${event.totalPoints} pts)` };
 }
 
-// Sends a competitive push notification to all active pack members except the actor.
-// Dedup is handled upstream — callers only invoke this when a new feed event was inserted.
+// Sends a competitive push notification to all active pack members except the
+// actor. The edge function resolves recipients from pack_members and checks
+// each recipient's notification prefs server-side.
 export async function notifyPackMembers(
-  actorId: string,
+  _actorId: string,
   packId: string,
   event: PackNotificationEvent,
 ): Promise<void> {
   try {
-    const prefKey = event.kind === "goal" || event.kind === "all_goals" ? "goal_completed" : "goal_completed";
-
-    const [actorResult, membersResult] = await Promise.all([
-      supabase.from("users").select("display_name").eq("id", actorId).maybeSingle(),
-      supabase
-        .from("pack_members")
-        .select("user_id")
-        .eq("pack_id", packId)
-        .eq("is_active", true)
-        .neq("user_id", actorId),
-    ]);
-
-    const actorName = actorResult.data?.display_name ?? "A pack member";
-    const recipientIds = (membersResult.data ?? []).map((m: { user_id: string }) => m.user_id);
-    if (recipientIds.length === 0) return;
-
-    const [tokenMap, optedOut] = await Promise.all([
-      getTokensForUsers(recipientIds),
-      getOptedOutUsers(recipientIds, prefKey),
-    ]);
-
-    const { title, body } = buildNotificationCopy(actorName, event);
-
-    const messages = recipientIds
-      .filter((uid) => !optedOut.has(uid))
-      .flatMap((uid) => (tokenMap[uid] ?? []).map((token) => ({
-        to: token,
-        title,
-        body,
-        sound: "default",
-        data: { packId },
-      })));
-
-    if (messages.length === 0) return;
-
-    await fetch(EXPO_PUSH_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(messages),
+    const { data, error } = await supabase.functions.invoke("notify-pack-event", {
+      body: { packId, event },
     });
+    if (error) {
+      console.error("[notifications] notifyPackMembers invoke failed:", error);
+      return;
+    }
+    console.log("[notifications] notifyPackMembers ok:", data);
+    logExpoErrors("notifyPackMembers", data as InvokeResponse);
   } catch (err) {
     console.error("[notifications] notifyPackMembers error:", err);
   }
@@ -92,35 +59,20 @@ export async function notifyPackMembers(
 // Sends a push notification to a single user (e.g. new pack owner after transfer).
 export async function notifyUser(
   recipientUserId: string,
-  actorName: string,
+  _actorName: string,
   packId: string,
   event: PackNotificationEvent,
 ): Promise<void> {
   try {
-    const [tokenMap, optedOut] = await Promise.all([
-      getTokensForUsers([recipientUserId]),
-      getOptedOutUsers([recipientUserId], "goal_completed"),
-    ]);
-
-    if (optedOut.has(recipientUserId)) return;
-
-    const { title, body } = buildNotificationCopy(actorName, event);
-    const tokens = tokenMap[recipientUserId] ?? [];
-    if (tokens.length === 0) return;
-
-    const messages = tokens.map((token) => ({
-      to: token,
-      title,
-      body,
-      sound: "default",
-      data: { packId },
-    }));
-
-    await fetch(EXPO_PUSH_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(messages),
+    const { data, error } = await supabase.functions.invoke("notify-pack-event", {
+      body: { packId, event, recipients: [recipientUserId] },
     });
+    if (error) {
+      console.error("[notifications] notifyUser invoke failed:", error);
+      return;
+    }
+    console.log("[notifications] notifyUser ok:", data);
+    logExpoErrors("notifyUser", data as InvokeResponse);
   } catch (err) {
     console.error("[notifications] notifyUser error:", err);
   }
@@ -137,78 +89,66 @@ Notifications.setNotificationHandler({
 });
 
 export async function registerForPushNotifications(): Promise<string | null> {
-  if (!Device.isDevice) {
-    return null;
+  try {
+    if (!Device.isDevice) {
+      return null;
+    }
+
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+
+    if (existingStatus !== "granted") {
+      const { status } = await Notifications.requestPermissionsAsync();
+      finalStatus = status;
+    }
+
+    if (finalStatus !== "granted") {
+      return null;
+    }
+
+    const token = (await Notifications.getExpoPushTokenAsync()).data;
+    if (!token) return null;
+
+    if (Platform.OS === "android") {
+      await Notifications.setNotificationChannelAsync("default", {
+        name: "default",
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: "#FF231F7C",
+      });
+    }
+
+    return token;
+  } catch (err) {
+    console.error("[notifications] registerForPushNotifications threw:", err);
+    throw err;
   }
-
-  const { status: existingStatus } = await Notifications.getPermissionsAsync();
-  let finalStatus = existingStatus;
-
-  if (existingStatus !== "granted") {
-    const { status } = await Notifications.requestPermissionsAsync();
-    finalStatus = status;
-  }
-
-  if (finalStatus !== "granted") {
-    return null;
-  }
-
-  const token = (await Notifications.getExpoPushTokenAsync()).data;
-
-  if (Platform.OS === "android") {
-    await Notifications.setNotificationChannelAsync("default", {
-      name: "default",
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 250, 250, 250],
-      lightColor: "#FF231F7C",
-    });
-  }
-
-  return token;
 }
 
 export async function saveTokenToSupabase(token: string): Promise<void> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return;
 
-  await supabase.from("user_push_tokens").upsert(
-    { user_id: user.id, token, last_seen_at: new Date().toISOString() },
-    { onConflict: "token" },
-  );
-}
-
-// Returns set of userIds who have explicitly disabled a given notification type.
-// Anyone not in the table is treated as enabled (opt-out model).
-export async function getOptedOutUsers(
-  userIds: string[],
-  prefKey: string,
-): Promise<Set<string>> {
-  if (userIds.length === 0) return new Set();
-  const { data } = await supabase
-    .from("user_notification_prefs")
-    .select("user_id")
-    .in("user_id", userIds)
-    .eq("pref_key", prefKey)
-    .eq("enabled", false);
-  return new Set((data ?? []).map((r: { user_id: string }) => r.user_id));
-}
-
-// Fetch all Expo push tokens for a list of user IDs.
-export async function getTokensForUsers(
-  userIds: string[],
-): Promise<Record<string, string[]>> {
-  if (userIds.length === 0) return {};
-  const { data } = await supabase
+  // Delete-then-insert avoids an RLS edge case where UPSERT with a changing
+  // owner (same token, different user_id) fails because RLS doesn't cleanly
+  // handle the row-ownership transition during ON CONFLICT.
+  const { error: deleteError } = await supabase
     .from("user_push_tokens")
-    .select("user_id, token")
-    .in("user_id", userIds);
-  const map: Record<string, string[]> = {};
-  (data ?? []).forEach((row: { user_id: string; token: string }) => {
-    if (!row.token.startsWith("ExponentPushToken")) return;
-    if (!map[row.user_id]) map[row.user_id] = [];
-    map[row.user_id].push(row.token);
+    .delete()
+    .eq("token", token);
+  if (deleteError) {
+    console.error("[notifications] token delete failed:", deleteError);
+    // Don't return — try insert anyway, might just be that no row existed
+  }
+
+  const { error } = await supabase.from("user_push_tokens").insert({
+    user_id: user.id,
+    token,
+    last_seen_at: new Date().toISOString(),
   });
-  return map;
+  if (error) {
+    console.error("[notifications] token insert failed:", error);
+  }
 }
 
 export async function initNotifications(): Promise<void> {

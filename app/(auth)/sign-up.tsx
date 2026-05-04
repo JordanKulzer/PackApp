@@ -13,6 +13,10 @@ import {
 } from "react-native";
 import { Link } from "expo-router";
 import { useAuth } from "../../src/hooks/useAuth";
+import { normalizeDisplayName } from "../../src/lib/displayName";
+import { PackLogo } from "../../src/components/brand/PackLogo";
+import { auth } from "../../src/constants/strings";
+import { BrandColors, BrandTypography, BrandSpacing } from "../../src/constants/brand";
 
 export default function SignUp() {
   const { signUp } = useAuth();
@@ -37,7 +41,7 @@ export default function SignUp() {
     }
     setIsLoading(true);
     try {
-      const result = await signUp(email.trim().toLowerCase(), password, displayName.trim());
+      const result = await signUp(email.trim().toLowerCase(), password, normalizeDisplayName(displayName));
       if (result === "confirm_email") {
         Alert.alert(
           "Check your email",
@@ -58,22 +62,24 @@ export default function SignUp() {
   return (
     <KeyboardAvoidingView
       style={styles.flex}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <ScrollView
         contentContainerStyle={styles.container}
         keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
         <View style={styles.hero}>
-          <Text style={styles.wordmark}>PACK</Text>
-          <Text style={styles.tagline}>Create your account to compete</Text>
+          <PackLogo size={80} />
+          <Text style={styles.wordmark}>Pack</Text>
+          <Text style={styles.tagline}>{auth.signUp.tagline}</Text>
         </View>
 
         <View style={styles.form}>
           <TextInput
             style={styles.input}
             placeholder="Display name"
-            placeholderTextColor="#9CA3AF"
+            placeholderTextColor={BrandColors.inkMuted}
             autoCapitalize="words"
             autoCorrect={false}
             value={displayName}
@@ -82,7 +88,7 @@ export default function SignUp() {
           <TextInput
             style={styles.input}
             placeholder="Email"
-            placeholderTextColor="#9CA3AF"
+            placeholderTextColor={BrandColors.inkMuted}
             keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
@@ -92,7 +98,7 @@ export default function SignUp() {
           <TextInput
             style={styles.input}
             placeholder="Password (8+ characters)"
-            placeholderTextColor="#9CA3AF"
+            placeholderTextColor={BrandColors.inkMuted}
             secureTextEntry
             value={password}
             onChangeText={setPassword}
@@ -100,7 +106,7 @@ export default function SignUp() {
           <TextInput
             style={styles.input}
             placeholder="Confirm password"
-            placeholderTextColor="#9CA3AF"
+            placeholderTextColor={BrandColors.inkMuted}
             secureTextEntry
             value={confirmPassword}
             onChangeText={setConfirmPassword}
@@ -134,7 +140,7 @@ export default function SignUp() {
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
+  flex: { flex: 1, backgroundColor: BrandColors.background },
   container: {
     padding: 24,
     justifyContent: "center",
@@ -143,34 +149,37 @@ const styles = StyleSheet.create({
   },
   hero: {
     alignItems: "center",
-    gap: 8,
   },
+  // "Pack" wordmark below the 80pt logo — same lockup as sign-in.
   wordmark: {
-    fontSize: 42,
-    fontWeight: "800",
-    letterSpacing: 6,
-    color: "#0F0F0F",
+    fontSize: 36,
+    fontWeight: BrandTypography.weightBold,
+    letterSpacing: BrandTypography.tightLetter,
+    color: BrandColors.ink,
+    marginTop: BrandSpacing.md,
+    marginBottom: BrandSpacing.sm,
   },
   tagline: {
     fontSize: 15,
-    color: "#9CA3AF",
+    color: BrandColors.inkMuted,
+    textAlign: "center",
   },
   form: {
     gap: 12,
   },
   input: {
     height: 52,
-    borderWidth: 1.5,
-    borderColor: "#E5E7EB",
+    borderWidth: 1,
+    borderColor: "#30363D",
     borderRadius: 12,
     paddingHorizontal: 16,
     fontSize: 16,
-    color: "#111827",
-    backgroundColor: "#F9FAFB",
+    color: BrandColors.ink,
+    backgroundColor: BrandColors.surface,
   },
   button: {
     height: 52,
-    backgroundColor: "#111827",
+    backgroundColor: BrandColors.blue,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
@@ -191,11 +200,11 @@ const styles = StyleSheet.create({
   },
   footerText: {
     fontSize: 15,
-    color: "#6B7280",
+    color: BrandColors.inkMuted,
   },
   footerLink: {
     fontSize: 15,
     fontWeight: "700",
-    color: "#6366F1",
+    color: BrandColors.blue,
   },
 });

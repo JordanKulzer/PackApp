@@ -1,7 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "./supabase";
 import { POINTS } from "./scoring";
-import { getTokensForUsers, getOptedOutUsers } from "./notifications";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -26,6 +25,8 @@ interface ThreatEvent {
 // ─────────────────────────────────────────────────────────────────────────────
 // Dedup — AsyncStorage, 4-hour cooldown per (pack, actor, victim, kind)
 // Prevents sending the same threat for the same state transition repeatedly.
+// Stays client-side: protects against the actor's device firing the same push
+// multiple times in a session. Server-side dedup is a future enhancement.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const COOLDOWN_MS = 4 * 60 * 60 * 1000;
@@ -143,19 +144,42 @@ export function detectThreats(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Notification copy
+// Edge function payload mapping. Mirrors the discriminated union in
+// supabase/functions/notify-pack-event/index.ts. took_lead is a broadcast
+// event; the other three are targeted at the specific victim.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildThreatCopy(event: ThreatEvent): { title: string; body: string } {
-  switch (event.kind) {
+type EdgeEvent =
+  | { kind: "took_lead" }
+  | { kind: "passed_you"; rankAfter: number }
+  | { kind: "tied_you"; rankAfter: number }
+  | { kind: "one_action_away"; actionLabel: string };
+
+function buildEdgePayload(
+  threat: ThreatEvent,
+  packId: string,
+): { packId: string; event: EdgeEvent; recipients?: string[] } {
+  switch (threat.kind) {
     case "took_lead":
-      return { title: "👑 Lead Change", body: `${event.actorName} took the lead` };
+      return { packId, event: { kind: "took_lead" } };
     case "passed_you":
-      return { title: "📉 You Dropped", body: `${event.actorName} passed you — you're now #${event.rankAfter}` };
+      return {
+        packId,
+        event: { kind: "passed_you", rankAfter: threat.rankAfter ?? 0 },
+        recipients: [threat.victimId],
+      };
     case "tied_you":
-      return { title: "⚡ Tied Up", body: `${event.actorName} tied you for #${event.rankAfter}` };
+      return {
+        packId,
+        event: { kind: "tied_you", rankAfter: threat.rankAfter ?? 0 },
+        recipients: [threat.victimId],
+      };
     case "one_action_away":
-      return { title: "⚠️ Closing In", body: `${event.actorName} is ${event.actionLabel} away from passing you` };
+      return {
+        packId,
+        event: { kind: "one_action_away", actionLabel: threat.actionLabel ?? "one goal" },
+        recipients: [threat.victimId],
+      };
   }
 }
 
@@ -165,8 +189,6 @@ function buildThreatCopy(event: ThreatEvent): { title: string; body: string } {
 // Call after any daily_scores upsert that increases the actor's today score.
 // todayPointsDelta: newTodayScore - oldTodayScore (skip if ≤ 0)
 // ─────────────────────────────────────────────────────────────────────────────
-
-const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 
 export async function detectAndSendThreatNotifications(
   actorId: string,
@@ -219,37 +241,21 @@ export async function detectAndSendThreatNotifications(
     const threats = detectThreats(actorId, actorName, before, after);
     if (threats.length === 0) return;
 
-    // Batch-fetch victim push tokens + pref opt-outs
-    const victimIds = [...new Set(threats.map((t) => t.victimId))];
-    const [tokenMap, optedOut] = await Promise.all([
-      getTokensForUsers(victimIds),
-      getOptedOutUsers(victimIds, "overtaken"),
-    ]);
-
-    // Build message list, checking dedup for each threat
-    const messages: Array<{ to: string; title: string; body: string; sound: string; data: Record<string, string> }> = [];
+    // Per-threat dispatch — cooldown gates resend; the edge function handles
+    // recipient resolution, opt-out checks, and Expo push delivery.
     for (const threat of threats) {
-      if (optedOut.has(threat.victimId)) continue;
-      const tokens = tokenMap[threat.victimId] ?? [];
-      if (tokens.length === 0) continue;
-
       const allowed = await canSendThreat(packId, actorId, threat.victimId, threat.kind);
       if (!allowed) continue;
 
-      const { title, body } = buildThreatCopy(threat);
-      for (const token of tokens) {
-        messages.push({ to: token, title, body, sound: "default", data: { packId } });
+      const body = buildEdgePayload(threat, packId);
+      const { data, error } = await supabase.functions.invoke("notify-pack-event", { body });
+      if (error) {
+        console.error("[threatNotifications] invoke failed:", error);
+        continue;
       }
+      console.log("[threatNotifications] dispatch ok:", data);
       await markThreatSent(packId, actorId, threat.victimId, threat.kind);
     }
-
-    if (messages.length === 0) return;
-
-    await fetch(EXPO_PUSH_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(messages),
-    });
   } catch (err) {
     console.error("[threatNotifications] error:", err);
   }

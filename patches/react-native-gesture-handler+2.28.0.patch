@@ -1,0 +1,14 @@
+diff --git a/node_modules/react-native-gesture-handler/package.json b/node_modules/react-native-gesture-handler/package.json
+index 0f3afbe..e7f71ad 100644
+--- a/node_modules/react-native-gesture-handler/package.json
++++ b/node_modules/react-native-gesture-handler/package.json
+@@ -136,6 +136,9 @@
+     "ios": {
+       "componentProvider": {
+         "RNGestureHandlerButton": "RNGestureHandlerButtonComponentView"
++      },
++      "modulesProvider": {
++        "RNGestureHandlerModule": "RNGestureHandlerModule"
+       }
+     }
+   },

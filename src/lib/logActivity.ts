@@ -7,12 +7,15 @@ import { POINTS, WORKOUT_MAX_DAILY, workoutPoints, getStreakMultiplier } from ".
 import { computeStreakForRun } from "./computeStreak";
 import { notifyPackMembers } from "./notifications";
 import { detectAndSendThreatNotifications } from "./threatNotifications";
-import { packToday, packTodayStartUTC } from "./packDates";
+import { packToday } from "./packDates";
+import { analytics } from "./analytics";
+import type { ActivityCategory } from "./activityCategoryMap";
 
 export type ManualActivityType = "steps" | "workout" | "calories";
 
 // Syncs a manual activity to daily_scores for every active pack the user belongs to.
 //   delta: amount to ADD for steps/calories; pass 1 for workout (binary achieved)
+//   category: only meaningful for activityType="workout"; ignored otherwise
 //
 // "today" is computed per-pack using the pack's stored IANA timezone so that a
 // user at 11:30pm who just tipped into a new UTC day still gets credit for the
@@ -21,6 +24,7 @@ export async function syncManualActivityToDailyScores(
   userId: string,
   activityType: ManualActivityType,
   delta: number,
+  category?: ActivityCategory,
 ): Promise<void> {
   try {
     const { data: memberships } = await supabase
@@ -62,16 +66,20 @@ export async function syncManualActivityToDailyScores(
 
       if (!run) continue;
 
-      // Read current row to preserve other goal counts and achieved flags
+      // Read current row to preserve other goal counts and achieved flags.
+      // streak_days included for Pass 9 streak_milestone gating — must come
+      // from this fresh DB read, never from in-memory state.
       const { data: existing } = await supabase
         .from("daily_scores")
         .select(
-          "total_points, steps_count, calories_count, workout_count, steps_achieved, workout_achieved, calories_achieved, water_achieved",
+          "total_points, steps_count, calories_count, workout_count, steps_achieved, workout_achieved, calories_achieved, water_achieved, streak_days",
         )
         .eq("run_id", run.id)
         .eq("user_id", userId)
         .eq("score_date", today)
         .maybeSingle();
+      const prevStreakDays = existing?.streak_days ?? 0;
+      const oldTotalPoints = existing?.total_points ?? 0;
 
       // Compute new count and achieved flags
       let newStepsCount    = existing?.steps_count ?? 0;
@@ -160,6 +168,52 @@ export async function syncManualActivityToDailyScores(
         activityType === "workout" ? workout_achieved :
                                      calories_achieved;
 
+      // ── Pass 9 funnel: activity_logged + streak_milestone ──
+      // Transition gate uses `existing` (fresh DB read at the top of this
+      // iteration) — never in-memory state mutated below the upsert.
+      // wasAchievedBefore / nowAchieved already encode that transition for
+      // the current activity_type.
+      if (nowAchieved && !wasAchievedBefore) {
+        let isFirstEver = false;
+        if (oldTotalPoints === 0 && newTotalPoints > 0) {
+          const { count } = await supabase
+            .from("daily_scores")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", userId)
+            .gt("total_points", 0);
+          isFirstEver = (count ?? 0) <= 1;
+        }
+        const goalHitToday = steps_achieved || workout_achieved || calories_achieved || water_achieved;
+        const pointsForActivity =
+          activityType === "steps"   ? POINTS.steps :
+          activityType === "workout" ? POINTS.workout :
+                                       POINTS.calories;
+        analytics.activityLogged({
+          activity_type: activityType,
+          source: "manual",
+          points_earned: Math.round(pointsForActivity * multiplier),
+          is_first_ever: isFirstEver,
+          streak_days_after: streakDays,
+          goal_hit_today: goalHitToday,
+        });
+      }
+
+      // Highest crossed streak milestone, fire once per upsert max.
+      const STREAK_MILESTONES = [3, 7, 14, 30, 60, 90] as const;
+      let crossedMilestone: 3 | 7 | 14 | 30 | 60 | 90 | null = null;
+      let priorMilestone = 0;
+      for (const m of STREAK_MILESTONES) {
+        if (prevStreakDays >= m) priorMilestone = m;
+        if (prevStreakDays < m && streakDays >= m) crossedMilestone = m;
+      }
+      if (crossedMilestone) {
+        analytics.streakMilestone({
+          milestone_days: crossedMilestone,
+          pack_id: pack.id,
+          prior_milestone_days: priorMilestone,
+        });
+      }
+
       if (nowAchieved) {
         const basePoints =
           activityType === "steps"   ? POINTS.steps :
@@ -171,10 +225,13 @@ export async function syncManualActivityToDailyScores(
           activityType === "workout" ? newWorkoutCount :
                                        newCaloriesCount;
 
-        const todayStart = packTodayStartUTC(packTz);
-
-        // Workouts: allow up to WORKOUT_MAX_DAILY feed entries per day (one per workout).
-        // All other activities: one feed entry per day (only on first achievement).
+        // Workouts: allow up to WORKOUT_MAX_DAILY feed entries per day.
+        // Manual workouts have no HealthKit UUID, so the partial unique
+        // index on (user_id, healthkit_uuid) doesn't apply — the
+        // count-gate is the only daily-cap enforcement here.
+        // All other activities: idempotent upsert on the per-day partial
+        // unique index. ignoreDuplicates turns concurrent races into
+        // silent no-ops.
         let shouldInsertFeed = false;
         if (activityType === "workout") {
           const { count: existingCount } = await supabase
@@ -183,30 +240,37 @@ export async function syncManualActivityToDailyScores(
             .eq("pack_id", pack.id)
             .eq("user_id", userId)
             .eq("activity_type", "workout")
-            .gte("created_at", todayStart.toISOString());
+            .eq("score_date", today);
           shouldInsertFeed = (existingCount ?? 0) < WORKOUT_MAX_DAILY;
         } else if (!wasAchievedBefore) {
-          const { data: existingFeed } = await supabase
-            .from("activity_feed")
-            .select("id")
-            .eq("pack_id", pack.id)
-            .eq("user_id", userId)
-            .eq("activity_type", activityType)
-            .gte("created_at", todayStart.toISOString())
-            .maybeSingle();
-          shouldInsertFeed = !existingFeed;
+          shouldInsertFeed = true;
         }
 
         if (shouldInsertFeed) {
-          const { error: feedError } = await supabase.from("activity_feed").insert({
-            pack_id: pack.id,
-            user_id: userId,
-            activity_type: activityType,
-            value,
-            points_earned: pointsEarned,
-            entry_method: "manual",
-          });
-          if (!feedError) {
+          // See src/lib/syncWater.ts:142 for the partial-index ON CONFLICT
+          // discussion — same race-safety pattern. For activityType==='workout',
+          // no partial unique index applies (manual workouts have NULL
+          // healthkit_uuid), so 23505 cannot fire — the catch is a defensive
+          // no-op for that path.
+          const { data: insertedRows, error: feedError } = await supabase
+            .from("activity_feed")
+            .insert({
+              pack_id: pack.id,
+              user_id: userId,
+              activity_type: activityType,
+              value,
+              points_earned: pointsEarned,
+              entry_method: "manual",
+              score_date: today,
+              category: activityType === "workout" ? (category ?? "other") : null,
+            })
+            .select("id");
+
+          if (feedError) {
+            if (feedError.code !== "23505") {
+              console.error("[logActivity] activity_feed insert error:", feedError);
+            }
+          } else if (insertedRows && insertedRows.length > 0) {
             notifyPackMembers(userId, pack.id, {
               kind: "goal",
               activityType,

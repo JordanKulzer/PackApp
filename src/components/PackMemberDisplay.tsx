@@ -2,6 +2,7 @@ import React from "react";
 import { View, Text, StyleSheet, Animated, Image } from "react-native";
 import Svg, { Circle } from "react-native-svg";
 import { colors } from "../theme/colors";
+import { formatName } from "../lib/displayName";
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
@@ -203,7 +204,7 @@ export function PackMemberDisplay({
           ]}
           numberOfLines={1}
         >
-          {displayName}
+          {formatName(displayName)}
         </Text>
       )}
     </View>

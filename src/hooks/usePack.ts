@@ -82,7 +82,7 @@ export function useUserPacks(userId: string | null) {
       setError(fetchError.message);
     } else {
       const packList = (data ?? [])
-        .map((row) => row.packs as Pack | null)
+        .map((row) => row.packs as unknown as Pack | null)
         .filter((p): p is Pack => p !== null && p.is_active);
       setPacks(packList);
     }

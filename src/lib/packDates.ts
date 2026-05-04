@@ -147,3 +147,38 @@ export function currentDayOfRun(
 export function getDeviceTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
+
+/**
+ * Returns the UTC Date range covering a given YYYY-MM-DD date in the pack's timezone.
+ * Used by multi-day HealthKit backfill — each per-day HK query needs to scope to
+ * the day's bounds in pack-tz, not device-local UTC.
+ *
+ * DST-correct: derives the offset from the target date itself (not "now"), so a
+ * backfill window that straddles a spring-forward or fall-back boundary still
+ * resolves each day's bounds correctly.
+ */
+export function packDateRangeUTC(
+  date: string,
+  packTimezone: string,
+): { start: Date; end: Date } {
+  const [y, m, d] = date.split("-").map(Number);
+  const candidateUTC = Date.UTC(y, m - 1, d, 0, 0, 0);
+
+  // Read the candidate UTC midnight back through the pack's timezone. The
+  // delta between what we get and what we sent is the tz offset on that date.
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: packTimezone,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(candidateUTC));
+
+  const get = (t: string) => parseInt(parts.find((p) => p.type === t)!.value, 10);
+  const tzH = get("hour") % 24; // some Intl impls return 24 for midnight
+  const tzMs = Date.UTC(get("year"), get("month") - 1, get("day"), tzH, get("minute"), get("second"));
+  const offsetMs = tzMs - candidateUTC;
+
+  const start = new Date(candidateUTC - offsetMs);
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  return { start, end };
+}

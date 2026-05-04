@@ -50,6 +50,8 @@ Supabase credentials are read in `src/lib/supabase.ts` via `expo-constants` (not
 
 **Scoring:** `src/lib/scoring.ts` is the single source of truth for point values and streak multipliers. The main sync path is `syncHealthDataToSupabase` in `src/lib/healthkit.ts`, which reads HealthKit, computes streak from past `daily_scores`, then upserts to `daily_scores` and `activity_logs`.
 
-**HealthKit:** Only available in custom dev builds (`npx expo run:ios`), not Expo Go. All HealthKit calls are guarded by `nativeAvailable()` which checks both `Platform.OS === 'ios'` and that the native module is actually registered. `newArchEnabled` is intentionally `false` in `app.config.ts` until `react-native-screens` native binary is compatible.
+**HealthKit:** Only available in custom dev builds (`npx expo run:ios`), not Expo Go. All HealthKit calls are guarded by `nativeAvailable()` which checks both `Platform.OS === 'ios'` and that the native module is actually registered. New Architecture enabled as of 2026-04-24. `react-native-health` is on the legacy interop layer (library not yet updated for new arch); HealthKit read/write paths must be regression-tested after any dependency upgrade.
 
 **Packs model:** A `Pack` has configurable activity categories and targets. A `Run` is the active competition window (weekly/monthly) for a pack. `DailyScore` rows belong to a run + user + date — the leaderboard aggregates these.
+
+**Patches (`patches/`):** Contains `modulesProvider` injections for `react-native-{gesture-handler,reanimated,worklets}` as of 2026-04-24. SDK 54's codegen pipeline requires `codegenConfig.ios.modulesProvider` for TurboModule discovery under prebuilt RNCore + new arch, but these libraries have not yet adopted the schema. Delete the corresponding patch when each library publishes a version that includes `modulesProvider` natively. Patches re-apply automatically via the `postinstall` hook.

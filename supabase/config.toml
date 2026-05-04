@@ -1,0 +1,10 @@
+# Supabase project configuration.
+# Replace <YOUR_PROJECT_REF> with the actual project ref (visible in the
+# Supabase dashboard URL: https://supabase.com/dashboard/project/<ref>).
+project_id = "elhlhskxhkeyjmdizmgu"
+
+[functions.notify-pack-event]
+# JWT is verified by the Supabase gateway before invocation. The function
+# decodes `sub` from the verified token to identify the actor — callers
+# cannot spoof a different actor via the request body.
+verify_jwt = true

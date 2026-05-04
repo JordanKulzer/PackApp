@@ -8,7 +8,6 @@ import {
   RefreshControl,
   ActivityIndicator,
 } from "react-native";
-import Svg, { Circle } from "react-native-svg";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useAuthStore } from "../../src/stores/authStore";
 import { useScoreStore } from "../../src/stores/scoreStore";
@@ -30,6 +29,10 @@ import { useRefreshCurrentUserOnFocus } from "../../src/hooks/useRefreshCurrentU
 import { computeDailyWinnersForPack } from "../../src/lib/dailyWinners";
 import { useUnpostedWins, UnpostedWin } from "../../src/hooks/useUnpostedWins";
 import { VictoryPostSheet } from "../../src/components/VictoryPostSheet";
+import { FEATURE_FLAGS } from "../../src/lib/featureFlags";
+import { PackLogo, PackWordmark } from "../../src/components/brand/PackLogo";
+import { packs as packsCopy } from "../../src/constants/strings";
+import { BrandColors } from "../../src/constants/brand";
 
 const C = {
   bg: "#0B0F14",
@@ -294,59 +297,6 @@ const miniRingS = StyleSheet.create({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Empty state illustration — three ghost rings in podium layout
-// ─────────────────────────────────────────────────────────────────────────────
-
-function EmptyRingsIllustration() {
-  const slots: Array<{ size: number; sw: number; elevated: boolean }> = [
-    { size: 44, sw: 4, elevated: false }, // #2 left
-    { size: 60, sw: 5, elevated: true }, // #1 center
-    { size: 44, sw: 4, elevated: false }, // #3 right
-  ];
-
-  return (
-    <View style={ghostRing.row}>
-      {slots.map(({ size, sw, elevated }, i) => {
-        const radius = (size - sw) / 2;
-        const avatarR = radius * 0.52;
-        return (
-          <View
-            key={i}
-            style={[ghostRing.slot, elevated && ghostRing.elevated]}
-          >
-            <Svg width={size} height={size}>
-              {/* Track ring */}
-              <Circle
-                cx={size / 2}
-                cy={size / 2}
-                r={radius}
-                stroke="#252E3D"
-                strokeWidth={sw}
-                fill="none"
-              />
-              {/* Avatar placeholder disc */}
-              <Circle cx={size / 2} cy={size / 2} r={avatarR} fill="#1A2232" />
-            </Svg>
-          </View>
-        );
-      })}
-    </View>
-  );
-}
-
-const ghostRing = StyleSheet.create({
-  row: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "center",
-    gap: 14,
-    marginBottom: 8,
-  },
-  slot: { alignItems: "center" },
-  elevated: { marginBottom: 14 },
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Empty state
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -359,12 +309,12 @@ function PacksEmptyState({
 }) {
   return (
     <View style={emptyS.container}>
-      <EmptyRingsIllustration />
+      <View style={emptyS.brandMark}>
+        <PackLogo size={56} variant="mono" tint={BrandColors.blue} />
+      </View>
 
-      <Text style={emptyS.title}>No packs yet</Text>
-      <Text style={emptyS.subtitle}>
-        Create a pack or join one with an invite code
-      </Text>
+      <Text style={emptyS.title}>{packsCopy.empty.headline}</Text>
+      <Text style={emptyS.subtitle}>{packsCopy.empty.body}</Text>
 
       <View style={emptyS.actions}>
         <TouchableOpacity
@@ -372,7 +322,7 @@ function PacksEmptyState({
           onPress={onCreate}
           activeOpacity={0.8}
         >
-          <Text style={emptyS.primaryBtnText}>Create your first pack</Text>
+          <Text style={emptyS.primaryBtnText}>{packsCopy.empty.primaryCta}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -380,10 +330,8 @@ function PacksEmptyState({
           onPress={onJoin}
           activeOpacity={0.7}
         >
-          <Text style={emptyS.joinLinkText}>Join with invite code →</Text>
+          <Text style={emptyS.joinLinkText}>{packsCopy.empty.secondaryCta}</Text>
         </TouchableOpacity>
-
-        {/* TODO: "See how Pack works" → open onboarding walkthrough (v2) */}
       </View>
     </View>
   );
@@ -397,6 +345,9 @@ const emptyS = StyleSheet.create({
     paddingHorizontal: 40,
     paddingVertical: 32,
     gap: 10,
+  },
+  brandMark: {
+    marginBottom: 8,
   },
   title: {
     fontSize: 22,
@@ -566,7 +517,7 @@ function DarkPackCard({
           )}
         </>
       ) : (
-        <Text style={card.noActivity}>No activity yet this week</Text>
+        <Text style={card.noActivity}>{packsCopy.packCard.quietWeek}</Text>
       )}
 
       {unpostedWin && victorySheetOpen && (
@@ -703,12 +654,15 @@ export default function Home() {
     {},
   );
   const [joinModalVisible, setJoinModalVisible] = useState(false);
-  const { wins: unpostedWins, refresh: refreshWins } = useUnpostedWins(user?.id);
+  const { wins: unpostedWins, refresh: refreshWins } = useUnpostedWins(
+    FEATURE_FLAGS.dailyWinner ? user?.id : undefined,
+  );
 
   const logVersion = useScoreStore((s) => s.logVersion);
 
   useFocusEffect(
     useCallback(() => {
+      if (!FEATURE_FLAGS.dailyWinner) return;
       packs.forEach((pack) => {
         computeDailyWinnersForPack(pack.id).catch(() => {});
       });
@@ -851,21 +805,21 @@ export default function Home() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Packs</Text>
+        <PackWordmark iconSize={28} />
         <View style={styles.headerButtons}>
           <TouchableOpacity
             style={styles.joinButton}
             onPress={() => setJoinModalVisible(true)}
             activeOpacity={0.8}
           >
-            <Text style={styles.joinButtonText}>Join</Text>
+            <Text style={styles.joinButtonText}>{packsCopy.joinShort}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.createButton}
             onPress={() => handleNewPack()}
             activeOpacity={0.8}
           >
-            <Text style={styles.createButtonText}>+ New Pack</Text>
+            <Text style={styles.createButtonText}>{packsCopy.newPackShort}</Text>
           </TouchableOpacity>
         </View>
       </View>

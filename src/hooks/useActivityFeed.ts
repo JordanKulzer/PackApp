@@ -1,8 +1,18 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../lib/supabase";
+import { analytics } from "../lib/analytics";
+import { FEATURE_FLAGS } from "../lib/featureFlags";
+import type { ActivityCategory } from "../lib/activityCategoryMap";
 
-export type ReactionType = "💪" | "🔥" | "👏";
-const REACTION_TYPES: ReactionType[] = ["💪", "🔥", "👏"];
+// Reaction emoji is now an open string — the picker decides which set to
+// offer. Existing legacy values ('💪' '🔥' '👏') still render in pills if
+// present in old rows; new reactions come from the 6-emoji picker set.
+export type ReactionType = string;
+
+export interface Reactor {
+  user_id: string;
+  reaction_type: ReactionType;
+}
 
 export interface FeedItem {
   id: string;
@@ -10,27 +20,69 @@ export interface FeedItem {
   userId: string;
   displayName: string;
   avatarUrl: string | null;
-  activityType: "steps" | "workout" | "calories" | "water" | "took_lead" | "all_goals" | "daily_winner";
+  activityType:
+    | "steps"
+    | "workout"
+    | "calories"
+    | "water"
+    | "took_lead"
+    | "all_goals"
+    | "daily_winner";
   value: number;
   pointsEarned: number;
   createdAt: string;
   entryMethod: "manual" | "healthkit" | "oura" | "whoop" | "system";
-  photoUrl: string | null;   // Supabase Storage path (not a full URL)
+  photoUrl: string | null; // Supabase Storage path (not a full URL)
   caption: string | null;
   scoreDate: string | null;
   commentCount: number;
-  reactions: {
-    type: ReactionType;
-    count: number;
-    hasReacted: boolean;
-  }[];
+  // Workout sub-type category. Populated only for activityType==="workout"
+  // rows; NULL for steps/calories/water/took_lead/all_goals/daily_winner.
+  category: ActivityCategory | null;
+  // Flat array of reactors. ReactionPills aggregates by emoji at render
+  // time. UNIQUE (feed_item_id, user_id) on the DB enforces one reaction
+  // per user, so each user appears at most once per item.
+  reactions: Reactor[];
 }
 
 type ReactionRow = {
   feed_item_id: string;
   user_id: string;
-  reaction_type: ReactionType;
+  reaction_type: string;
 };
+
+// Pass 9 funnel — fires reaction_given after a successful insert (toggle-on
+// or switch). Toggle-OFF (delete-only) does NOT fire — it's not a "reaction
+// given" event. The two insert paths in toggleReaction call this on success.
+//
+// is_first_reaction_ever is racy with the post-insert COUNT (the just-written
+// row is in the count) — count === 1 means it's the only one. For the switch
+// path, the user had a prior reaction by definition, so we pass false directly
+// without a query.
+async function fireReactionGiven(
+  userId: string,
+  feedItemId: string,
+  reactionType: string,
+  items: FeedItem[],
+  knownNotFirst = false,
+): Promise<void> {
+  const item = items.find((i) => i.id === feedItemId);
+  if (!item) return;
+  let isFirst = false;
+  if (!knownNotFirst) {
+    const { count } = await supabase
+      .from("activity_reactions")
+      .select("feed_item_id", { count: "exact", head: true })
+      .eq("user_id", userId);
+    isFirst = (count ?? 0) <= 1;
+  }
+  analytics.reactionGiven({
+    is_first_reaction_ever: isFirst,
+    reaction_type: reactionType,
+    target_activity_type: item.activityType,
+    target_user_is_self: item.userId === userId,
+  });
+}
 
 export function useActivityFeed(packId: string, currentUserId: string | undefined) {
   const [items, setItems] = useState<FeedItem[]>([]);
@@ -39,10 +91,14 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
   const fetchFeed = useCallback(async () => {
     if (!packId) return;
 
-    const { data: feedRows, error } = await supabase
+    let query = supabase
       .from("activity_feed")
-      .select("id, pack_id, user_id, activity_type, value, points_earned, created_at, entry_method, photo_url, caption, score_date, comment_count")
-      .eq("pack_id", packId)
+      .select("id, pack_id, user_id, activity_type, value, points_earned, created_at, entry_method, photo_url, caption, score_date, comment_count, category")
+      .eq("pack_id", packId);
+    if (!FEATURE_FLAGS.dailyWinner) {
+      query = query.neq("activity_type", "daily_winner");
+    }
+    const { data: feedRows, error } = await query
       .order("created_at", { ascending: false })
       .limit(50);
 
@@ -81,22 +137,15 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
       avatarMap[u.id] = u.avatar_url ?? null;
     });
 
-    // Group reactions by feed_item_id → reaction_type → { count, hasReacted }
-    // DB constraint guarantees at most one row per (feed_item_id, user_id).
-    const reactionsByItem: Record<string, Record<ReactionType, { count: number; hasReacted: boolean }>> = {};
+    // Group raw reactors by feed_item_id. DB constraint UNIQUE
+    // (feed_item_id, user_id) → at most one row per (item, user).
+    const reactorsByItem: Record<string, Reactor[]> = {};
     (reactionsResult.data ?? []).forEach((r) => {
-      if (!reactionsByItem[r.feed_item_id]) {
-        reactionsByItem[r.feed_item_id] = {
-          "💪": { count: 0, hasReacted: false },
-          "🔥": { count: 0, hasReacted: false },
-          "👏": { count: 0, hasReacted: false },
-        };
-      }
-      const type = r.reaction_type as ReactionType;
-      reactionsByItem[r.feed_item_id][type].count += 1;
-      if (r.user_id === currentUserId) {
-        reactionsByItem[r.feed_item_id][type].hasReacted = true;
-      }
+      if (!reactorsByItem[r.feed_item_id]) reactorsByItem[r.feed_item_id] = [];
+      reactorsByItem[r.feed_item_id].push({
+        user_id: r.user_id,
+        reaction_type: r.reaction_type,
+      });
     });
 
     const mapped: FeedItem[] = feedRows.map((row) => ({
@@ -114,11 +163,8 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
       caption: row.caption ?? null,
       scoreDate: row.score_date ?? null,
       commentCount: row.comment_count ?? 0,
-      reactions: REACTION_TYPES.map((type) => ({
-        type,
-        count: reactionsByItem[row.id]?.[type]?.count ?? 0,
-        hasReacted: reactionsByItem[row.id]?.[type]?.hasReacted ?? false,
-      })),
+      category: (row.category ?? null) as ActivityCategory | null,
+      reactions: reactorsByItem[row.id] ?? [],
     }));
 
     setItems(mapped);
@@ -150,13 +196,12 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
           setItems((prev) =>
             prev.map((item) => {
               if (item.id !== r.feed_item_id) return item;
+              // Replace any existing entry for this user (one-per-user
+              // constraint) and append the new reaction.
+              const without = item.reactions.filter((rx) => rx.user_id !== r.user_id);
               return {
                 ...item,
-                reactions: item.reactions.map((rx) =>
-                  rx.type === r.reaction_type
-                    ? { ...rx, count: rx.count + 1 }
-                    : rx
-                ),
+                reactions: [...without, { user_id: r.user_id, reaction_type: r.reaction_type }],
               };
             })
           );
@@ -174,10 +219,8 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
               if (item.id !== r.feed_item_id) return item;
               return {
                 ...item,
-                reactions: item.reactions.map((rx) =>
-                  rx.type === r.reaction_type
-                    ? { ...rx, count: Math.max(0, rx.count - 1) }
-                    : rx
+                reactions: item.reactions.filter(
+                  (rx) => !(rx.user_id === r.user_id && rx.reaction_type === r.reaction_type),
                 ),
               };
             })
@@ -207,154 +250,112 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
     };
   }, [packId, fetchFeed]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Toggle a reaction on an activity item. One-reaction-per-user model:
+  // - Tapping the same emoji you already reacted with → removes it.
+  // - Tapping a different emoji → replaces your existing reaction.
+  // - No prior reaction → adds it.
+  // Mirrors the original useActivityFeed pattern: delete-then-insert at
+  // the DB layer (avoids hitting the UNIQUE (item, user) constraint with
+  // a plain UPDATE), full optimistic update, revert on error.
   const toggleReaction = useCallback(
     async (feedItemId: string, reactionType: ReactionType) => {
       if (!currentUserId) return;
 
-      // Read the current user's existing reaction synchronously from state.
-      // The setState callback runs synchronously, so prevType is set before
-      // the await below.
-      let prevType: ReactionType | null = null;
+      // Determine prev reaction synchronously from state.
+      let prevType: string | null = null;
 
       setItems((prev) => {
         const item = prev.find((i) => i.id === feedItemId);
-        prevType = item?.reactions.find((rx) => rx.hasReacted)?.type ?? null;
+        const mine = item?.reactions.find((rx) => rx.user_id === currentUserId);
+        prevType = mine?.reaction_type ?? null;
         const isSame = prevType === reactionType;
 
         return prev.map((i) => {
           if (i.id !== feedItemId) return i;
-          return {
-            ...i,
-            reactions: i.reactions.map((rx) => {
-              // Deactivate the old reaction when switching
-              if (rx.type === prevType && prevType !== null && !isSame) {
-                return { ...rx, count: Math.max(0, rx.count - 1), hasReacted: false };
-              }
-              if (rx.type === reactionType) {
-                return isSame
-                  ? { ...rx, count: Math.max(0, rx.count - 1), hasReacted: false }
-                  : { ...rx, count: rx.count + 1, hasReacted: true };
-              }
-              return rx;
-            }),
-          };
+          // Drop any existing entry for this user.
+          const without = i.reactions.filter((rx) => rx.user_id !== currentUserId);
+          // Re-add only if not toggling off.
+          const next = isSame
+            ? without
+            : [...without, { user_id: currentUserId, reaction_type: reactionType }];
+          return { ...i, reactions: next };
         });
       });
 
       const isSame = prevType === reactionType;
       const hadDifferent = prevType !== null && !isSame;
 
+      const revert = () => {
+        setItems((prev) =>
+          prev.map((i) => {
+            if (i.id !== feedItemId) return i;
+            const without = i.reactions.filter((rx) => rx.user_id !== currentUserId);
+            // Restore prevType (or remove if there was none).
+            return {
+              ...i,
+              reactions: prevType
+                ? [...without, { user_id: currentUserId, reaction_type: prevType }]
+                : without,
+            };
+          }),
+        );
+      };
+
       if (isSame) {
-        // Toggle off: remove existing reaction
         const { error } = await supabase
           .from("activity_reactions")
           .delete()
           .eq("feed_item_id", feedItemId)
           .eq("user_id", currentUserId);
-
         if (error) {
           console.error("[toggleReaction] delete error:", error);
-          setItems((prev) =>
-            prev.map((i) =>
-              i.id !== feedItemId
-                ? i
-                : {
-                    ...i,
-                    reactions: i.reactions.map((rx) =>
-                      rx.type === reactionType
-                        ? { ...rx, count: rx.count + 1, hasReacted: true }
-                        : rx
-                    ),
-                  }
-            )
-          );
+          revert();
         }
       } else if (hadDifferent) {
-        // Switch: delete old reaction, insert new one
-        const oldType = prevType!;
-
+        // Switch: delete old reaction, insert new one. Plain UPDATE
+        // doesn't work because the old row's UNIQUE (item, user) would
+        // fight an INSERT and there's no UPDATE policy for switching.
         const { error: delErr } = await supabase
           .from("activity_reactions")
           .delete()
           .eq("feed_item_id", feedItemId)
           .eq("user_id", currentUserId);
-
         if (delErr) {
           console.error("[toggleReaction] switch delete error:", delErr);
-          // Revert both changes
-          setItems((prev) =>
-            prev.map((i) =>
-              i.id !== feedItemId
-                ? i
-                : {
-                    ...i,
-                    reactions: i.reactions.map((rx) => {
-                      if (rx.type === oldType) return { ...rx, count: rx.count + 1, hasReacted: true };
-                      if (rx.type === reactionType) return { ...rx, count: Math.max(0, rx.count - 1), hasReacted: false };
-                      return rx;
-                    }),
-                  }
-            )
-          );
+          revert();
           return;
         }
-
-        // The delete above already cleared the row, so a plain insert is safe.
         const { error: insErr } = await supabase
           .from("activity_reactions")
           .insert({ feed_item_id: feedItemId, user_id: currentUserId, reaction_type: reactionType });
-
         if (insErr) {
           console.error("[toggleReaction] switch insert error:", insErr);
-          // Delete succeeded but insert failed — revert the new reaction only
-          setItems((prev) =>
-            prev.map((i) =>
-              i.id !== feedItemId
-                ? i
-                : {
-                    ...i,
-                    reactions: i.reactions.map((rx) =>
-                      rx.type === reactionType
-                        ? { ...rx, count: Math.max(0, rx.count - 1), hasReacted: false }
-                        : rx
-                    ),
-                  }
-            )
-          );
+          revert();
+        } else {
+          // Switch path: user had a prior reaction by definition, so
+          // is_first_reaction_ever is always false here.
+          fireReactionGiven(currentUserId, feedItemId, reactionType, items, true);
         }
       } else {
-        // No prior reaction in client state. Delete first in case the DB has a
-        // stale row the client missed (avoids 23505 without needing UPDATE policy).
+        // No prior reaction in client state. Defensive delete in case
+        // the DB has a stale row the client missed (avoids 23505).
         await supabase
           .from("activity_reactions")
           .delete()
           .eq("feed_item_id", feedItemId)
           .eq("user_id", currentUserId);
-
         const { error } = await supabase
           .from("activity_reactions")
           .insert({ feed_item_id: feedItemId, user_id: currentUserId, reaction_type: reactionType });
-
         if (error) {
           console.error("[toggleReaction] insert error:", error);
-          setItems((prev) =>
-            prev.map((i) =>
-              i.id !== feedItemId
-                ? i
-                : {
-                    ...i,
-                    reactions: i.reactions.map((rx) =>
-                      rx.type === reactionType
-                        ? { ...rx, count: Math.max(0, rx.count - 1), hasReacted: false }
-                        : rx
-                    ),
-                  }
-            )
-          );
+          revert();
+        } else {
+          fireReactionGiven(currentUserId, feedItemId, reactionType, items);
         }
       }
     },
-    [currentUserId]
+    [currentUserId, items]
   );
 
   const removePhotoFromItem = useCallback(

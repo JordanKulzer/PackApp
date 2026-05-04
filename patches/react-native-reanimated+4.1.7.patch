@@ -1,0 +1,16 @@
+diff --git a/node_modules/react-native-reanimated/package.json b/node_modules/react-native-reanimated/package.json
+index 4ab109b..3991ac7 100644
+--- a/node_modules/react-native-reanimated/package.json
++++ b/node_modules/react-native-reanimated/package.json
+@@ -173,6 +173,11 @@
+     "jsSrcsDir": "./src/specs",
+     "android": {
+       "javaPackageName": "com.swmansion.reanimated"
++    },
++    "ios": {
++      "modulesProvider": {
++        "ReanimatedModule": "ReanimatedModule"
++      }
+     }
+   },
+   "sideEffects": [

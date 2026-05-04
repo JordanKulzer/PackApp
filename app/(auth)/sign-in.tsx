@@ -9,12 +9,17 @@ import {
   Platform,
   ActivityIndicator,
   Alert,
+  ScrollView,
 } from "react-native";
-import { Link } from "expo-router";
+import { Link, useRouter } from "expo-router";
 import * as AppleAuthentication from "expo-apple-authentication";
 import { useAuth } from "../../src/hooks/useAuth";
+import { PackLogo } from "../../src/components/brand/PackLogo";
+import { auth, forgotPassword } from "../../src/constants/strings";
+import { BrandColors, BrandTypography, BrandSpacing } from "../../src/constants/brand";
 
 export default function SignIn() {
+  const router = useRouter();
   const { signIn, signInWithApple, signInWithGoogle } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -75,19 +80,24 @@ export default function SignIn() {
   return (
     <KeyboardAvoidingView
       style={styles.flex}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
-      <View style={styles.container}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.hero}>
-          <Text style={styles.wordmark}>PACK</Text>
-          <Text style={styles.tagline}>Compete with your crew</Text>
+          <PackLogo size={80} />
+          <Text style={styles.wordmark}>Pack</Text>
+          <Text style={styles.tagline}>{auth.signIn.tagline}</Text>
         </View>
 
         <View style={styles.form}>
           <TextInput
             style={styles.input}
             placeholder="Email"
-            placeholderTextColor="#9CA3AF"
+            placeholderTextColor={BrandColors.inkMuted}
             keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
@@ -97,11 +107,19 @@ export default function SignIn() {
           <TextInput
             style={styles.input}
             placeholder="Password"
-            placeholderTextColor="#9CA3AF"
+            placeholderTextColor={BrandColors.inkMuted}
             secureTextEntry
             value={password}
             onChangeText={setPassword}
           />
+
+          <TouchableOpacity
+            style={styles.forgotLinkRow}
+            onPress={() => router.push("/(auth)/forgot-password")}
+            hitSlop={8}
+          >
+            <Text style={styles.forgotLink}>{forgotPassword.signInLink}</Text>
+          </TouchableOpacity>
 
           <TouchableOpacity
             style={[styles.button, isLoading && styles.buttonDisabled]}
@@ -117,7 +135,7 @@ export default function SignIn() {
           </TouchableOpacity>
         </View>
 
-        {/* Social auth divider */}
+        {/* Social auth divider — flanking lines on either side of "or" */}
         <View style={styles.dividerRow}>
           <View style={styles.dividerLine} />
           <Text style={styles.dividerText}>or</Text>
@@ -129,7 +147,7 @@ export default function SignIn() {
           {appleAvailable && (
             <AppleAuthentication.AppleAuthenticationButton
               buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-              buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+              buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
               cornerRadius={12}
               style={styles.appleBtn}
               onPress={handleApple}
@@ -163,12 +181,12 @@ export default function SignIn() {
             </TouchableOpacity>
           </Link>
         </View>
-      </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
-// Google "G" logo using colored letters
+// Google "G" logo using colored letters — Google brand requirement.
 function GoogleG() {
   return (
     <View style={g.wrapper}>
@@ -188,43 +206,62 @@ const g = StyleSheet.create({
 });
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
+  flex: { flex: 1, backgroundColor: BrandColors.background },
+  // contentContainerStyle on the ScrollView — flexGrow:1 lets the content
+  // fill available height when short, justifyContent:center keeps the form
+  // visually centered when no keyboard is present, and the ScrollView's
+  // overflow handles the keyboard-up case without pushing the logo into
+  // the status bar.
   container: {
-    flex: 1,
+    flexGrow: 1,
     padding: 24,
     justifyContent: "center",
     gap: 28,
   },
   hero: {
     alignItems: "center",
-    gap: 8,
   },
+  // "Pack" wordmark below the 80pt logo. Logo (80) → wordmark (36 bold)
+  // → tagline. Combined visual mass matches the prior 120pt logo alone.
   wordmark: {
-    fontSize: 42,
-    fontWeight: "800",
-    letterSpacing: 6,
-    color: "#0F0F0F",
+    fontSize: 36,
+    fontWeight: BrandTypography.weightBold,
+    letterSpacing: BrandTypography.tightLetter,
+    color: BrandColors.ink,
+    marginTop: BrandSpacing.md,
+    marginBottom: BrandSpacing.sm,
   },
   tagline: {
     fontSize: 16,
-    color: "#9CA3AF",
+    color: BrandColors.inkMuted,
+    textAlign: "center",
   },
   form: {
     gap: 12,
   },
   input: {
     height: 52,
-    borderWidth: 1.5,
-    borderColor: "#E5E7EB",
+    borderWidth: 1,
+    borderColor: "#30363D",
     borderRadius: 12,
     paddingHorizontal: 16,
     fontSize: 16,
-    color: "#111827",
-    backgroundColor: "#F9FAFB",
+    color: BrandColors.ink,
+    backgroundColor: BrandColors.surface,
+  },
+  forgotLinkRow: {
+    alignSelf: "flex-end",
+    marginTop: 4,
+    paddingVertical: 4,
+  },
+  forgotLink: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: BrandColors.blue,
   },
   button: {
     height: 52,
-    backgroundColor: "#111827",
+    backgroundColor: BrandColors.blue,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
@@ -246,11 +283,11 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: StyleSheet.hairlineWidth,
-    backgroundColor: "#D1D5DB",
+    backgroundColor: "#30363D",
   },
   dividerText: {
     fontSize: 13,
-    color: "#9CA3AF",
+    color: BrandColors.inkMuted,
     fontWeight: "500",
   },
   socialGroup: {
@@ -264,8 +301,8 @@ const styles = StyleSheet.create({
     height: 52,
     backgroundColor: "#FFFFFF",
     borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: "#E5E7EB",
+    borderWidth: 1,
+    borderColor: "#30363D",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -280,7 +317,7 @@ const styles = StyleSheet.create({
   },
   errorText: {
     fontSize: 13,
-    color: "#DC2626",
+    color: BrandColors.danger,
     textAlign: "center",
   },
   footer: {
@@ -290,11 +327,11 @@ const styles = StyleSheet.create({
   },
   footerText: {
     fontSize: 15,
-    color: "#6B7280",
+    color: BrandColors.inkMuted,
   },
   footerLink: {
     fontSize: 15,
     fontWeight: "700",
-    color: "#6366F1",
+    color: BrandColors.blue,
   },
 });

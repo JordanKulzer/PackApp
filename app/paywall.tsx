@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -20,6 +20,8 @@ import {
   PRO_ANNUAL_PRICE,
 } from "../src/lib/revenuecat";
 import { analytics } from "../src/lib/analytics";
+import { supabase } from "../src/lib/supabase";
+import { useAuthStore } from "../src/stores/authStore";
 import { colors } from "../src/theme/colors";
 import type { PurchasesPackage } from "react-native-purchases";
 
@@ -61,8 +63,51 @@ export default function Paywall() {
   const [isRestoring, setIsRestoring] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
+  const userId = useAuthStore((s) => s.session?.user?.id);
+
+  // Tracks the most recent paywall_viewed firing time so paywall_converted
+  // can compute time_to_convert_sec. If the user dismisses and re-opens, the
+  // remount resets this — most-recent-view wins, which is what we want.
+  const paywallViewedAtRef = useRef<number>(0);
+
   useEffect(() => {
-    analytics.paywallViewed(trigger as string);
+    paywallViewedAtRef.current = Date.now();
+
+    // Fire paywall_viewed with funnel context. Two cheap queries: the user's
+    // active pack count and the largest pack's member count. Both are
+    // best-effort — if they fail, fall back to 0 so the event still lands.
+    (async () => {
+      let currentPackCount = 0;
+      let currentMemberCountInLargestPack = 0;
+      if (userId) {
+        const { data: memberships } = await supabase
+          .from("pack_members")
+          .select("pack_id")
+          .eq("user_id", userId)
+          .eq("is_active", true);
+        currentPackCount = memberships?.length ?? 0;
+        if (memberships && memberships.length > 0) {
+          // Find largest pack by active-member count among those the user belongs to.
+          const counts = await Promise.all(
+            memberships.map((m) =>
+              supabase
+                .from("pack_members")
+                .select("id", { count: "exact", head: true })
+                .eq("pack_id", m.pack_id)
+                .eq("is_active", true)
+                .then((r) => r.count ?? 0),
+            ),
+          );
+          currentMemberCountInLargestPack = Math.max(0, ...counts);
+        }
+      }
+      analytics.paywallViewed({
+        trigger: trigger as string,
+        current_pack_count: currentPackCount,
+        current_member_count_in_largest_pack: currentMemberCountInLargestPack,
+      });
+    })();
+
     getOfferings().then((offering) => {
       if (!offering) {
         setIsLoadingOfferings(false);
@@ -93,7 +138,14 @@ export default function Paywall() {
     try {
       const info = await purchasePackage(pkg);
       if (info) {
-        analytics.proSubscribed(pkg.product.identifier, trigger as string);
+        const timeToConvertSec = paywallViewedAtRef.current
+          ? Math.max(0, Math.round((Date.now() - paywallViewedAtRef.current) / 1000))
+          : 0;
+        analytics.paywallConverted({
+          product_id: pkg.product.identifier,
+          trigger_at_view: trigger as string,
+          time_to_convert_sec: timeToConvertSec,
+        });
         setStatusMsg("You're now Pro! Enjoy unlimited packs.");
         setTimeout(() => router.back(), 1500);
       }

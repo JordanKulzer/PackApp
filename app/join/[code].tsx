@@ -9,10 +9,15 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useAuthStore } from "../../src/stores/authStore";
+import { useCurrentUser } from "../../src/context/CurrentUserContext";
 import { supabase } from "../../src/lib/supabase";
 import { ensureUserProfile } from "../../src/lib/ensureUserProfile";
+import { analytics } from "../../src/lib/analytics";
+import { notifyPackMembers } from "../../src/lib/notifications";
+import { fallbacks } from "../../src/constants/strings";
 import { FREE_PACK_LIMIT, FREE_MEMBER_LIMIT } from "../../src/lib/revenuecat";
 import type { Pack } from "../../src/types/database";
+import { BrandColors } from "../../src/constants/brand";
 
 type JoinStatus = "loading" | "found" | "joining" | "joined" | "error";
 
@@ -20,6 +25,7 @@ export default function JoinPack() {
   const { code } = useLocalSearchParams<{ code: string }>();
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
+  const { user: currentUser } = useCurrentUser();
   const [status, setStatus] = useState<JoinStatus>("loading");
   const [pack, setPack] = useState<Pack | null>(null);
   const [memberCount, setMemberCount] = useState(0);
@@ -122,6 +128,27 @@ export default function JoinPack() {
       return;
     }
 
+    // Pass 9 funnel — pack_joined via deep link. userPackCount was queried
+    // pre-insert above; post-insert state is userPackCount + 1.
+    analytics.packJoined({
+      is_first_join: (userPackCount ?? 0) === 0,
+      pack_member_count_at_join: memberCount + 1,
+      current_pack_count: (userPackCount ?? 0) + 1,
+      join_source: "deep_link",
+    });
+
+    // Pass 7c — broadcast new_member push to existing packmates. Server-side
+    // copy via push.newMemberJoined from _shared/push-strings.ts. Fallback
+    // covers brand-new-social-signup race where useCurrentUser hasn't
+    // hydrated yet (ensureUserProfile above ensures the row exists).
+    const newMemberName =
+      currentUser?.displayName?.trim() || fallbacks.newMemberName;
+    notifyPackMembers(user.id, pack.id, {
+      kind: "new_member",
+      newMemberName,
+      packName: pack.name,
+    }).catch(() => {});
+
     setStatus("joined");
     setTimeout(() => {
       router.replace(`/(app)/pack/${pack.id}`);
@@ -131,7 +158,7 @@ export default function JoinPack() {
   if (status === "loading") {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#6366F1" />
+        <ActivityIndicator size="large" color={BrandColors.blue} />
         <Text style={styles.loadingText}>Looking up invite code…</Text>
       </View>
     );
@@ -159,7 +186,7 @@ export default function JoinPack() {
         <Text style={styles.successEmoji}>🎉</Text>
         <Text style={styles.successTitle}>You joined the pack!</Text>
         <Text style={styles.successSubtitle}>Opening {pack?.name}…</Text>
-        <ActivityIndicator color="#6366F1" style={{ marginTop: 16 }} />
+        <ActivityIndicator color={BrandColors.blue} style={{ marginTop: 16 }} />
       </View>
     );
   }
@@ -197,7 +224,7 @@ export default function JoinPack() {
         {status === "joining" ? (
           <ActivityIndicator color="#FFF" />
         ) : (
-          <Text style={styles.buttonText}>Join Pack</Text>
+          <Text style={styles.buttonText}>Join pack</Text>
         )}
       </TouchableOpacity>
     </View>
@@ -207,7 +234,7 @@ export default function JoinPack() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F9FAFB",
+    backgroundColor: BrandColors.background,
     padding: 24,
   },
   center: {
@@ -216,6 +243,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 32,
     gap: 12,
+    backgroundColor: BrandColors.background,
   },
   header: {
     paddingTop: 40,
@@ -223,7 +251,7 @@ const styles = StyleSheet.create({
   },
   cancelText: {
     fontSize: 16,
-    color: "#6B7280",
+    color: BrandColors.inkMuted,
   },
   packPreview: {
     flex: 1,
@@ -235,13 +263,13 @@ const styles = StyleSheet.create({
   packName: {
     fontSize: 28,
     fontWeight: "800",
-    color: "#111827",
+    color: BrandColors.ink,
     textAlign: "center",
     letterSpacing: -0.5,
   },
   packMeta: {
     fontSize: 15,
-    color: "#9CA3AF",
+    color: BrandColors.inkMuted,
   },
   activities: {
     flexDirection: "row",
@@ -251,17 +279,19 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   actTag: {
-    backgroundColor: "#EEF2FF",
+    backgroundColor: BrandColors.surface,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 5,
     fontSize: 13,
     fontWeight: "600",
-    color: "#4F46E5",
+    color: BrandColors.blueSoft,
+    borderWidth: 1,
+    borderColor: "#30363D",
   },
   button: {
     height: 56,
-    backgroundColor: "#6366F1",
+    backgroundColor: BrandColors.blue,
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
@@ -275,18 +305,18 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 15,
-    color: "#9CA3AF",
+    color: BrandColors.inkMuted,
     marginTop: 12,
   },
   errorEmoji: { fontSize: 52 },
   errorTitle: {
     fontSize: 22,
     fontWeight: "700",
-    color: "#111827",
+    color: BrandColors.ink,
   },
   errorMessage: {
     fontSize: 15,
-    color: "#9CA3AF",
+    color: BrandColors.inkMuted,
     textAlign: "center",
     lineHeight: 22,
   },
@@ -294,10 +324,10 @@ const styles = StyleSheet.create({
   successTitle: {
     fontSize: 24,
     fontWeight: "800",
-    color: "#111827",
+    color: BrandColors.ink,
   },
   successSubtitle: {
     fontSize: 16,
-    color: "#9CA3AF",
+    color: BrandColors.inkMuted,
   },
 });

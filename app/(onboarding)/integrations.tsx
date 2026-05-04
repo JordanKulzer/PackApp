@@ -18,6 +18,7 @@ import {
   WhoopIcon,
 } from "../../src/components/IntegrationIcons";
 import { completeOnboarding } from "../../src/lib/onboarding";
+import { onboarding } from "../../src/constants/strings";
 
 const C = {
   bg: "#0B0F14",
@@ -51,7 +52,7 @@ export default function Integrations() {
           onPress: async () => {
             if (!authUser?.id || completing) return;
             setCompleting(true);
-            await completeOnboarding(authUser.id);
+            await completeOnboarding(authUser.id, "skip");
             applyLocal({ hasCompletedOnboarding: true });
             router.replace("/(app)/home");
           },
@@ -81,11 +82,8 @@ export default function Integrations() {
           <Text style={s.skipText}>Skip</Text>
         </TouchableOpacity>
 
-        <Text style={s.header}>Connect a tracker</Text>
-        <Text style={s.subtitle}>
-          Pack auto-scores your activity from whichever tracker you connect. You
-          can always log manually instead.
-        </Text>
+        <Text style={s.header}>{onboarding.integrations.headline}</Text>
+        <Text style={s.subtitle}>{onboarding.integrations.subhead}</Text>
 
         <View style={s.group}>
           {/* Apple Health */}
@@ -143,8 +141,9 @@ export default function Integrations() {
         </TouchableOpacity>
 
         <TouchableOpacity onPress={handleContinue} hitSlop={8} style={s.skipLink}>
-          <Text style={s.skipLinkText}>Skip for now — I'll log manually</Text>
+          <Text style={s.skipLinkText}>{onboarding.integrations.skipForNow}</Text>
         </TouchableOpacity>
+        <Text style={s.skipHint}>{onboarding.integrations.skipHint}</Text>
       </View>
     </SafeAreaView>
   );
@@ -259,5 +258,15 @@ const s = StyleSheet.create({
   skipLinkText: {
     fontSize: 14,
     color: C.textTertiary,
+  },
+  // Helper text below the skip link — preserves the "you can opt for
+  // manual logging" affordance hint that the verbose version of skipForNow
+  // used to carry inline.
+  skipHint: {
+    fontSize: 12,
+    color: C.textTertiary,
+    textAlign: "center",
+    marginTop: 6,
+    opacity: 0.75,
   },
 });

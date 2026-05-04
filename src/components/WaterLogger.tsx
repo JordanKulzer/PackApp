@@ -1,4 +1,5 @@
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from "react-native";
+import { BrandColors } from "../constants/brand";
 
 interface WaterLoggerProps {
   totalOzToday: number;
@@ -56,7 +57,7 @@ export function WaterLogger({
             activeOpacity={0.75}
           >
             {isLoading ? (
-              <ActivityIndicator size="small" color="#6366F1" />
+              <ActivityIndicator size="small" color={BrandColors.blue} />
             ) : (
               <>
                 <Text style={styles.buttonEmoji}>{option.emoji}</Text>
@@ -82,45 +83,51 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 18,
     fontWeight: "700",
-    color: "#111827",
+    color: BrandColors.ink,
   },
   subtitle: {
     fontSize: 15,
-    color: "#6B7280",
+    color: BrandColors.inkMuted,
     fontWeight: "500",
   },
+  // Progress track on the dark surface — borderStrong gives just enough
+  // contrast to see the empty track without competing with the fill.
   progressBar: {
     height: 10,
-    backgroundColor: "#E5E7EB",
+    backgroundColor: "rgba(255,255,255,0.08)",
     borderRadius: 5,
     overflow: "hidden",
   },
   progressFill: {
     height: "100%",
-    backgroundColor: "#6366F1",
+    backgroundColor: BrandColors.blue,
     borderRadius: 5,
   },
   progressFillComplete: {
-    backgroundColor: "#10B981",
+    backgroundColor: BrandColors.success,
   },
   goalMet: {
     textAlign: "center",
     fontSize: 14,
     fontWeight: "600",
-    color: "#10B981",
+    color: BrandColors.success,
   },
   buttons: {
     flexDirection: "row",
     gap: 10,
   },
+  // Quick-log buttons sit on the dark card, so the chip surface is a
+  // subtle blue-tinted overlay rather than the previous bright #EEF2FF.
   button: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#EEF2FF",
+    backgroundColor: "rgba(59, 130, 246, 0.10)",
     borderRadius: 14,
     paddingVertical: 14,
     gap: 4,
+    borderWidth: 1,
+    borderColor: "rgba(59, 130, 246, 0.20)",
   },
   buttonEmoji: {
     fontSize: 22,
@@ -128,6 +135,6 @@ const styles = StyleSheet.create({
   buttonLabel: {
     fontSize: 13,
     fontWeight: "700",
-    color: "#4F46E5",
+    color: BrandColors.blueSoft,
   },
 });

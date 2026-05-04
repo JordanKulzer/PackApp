@@ -6,11 +6,12 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
-  Image,
   ActivityIndicator,
   ActionSheetIOS,
   Platform,
   SafeAreaView,
+  KeyboardAvoidingView,
+  ScrollView,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useCurrentUser } from "../../src/context/CurrentUserContext";
@@ -22,6 +23,9 @@ import {
   uploadAvatar,
 } from "../../src/lib/photoUpload";
 import { completeOnboarding } from "../../src/lib/onboarding";
+import { normalizeDisplayName } from "../../src/lib/displayName";
+import { EditableAvatar } from "../../src/components/EditableAvatar";
+import { onboarding } from "../../src/constants/strings";
 
 const C = {
   bg: "#0B0F14",
@@ -58,7 +62,7 @@ export default function ProfileSetup() {
           onPress: async () => {
             if (!authUser?.id || completing) return;
             setCompleting(true);
-            await completeOnboarding(authUser.id);
+            await completeOnboarding(authUser.id, "skip");
             applyLocal({ hasCompletedOnboarding: true });
             router.replace("/(app)/home");
           },
@@ -109,59 +113,52 @@ export default function ProfileSetup() {
     if (!authUser?.id || completing) return;
     setCompleting(true);
 
-    const trimmed = nameInput.trim();
-    if (trimmed && trimmed !== currentUser?.displayName) {
+    const normalized = normalizeDisplayName(nameInput);
+    if (normalized && normalized !== currentUser?.displayName) {
       await supabase
         .from("users")
-        .update({ display_name: trimmed })
+        .update({ display_name: normalized })
         .eq("id", authUser.id);
-      applyLocal({ displayName: trimmed });
+      applyLocal({ displayName: normalized });
     }
 
     setCompleting(false);
-    router.push("/(onboarding)/integrations");
+    router.push("/(onboarding)/category-selection");
   };
 
   return (
     <SafeAreaView style={s.safe}>
-      <View style={s.container}>
+      <KeyboardAvoidingView
+        style={s.flex}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        <ScrollView
+          contentContainerStyle={s.container}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
         <TouchableOpacity style={s.skipBtn} onPress={handleSkip} hitSlop={12}>
           <Text style={s.skipText}>Skip</Text>
         </TouchableOpacity>
 
-        <Text style={s.header}>Make it yours</Text>
-        <Text style={s.subtitle}>
-          Your display name and photo are what your pack will see.
-        </Text>
+        <Text style={s.header}>{onboarding.profile.headline}</Text>
+        <Text style={s.subtitle}>{onboarding.profile.subhead}</Text>
 
-        <TouchableOpacity
-          style={s.avatarWrap}
-          onPress={handleAvatarPress}
-          disabled={avatarUploading}
-          activeOpacity={0.8}
-        >
-          {resolvedAvatar ? (
-            <Image source={{ uri: resolvedAvatar }} style={s.avatarImage} />
-          ) : (
-            <View style={s.avatarPlaceholder}>
-              <Text style={s.avatarInitial}>{initial}</Text>
-            </View>
-          )}
-          {avatarUploading && (
-            <View style={s.avatarOverlay}>
-              <ActivityIndicator color="#FFF" />
-            </View>
-          )}
-          <View style={s.avatarEditBadge}>
-            <Text style={s.avatarEditText}>Edit</Text>
-          </View>
-        </TouchableOpacity>
+        <View style={s.avatarSlot}>
+          <EditableAvatar
+            imageUri={resolvedAvatar ?? null}
+            fallbackInitial={initial}
+            size={96}
+            uploading={avatarUploading}
+            onPress={handleAvatarPress}
+          />
+        </View>
 
         <TextInput
           style={s.nameInput}
           value={nameInput}
-          onChangeText={(t) => setNameInput(t.slice(0, 30))}
-          placeholder="Display name"
+          onChangeText={(text) => setNameInput(text.slice(0, 30))}
+          placeholder={onboarding.profile.namePlaceholder}
           placeholderTextColor={C.textTertiary}
           maxLength={30}
           autoCorrect={false}
@@ -176,10 +173,11 @@ export default function ProfileSetup() {
           {completing ? (
             <ActivityIndicator color="#FFF" />
           ) : (
-            <Text style={s.primaryBtnText}>Continue</Text>
+            <Text style={s.primaryBtnText}>{onboarding.profile.cta}</Text>
           )}
         </TouchableOpacity>
-      </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -189,8 +187,9 @@ const s = StyleSheet.create({
     flex: 1,
     backgroundColor: C.bg,
   },
+  flex: { flex: 1 },
   container: {
-    flex: 1,
+    flexGrow: 1,
     paddingHorizontal: 28,
     paddingTop: 16,
     paddingBottom: 40,
@@ -220,53 +219,10 @@ const s = StyleSheet.create({
     lineHeight: 22,
     marginBottom: 36,
   },
-  avatarWrap: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    marginBottom: 32,
-    position: "relative",
-  },
-  avatarImage: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-  },
-  avatarPlaceholder: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: C.surfaceRaised,
-    borderWidth: 1,
-    borderColor: C.border,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarInitial: {
-    fontSize: 36,
-    fontWeight: "700",
-    color: C.textPrimary,
-  },
-  avatarOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 48,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarEditBadge: {
-    position: "absolute",
-    bottom: 0,
-    right: 0,
-    backgroundColor: C.accent,
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  avatarEditText: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#FFF",
+  // Tightened from 32 → 16 so the avatar reads as paired with the name
+  // input below rather than floating on its own.
+  avatarSlot: {
+    marginBottom: 16,
   },
   nameInput: {
     width: "100%",

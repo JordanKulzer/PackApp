@@ -1,11 +1,13 @@
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
 import { supabase } from "../lib/supabase";
+import type { ActivityCategory } from "../lib/activityCategoryMap";
 
 export interface CurrentUserProfile {
   id: string;
   displayName: string;
   avatarUrl: string | null;
   hasCompletedOnboarding: boolean;
+  quickSelectCategories: ActivityCategory[];
 }
 
 interface CurrentUserContextValue {
@@ -30,7 +32,7 @@ export function CurrentUserProvider({ children }: { children: ReactNode }) {
     }
     const { data, error } = await supabase
       .from("users")
-      .select("id, display_name, avatar_url, has_completed_onboarding")
+      .select("id, display_name, avatar_url, has_completed_onboarding, quick_select_categories")
       .eq("id", session.user.id)
       .single();
     if (error || !data) {
@@ -41,6 +43,7 @@ export function CurrentUserProvider({ children }: { children: ReactNode }) {
         displayName: data.display_name,
         avatarUrl: data.avatar_url,
         hasCompletedOnboarding: data.has_completed_onboarding ?? false,
+        quickSelectCategories: (data.quick_select_categories ?? []) as ActivityCategory[],
       });
     }
     setLoading(false);

@@ -4,14 +4,16 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Alert,
   SafeAreaView,
 } from "react-native";
-import Svg, { Circle } from "react-native-svg";
 import { useRouter } from "expo-router";
 import { useCurrentUser } from "../../src/context/CurrentUserContext";
 import { useAuthStore } from "../../src/stores/authStore";
 import { completeOnboarding } from "../../src/lib/onboarding";
+import { onboarding } from "../../src/constants/strings";
+import { PackLogo } from "../../src/components/brand/PackLogo";
+import { JoinPackModal } from "../../src/components/JoinPackModal";
+import { BrandColors } from "../../src/constants/brand";
 
 const C = {
   bg: "#0B0F14",
@@ -23,80 +25,28 @@ const C = {
   surfaceRaised: "#1C2333",
 } as const;
 
-function RingsIllustration() {
-  const slots: Array<{ size: number; sw: number; elevated: boolean }> = [
-    { size: 44, sw: 4, elevated: false },
-    { size: 60, sw: 5, elevated: true },
-    { size: 44, sw: 4, elevated: false },
-  ];
-  return (
-    <View style={ill.row}>
-      {slots.map(({ size, sw, elevated }, i) => {
-        const radius = (size - sw) / 2;
-        const avatarR = radius * 0.52;
-        return (
-          <View key={i} style={[ill.slot, elevated && ill.elevated]}>
-            <Svg width={size} height={size}>
-              <Circle
-                cx={size / 2}
-                cy={size / 2}
-                r={radius}
-                stroke="#252E3D"
-                strokeWidth={sw}
-                fill="none"
-              />
-              <Circle cx={size / 2} cy={size / 2} r={avatarR} fill="#1A2232" />
-            </Svg>
-          </View>
-        );
-      })}
-    </View>
-  );
-}
-
-const ill = StyleSheet.create({
-  row: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "center",
-    gap: 14,
-    marginBottom: 8,
-  },
-  slot: { alignItems: "center" },
-  elevated: { marginBottom: 14 },
-});
-
 export default function FirstPack() {
   const router = useRouter();
   const { applyLocal } = useCurrentUser();
   const authUser = useAuthStore((s) => s.user);
   const [completing, setCompleting] = useState(false);
+  const [joinModalVisible, setJoinModalVisible] = useState(false);
 
-  const handleSkip = () => {
-    Alert.alert(
-      "Skip setup?",
-      "You can always connect Apple Health and create a pack later.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Skip anyway",
-          style: "destructive",
-          onPress: async () => {
-            if (!authUser?.id || completing) return;
-            setCompleting(true);
-            await completeOnboarding(authUser.id);
-            applyLocal({ hasCompletedOnboarding: true });
-            router.replace("/(app)/home");
-          },
-        },
-      ],
-    );
+  // Last onboarding step — Skip bails directly to Home with no confirmation.
+  // The user has already done meaningful setup (profile, categories, integrations);
+  // a generic warning that references already-completed actions would be misleading.
+  const handleSkip = async () => {
+    if (!authUser?.id || completing) return;
+    setCompleting(true);
+    await completeOnboarding(authUser.id, "skip");
+    applyLocal({ hasCompletedOnboarding: true });
+    router.replace("/(app)/home");
   };
 
   const finish = async () => {
     if (!authUser?.id || completing) return;
     setCompleting(true);
-    await completeOnboarding(authUser.id);
+    await completeOnboarding(authUser.id, "finish");
     applyLocal({ hasCompletedOnboarding: true });
   };
 
@@ -105,27 +55,42 @@ export default function FirstPack() {
     router.replace("/(app)/pack/create");
   };
 
-  const handleJoinWithCode = async () => {
-    await finish();
-    router.replace("/(app)/home");
+  // Pass 14 — Open the JoinPackModal in place rather than routing to Home
+  // first. Onboarding is NOT marked complete on tap; cancel keeps the user
+  // on first-pack with Create/Skip/Join still live. completeOnboarding fires
+  // only from handleJoinSuccess once the modal reports a real join.
+  const handleJoinWithCode = () => {
+    if (completing) return;
+    setJoinModalVisible(true);
+  };
+
+  // Fires when the modal successfully inserts the pack_member row. Matches
+  // the create-pack commit-point semantics — onboarding 'finish' marks
+  // a real onboarding completion, not just a button tap. Modal handles
+  // its own analytics (pack_joined) and pushes (new_member); we just
+  // close, complete onboarding, and route to the joined pack.
+  const handleJoinSuccess = async (packId: string) => {
+    if (!authUser?.id || completing) return;
+    setCompleting(true);
+    setJoinModalVisible(false);
+    await completeOnboarding(authUser.id, "finish");
+    applyLocal({ hasCompletedOnboarding: true });
+    router.replace(`/(app)/pack/${packId}`);
   };
 
   return (
     <SafeAreaView style={s.safe}>
       <View style={s.container}>
         <TouchableOpacity style={s.skipBtn} onPress={handleSkip} hitSlop={12}>
-          <Text style={s.skipText}>Skip</Text>
+          <Text style={s.skipText}>{onboarding.firstPack.lastStep.skip}</Text>
         </TouchableOpacity>
 
         <View style={s.illustration}>
-          <RingsIllustration />
+          <PackLogo size={80} variant="mono" tint={BrandColors.blue} />
         </View>
 
-        <Text style={s.header}>Last step — get in a pack</Text>
-        <Text style={s.subtitle}>
-          A pack is a group of people competing together. Create your own and
-          invite friends, or join one with an invite code someone shared.
-        </Text>
+        <Text style={s.header}>{onboarding.firstPack.lastStep.headline}</Text>
+        <Text style={s.subtitle}>{onboarding.firstPack.lastStep.subhead}</Text>
 
         <View style={s.buttons}>
           <TouchableOpacity
@@ -134,7 +99,9 @@ export default function FirstPack() {
             disabled={completing}
             activeOpacity={0.85}
           >
-            <Text style={s.primaryBtnText}>Create a new pack</Text>
+            <Text style={s.primaryBtnText}>
+              {onboarding.firstPack.lastStep.createCta}
+            </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -143,10 +110,18 @@ export default function FirstPack() {
             disabled={completing}
             activeOpacity={0.85}
           >
-            <Text style={s.secondaryBtnText}>I have an invite code</Text>
+            <Text style={s.secondaryBtnText}>
+              {onboarding.firstPack.lastStep.joinCta}
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
+
+      <JoinPackModal
+        visible={joinModalVisible}
+        onClose={() => setJoinModalVisible(false)}
+        onJoined={handleJoinSuccess}
+      />
     </SafeAreaView>
   );
 }

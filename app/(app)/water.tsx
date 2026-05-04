@@ -12,6 +12,7 @@ import { useAuthStore } from "../../src/stores/authStore";
 import { useHealthKit } from "../../src/hooks/useHealthKit";
 import { WaterLogger } from "../../src/components/WaterLogger";
 import { supabase } from "../../src/lib/supabase";
+import { BrandColors } from "../../src/constants/brand";
 
 const DEFAULT_WATER_TARGET = 64;
 
@@ -75,7 +76,7 @@ export default function WaterScreen() {
   if (isFetching) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#6366F1" />
+        <ActivityIndicator size="large" color={BrandColors.blue} />
       </View>
     );
   }
@@ -140,12 +141,13 @@ export default function WaterScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F9FAFB",
+    backgroundColor: BrandColors.background,
   },
   center: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: BrandColors.background,
   },
   content: {
     padding: 16,
@@ -158,22 +160,19 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 28,
     fontWeight: "800",
-    color: "#111827",
+    color: BrandColors.ink,
     letterSpacing: -0.5,
   },
   date: {
     fontSize: 14,
-    color: "#9CA3AF",
+    color: BrandColors.inkMuted,
   },
   card: {
-    backgroundColor: "#FFF",
+    backgroundColor: BrandColors.surface,
     borderRadius: 16,
     padding: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#30363D",
   },
   historySection: {
     gap: 8,
@@ -181,48 +180,54 @@ const styles = StyleSheet.create({
   historyTitle: {
     fontSize: 13,
     fontWeight: "700",
-    color: "#6B7280",
+    color: BrandColors.inkMuted,
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
   emptyHistory: {
-    backgroundColor: "#FFF",
+    backgroundColor: BrandColors.surface,
     borderRadius: 12,
     padding: 20,
     alignItems: "center",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#30363D",
   },
   emptyText: {
-    color: "#D1D5DB",
+    color: BrandColors.inkDim,
     fontSize: 15,
   },
   historyRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    backgroundColor: "#FFF",
+    backgroundColor: BrandColors.surface,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 11,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#E5E7EB",
+    borderColor: "#30363D",
   },
   historyAmount: {
     fontSize: 15,
     fontWeight: "600",
-    color: "#111827",
+    color: BrandColors.ink,
   },
   historyTime: {
     fontSize: 13,
-    color: "#9CA3AF",
+    color: BrandColors.inkMuted,
   },
+  // Info box uses a faint blue tint over the dark surface — semantic
+  // emphasis without the bright #EFF6FF light-theme look.
   infoBox: {
-    backgroundColor: "#EFF6FF",
+    backgroundColor: "rgba(59, 130, 246, 0.08)",
     borderRadius: 12,
     padding: 14,
+    borderWidth: 1,
+    borderColor: "rgba(59, 130, 246, 0.20)",
   },
   infoText: {
     fontSize: 14,
-    color: "#3B82F6",
+    color: BrandColors.blueSoft,
     lineHeight: 20,
   },
   infoPoints: {

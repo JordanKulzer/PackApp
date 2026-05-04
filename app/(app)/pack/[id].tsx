@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Alert,
   Animated,
@@ -8,6 +8,7 @@ import {
   StyleSheet,
   TouchableOpacity,
   Image,
+  Keyboard,
   ScrollView,
   Share,
   ActivityIndicator,
@@ -18,11 +19,17 @@ import {
   Pressable,
   useWindowDimensions,
 } from "react-native";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ConfirmDialog } from "../../../src/components/ConfirmDialog";
-import { leavePack, deletePack, canUserDeletePack, transferPackOwnership } from "../../../src/lib/packLifecycle";
+import {
+  leavePack,
+  deletePack,
+  canUserDeletePack,
+  transferPackOwnership,
+} from "../../../src/lib/packLifecycle";
 import { notifyUser } from "../../../src/lib/notifications";
 import { showToast } from "../../../src/lib/toast";
 import { packToday, currentDayOfRun } from "../../../src/lib/packDates";
@@ -35,11 +42,18 @@ import {
   PRO_MEMBER_LIMIT,
 } from "../../../src/lib/revenuecat";
 import { analytics } from "../../../src/lib/analytics";
+import { useActivityFeed } from "../../../src/hooks/useActivityFeed";
+import { usePackTimeline } from "../../../src/hooks/usePackTimeline";
+import { TimelineRow } from "../../../src/components/TimelineRow";
+import { ChatInputBar } from "../../../src/components/ChatInputBar";
+import { FeedItemRow } from "../../../src/components/FeedItemRow";
+import { ReactionPicker } from "../../../src/components/ReactionPicker";
 import {
-  useActivityFeed,
-  FeedItem,
-  ReactionType,
-} from "../../../src/hooks/useActivityFeed";
+  MessageActionMenu,
+  type AnchorPosition,
+} from "../../../src/components/MessageActionMenu";
+import type { ChatMessage } from "../../../src/types/database";
+import type { FeedItem } from "../../../src/hooks/useActivityFeed";
 import { useHealthKit } from "../../../src/hooks/useHealthKit";
 import { supabase } from "../../../src/lib/supabase";
 import { formatName } from "../../../src/lib/displayName";
@@ -53,10 +67,10 @@ import { useScoreStore } from "../../../src/stores/scoreStore";
 import type { Pack, Run } from "../../../src/types/database";
 import { colors } from "../../../src/theme/colors";
 import { PackMemberDisplay } from "../../../src/components/PackMemberDisplay";
-import { getSignedUrl, deletePhoto, reportPhoto } from "../../../src/lib/photoUpload";
-import { CommentsSheet } from "../../../src/components/CommentsSheet";
+import { PackGridView } from "../../../src/components/PackGridView";
 import { useCurrentUser } from "../../../src/context/CurrentUserContext";
 import { useRefreshCurrentUserOnFocus } from "../../../src/hooks/useRefreshCurrentUserOnFocus";
+import { den, packs as packsCopy, t } from "../../../src/constants/strings";
 
 if (
   Platform.OS === "android" &&
@@ -115,7 +129,6 @@ interface WeeklyEntry {
   weekly_points: number;
   avatar_url?: string | null;
 }
-
 
 type ScoreRow = {
   user_id: string;
@@ -1002,9 +1015,12 @@ const emS = StyleSheet.create({
 
 function maxRunPoints(pack: Pack, run: Run): number {
   const msPerDay = 1000 * 60 * 60 * 24;
-  const total = Math.round(
-    (new Date(run.end_date + "T12:00:00").getTime() - new Date(run.start_date + "T12:00:00").getTime()) / msPerDay
-  ) + 1;
+  const total =
+    Math.round(
+      (new Date(run.end_date + "T12:00:00").getTime() -
+        new Date(run.start_date + "T12:00:00").getTime()) /
+        msPerDay,
+    ) + 1;
   return maxPossiblePoints(pack) * Math.max(1, total);
 }
 
@@ -1020,7 +1036,6 @@ function weeklyRingAbsolutePct(
   if (max === 0) return 0; // no goals enabled — stable zero, not divide-by-zero
   return Math.min(100, Math.round((weeklyPoints / max) * 100));
 }
-
 
 function RingLeaderboard({
   entries,
@@ -1078,11 +1093,13 @@ function RingLeaderboard({
 
   // Tie-group detection based on weekly_points
   const topPts = sorted[0].weekly_points;
-  const tiedAtTop = sorted.filter(e => e.weekly_points === topPts);
+  const tiedAtTop = sorted.filter((e) => e.weekly_points === topPts);
   const hasSoloLeader = tiedAtTop.length === 1;
-  const secondEntry = hasSoloLeader ? sorted.find(e => e.weekly_points < topPts) ?? null : null;
+  const secondEntry = hasSoloLeader
+    ? (sorted.find((e) => e.weekly_points < topPts) ?? null)
+    : null;
   const tiedAtSecond = secondEntry
-    ? sorted.filter(e => e.weekly_points === secondEntry.weekly_points)
+    ? sorted.filter((e) => e.weekly_points === secondEntry.weekly_points)
     : [];
 
   // Not a React component — no hooks. Returns JSX for one ring slot.
@@ -1098,8 +1115,12 @@ function RingLeaderboard({
     const isFirst = rank === 1;
     const pct = weeklyRingAbsolutePct(entry.weekly_points, pack, activeRun);
     const isMe = entry.user_id === currentUser?.id;
-    const nameDisplay = formatName(isMe && currentUser ? currentUser.displayName : entry.display_name, rank);
-    const avatarUrl = isMe && currentUser ? currentUser.avatarUrl : entry.avatar_url;
+    const nameDisplay = formatName(
+      isMe && currentUser ? currentUser.displayName : entry.display_name,
+      rank,
+    );
+    const avatarUrl =
+      isMe && currentUser ? currentUser.avatarUrl : entry.avatar_url;
 
     return (
       <View
@@ -1150,22 +1171,24 @@ function RingLeaderboard({
       )}
 
       {/* Top is tied: equal-size rings (up to 3), "+N more" if overflow */}
-      {memberCount > 1 && tiedAtTop.length >= 2 && (() => {
-        const display = tiedAtTop.slice(0, 3);
-        const overflow = tiedAtTop.length - display.length;
-        return (
-          <View>
-            <View style={rlS.podiumRow}>
-              {display.map((entry, i) =>
-                ringSlot(entry, 1, i, SIZE_LEADER, SW_LEADER, 1, false),
+      {memberCount > 1 &&
+        tiedAtTop.length >= 2 &&
+        (() => {
+          const display = tiedAtTop.slice(0, 3);
+          const overflow = tiedAtTop.length - display.length;
+          return (
+            <View>
+              <View style={rlS.podiumRow}>
+                {display.map((entry, i) =>
+                  ringSlot(entry, 1, i, SIZE_LEADER, SW_LEADER, 1, false),
+                )}
+              </View>
+              {overflow > 0 && (
+                <Text style={rlS.tiedOverflow}>+{overflow} more tied</Text>
               )}
             </View>
-            {overflow > 0 && (
-              <Text style={rlS.tiedOverflow}>+{overflow} more tied</Text>
-            )}
-          </View>
-        );
-      })()}
+          );
+        })()}
 
       {/* 2 members, clear leader: [#2 left] [#1 elevated] */}
       {memberCount === 2 && hasSoloLeader && (
@@ -1187,9 +1210,11 @@ function RingLeaderboard({
       {/* 3+ members, normal: [#2] [#1 elevated] [#3] */}
       {memberCount >= 3 && hasSoloLeader && tiedAtSecond.length < 2 && (
         <View style={rlS.podiumRow}>
-          {sorted[1] && ringSlot(sorted[1], 2, 1, SIZE_FLANK, SW_FLANK, 0.88, false)}
+          {sorted[1] &&
+            ringSlot(sorted[1], 2, 1, SIZE_FLANK, SW_FLANK, 0.88, false)}
           {ringSlot(sorted[0], 1, 0, SIZE_LEADER, SW_LEADER, 1, true)}
-          {sorted[2] && ringSlot(sorted[2], 3, 2, SIZE_FLANK, SW_FLANK, 0.76, false)}
+          {sorted[2] &&
+            ringSlot(sorted[2], 3, 2, SIZE_FLANK, SW_FLANK, 0.76, false)}
         </View>
       )}
 
@@ -1512,7 +1537,9 @@ function WeekDetailSheet({
       setActiveDates(new Set((data ?? []).map((r) => r.score_date)));
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [entry?.runId, currentUserId]);
 
   // Build summary standings for the sheet header section
@@ -1534,7 +1561,9 @@ function WeekDetailSheet({
 
   // Merge all pack members with fetched day scores.
   // Members without a score row appear at the bottom with zeros.
-  const allMemberScores = React.useMemo<(DayMemberScore & { hasNoData: boolean })[]>(() => {
+  const allMemberScores = React.useMemo<
+    (DayMemberScore & { hasNoData: boolean })[]
+  >(() => {
     const scoredIds = new Set(dayScores.map((s) => s.userId));
     const withData = dayScores.map((s) => ({ ...s, hasNoData: false }));
     const noData: (DayMemberScore & { hasNoData: boolean })[] = [];
@@ -1592,7 +1621,7 @@ function WeekDetailSheet({
             </Text>
 
             {summaryStandings.length === 0 ? (
-              <Text style={wdS.emptyHint}>No activity recorded yet</Text>
+              <Text style={wdS.emptyHint}>{packsCopy.packCard.quietWeek}</Text>
             ) : (
               summaryStandings.map((standing) => {
                 const isFirst = standing.rank === 1;
@@ -1610,7 +1639,9 @@ function WeekDetailSheet({
                       numberOfLines={1}
                     >
                       {formatName(
-                        isMe && currentUser ? currentUser.displayName : (standing.displayName ?? null),
+                        isMe && currentUser
+                          ? currentUser.displayName
+                          : (standing.displayName ?? null),
                         standing.rank,
                       )}
                     </Text>
@@ -1652,10 +1683,35 @@ function WeekDetailSheet({
                       disabled={isBeforeRunStart}
                       activeOpacity={isBeforeRunStart ? 1 : 0.2}
                     >
-                      <Text style={[wdS.dayBtnName, isSelected && wdS.dayBtnNameActive, isBeforeRunStart && wdS.dayBtnTextDisabled]}>{dayName}</Text>
-                      <Text style={[wdS.dayBtnDate, isSelected && wdS.dayBtnDateActive, isBeforeRunStart && wdS.dayBtnTextDisabled]}>{dateNum}</Text>
-                      {isToday && <View style={[wdS.todayDot, isSelected && wdS.todayDotActive]} />}
-                      {hasActivity && !isBeforeRunStart && <View style={wdS.activityBar} />}
+                      <Text
+                        style={[
+                          wdS.dayBtnName,
+                          isSelected && wdS.dayBtnNameActive,
+                          isBeforeRunStart && wdS.dayBtnTextDisabled,
+                        ]}
+                      >
+                        {dayName}
+                      </Text>
+                      <Text
+                        style={[
+                          wdS.dayBtnDate,
+                          isSelected && wdS.dayBtnDateActive,
+                          isBeforeRunStart && wdS.dayBtnTextDisabled,
+                        ]}
+                      >
+                        {dateNum}
+                      </Text>
+                      {isToday && (
+                        <View
+                          style={[
+                            wdS.todayDot,
+                            isSelected && wdS.todayDotActive,
+                          ]}
+                        />
+                      )}
+                      {hasActivity && !isBeforeRunStart && (
+                        <View style={wdS.activityBar} />
+                      )}
                     </TouchableOpacity>
                   );
                 })}
@@ -1670,7 +1726,7 @@ function WeekDetailSheet({
                   />
                 ) : allMemberScores.length === 0 ? (
                   <Text style={wdS.emptyHint}>
-                    Day-by-day stats will appear here as your pack logs activity.
+                    {den.history.weekDetail.emptyDays}
                   </Text>
                 ) : (
                   allMemberScores.map((score, idx) => {
@@ -1693,7 +1749,9 @@ function WeekDetailSheet({
                       >
                         {/* Header row: rank + name + pts + chevron */}
                         <View style={wdS.memberHeaderRow}>
-                          <Text style={[wdS.dayRank, isFirst && wdS.dayRankFirst]}>
+                          <Text
+                            style={[wdS.dayRank, isFirst && wdS.dayRankFirst]}
+                          >
                             #{idx + 1}
                           </Text>
                           <Text
@@ -1701,11 +1759,15 @@ function WeekDetailSheet({
                             numberOfLines={1}
                           >
                             {formatName(
-                              isMe && currentUser ? currentUser.displayName : score.displayName,
+                              isMe && currentUser
+                                ? currentUser.displayName
+                                : score.displayName,
                               idx + 1,
                             )}
                           </Text>
-                          <Text style={[wdS.dayPts, isFirst && wdS.dayPtsFirst]}>
+                          <Text
+                            style={[wdS.dayPts, isFirst && wdS.dayPtsFirst]}
+                          >
                             +{score.totalPoints} pts
                           </Text>
                           <Ionicons
@@ -1722,9 +1784,11 @@ function WeekDetailSheet({
                           </Text>
                         )}
 
-                        {isExpanded && (
-                          score.hasNoData ? (
-                            <Text style={wdS.noActivityText}>No activity logged.</Text>
+                        {isExpanded &&
+                          (score.hasNoData ? (
+                            <Text style={wdS.noActivityText}>
+                              No activity logged.
+                            </Text>
                           ) : (
                             <View style={wdS.actList}>
                               {pack.steps_enabled && (
@@ -1732,10 +1796,20 @@ function WeekDetailSheet({
                                   <Text style={wdS.actLabel}>Steps</Text>
                                   <View style={wdS.actRight}>
                                     {score.hasManualSteps && <ManualBadge />}
-                                    <Text style={[wdS.actValue, score.stepsAchieved && wdS.actValueDone]}>
-                                      {score.stepsCount.toLocaleString()} / {(pack.step_target ?? 10000).toLocaleString()}
+                                    <Text
+                                      style={[
+                                        wdS.actValue,
+                                        score.stepsAchieved && wdS.actValueDone,
+                                      ]}
+                                    >
+                                      {score.stepsCount.toLocaleString()} /{" "}
+                                      {(
+                                        pack.step_target ?? 10000
+                                      ).toLocaleString()}
                                     </Text>
-                                    {score.stepsAchieved && <Text style={wdS.actCheck}>✓</Text>}
+                                    {score.stepsAchieved && (
+                                      <Text style={wdS.actCheck}>✓</Text>
+                                    )}
                                   </View>
                                 </View>
                               )}
@@ -1743,10 +1817,18 @@ function WeekDetailSheet({
                                 <View style={wdS.actRow}>
                                   <Text style={wdS.actLabel}>Workout</Text>
                                   <View style={wdS.actRight}>
-                                    <Text style={[wdS.actValue, score.workoutAchieved && wdS.actValueDone]}>
+                                    <Text
+                                      style={[
+                                        wdS.actValue,
+                                        score.workoutAchieved &&
+                                          wdS.actValueDone,
+                                      ]}
+                                    >
                                       {score.workoutCount} / 2
                                     </Text>
-                                    {score.workoutAchieved && <Text style={wdS.actCheck}>✓</Text>}
+                                    {score.workoutAchieved && (
+                                      <Text style={wdS.actCheck}>✓</Text>
+                                    )}
                                   </View>
                                 </View>
                               )}
@@ -1755,10 +1837,22 @@ function WeekDetailSheet({
                                   <Text style={wdS.actLabel}>Calories</Text>
                                   <View style={wdS.actRight}>
                                     {score.hasManualCalories && <ManualBadge />}
-                                    <Text style={[wdS.actValue, score.caloriesAchieved && wdS.actValueDone]}>
-                                      {score.caloriesCount.toLocaleString()} / {(pack.calorie_target ?? 500).toLocaleString()} cal
+                                    <Text
+                                      style={[
+                                        wdS.actValue,
+                                        score.caloriesAchieved &&
+                                          wdS.actValueDone,
+                                      ]}
+                                    >
+                                      {score.caloriesCount.toLocaleString()} /{" "}
+                                      {(
+                                        pack.calorie_target ?? 500
+                                      ).toLocaleString()}{" "}
+                                      cal
                                     </Text>
-                                    {score.caloriesAchieved && <Text style={wdS.actCheck}>✓</Text>}
+                                    {score.caloriesAchieved && (
+                                      <Text style={wdS.actCheck}>✓</Text>
+                                    )}
                                   </View>
                                 </View>
                               )}
@@ -1766,16 +1860,23 @@ function WeekDetailSheet({
                                 <View style={wdS.actRow}>
                                   <Text style={wdS.actLabel}>Water</Text>
                                   <View style={wdS.actRight}>
-                                    <Text style={[wdS.actValue, score.waterAchieved && wdS.actValueDone]}>
-                                      {score.waterOzCount} / {pack.water_target_oz ?? 64} oz
+                                    <Text
+                                      style={[
+                                        wdS.actValue,
+                                        score.waterAchieved && wdS.actValueDone,
+                                      ]}
+                                    >
+                                      {score.waterOzCount} /{" "}
+                                      {pack.water_target_oz ?? 64} oz
                                     </Text>
-                                    {score.waterAchieved && <Text style={wdS.actCheck}>✓</Text>}
+                                    {score.waterAchieved && (
+                                      <Text style={wdS.actCheck}>✓</Text>
+                                    )}
                                   </View>
                                 </View>
                               )}
                             </View>
-                          )
-                        )}
+                          ))}
                       </TouchableOpacity>
                     );
                   })
@@ -2004,10 +2105,8 @@ function PastRunsSection({
         />
       ) : !hasAnyHistory ? (
         <View style={pbS.emptyState}>
-          <Text style={pbS.emptyTitle}>No weekly records yet</Text>
-          <Text style={pbS.emptySubtitle}>
-            This week and past results will appear here
-          </Text>
+          <Text style={pbS.emptyTitle}>{den.history.empty.headline}</Text>
+          <Text style={pbS.emptySubtitle}>{den.history.empty.body}</Text>
         </View>
       ) : (
         <>
@@ -2038,7 +2137,7 @@ function PastRunsSection({
                     ? activeRanked[0].user_id === currentUserId
                       ? `You're leading · ${activeRanked[0].weekly_points} pts`
                       : `${formatName(activeRanked[0].display_name, 1)} is leading · ${activeRanked[0].weekly_points} pts`
-                    : "No activity yet"}
+                    : packsCopy.packCard.quietWeek}
                 </Text>
                 <Ionicons
                   name="chevron-forward"
@@ -2209,11 +2308,11 @@ const pbS = StyleSheet.create({
 // In-Screen Tab Bar
 // ─────────────────────────────────────────────────────────────────────────────
 
-type TabId = "compete" | "feed" | "history";
+type TabId = "compete" | "chat" | "history";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "compete", label: "Compete" },
-  { id: "feed", label: "Feed" },
+  { id: "chat", label: "Chat" },
   { id: "history", label: "History" },
 ];
 
@@ -2300,505 +2399,71 @@ const tabBarS = StyleSheet.create({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Feed Tab — activity feed with reaction chips
+// Chat Tab — unified timeline of human messages + activity events
+// (FeedItemRow + ReactionPicker live in src/components; the inline
+// EmojiPickerModal / ReactorListModal that lived here pre-C.4 were
+// replaced by the unified ReactionPicker / ReactionPills.)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function getRelativeTime(isoString: string): string {
-  const diffMs = Date.now() - new Date(isoString).getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  if (diffMins < 1) return "Just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-  const diffDays = Math.floor(diffHours / 24);
-  if (diffDays === 1) return "Yesterday";
-  return `${diffDays}d ago`;
-}
+// Centered time-cluster header. Inserted by ChatTab between consecutive
+// timeline items when the gap is ≥ 30 minutes. Replaces per-message
+// timestamps inside the rows.
+function TimeClusterHeader({ isoString }: { isoString: string }) {
+  const d = new Date(isoString);
+  const now = new Date();
+  const today = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+  ).getTime();
+  const dDate = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 
-// ── Reactor list sheet — fetches and shows who reacted with a given emoji ──
-
-function ReactorListModal({
-  feedItemId,
-  emoji,
-  onClose,
-}: {
-  feedItemId: string;
-  emoji: ReactionType;
-  onClose: () => void;
-}) {
-  const [names, setNames] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const { data: rows } = await supabase
-        .from("activity_reactions")
-        .select("user_id")
-        .eq("feed_item_id", feedItemId)
-        .eq("reaction_type", emoji);
-
-      const userIds = (rows ?? []).map((r) => r.user_id);
-
-      if (userIds.length === 0) {
-        if (!cancelled) {
-          setNames([]);
-          setLoading(false);
-        }
-        return;
-      }
-
-      const { data: users } = await supabase
-        .from("users")
-        .select("display_name")
-        .in("id", userIds);
-
-      if (!cancelled) {
-        setNames((users ?? []).map((u) => u.display_name ?? "Unknown"));
-        setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [feedItemId, emoji]);
-
-  return (
-    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={feedS.sheetOverlay} onPress={onClose}>
-        <Pressable style={feedS.reactorSheet}>
-          <View style={feedS.sheetHandle} />
-          <View style={feedS.reactorHeader}>
-            <Text style={feedS.reactorEmoji}>{emoji}</Text>
-            <Text style={feedS.reactorTitle}>Reacted</Text>
-          </View>
-          {loading ? (
-            <ActivityIndicator color={C.accent} style={{ marginTop: 16 }} />
-          ) : names.length === 0 ? (
-            <Text style={feedS.reactorEmpty}>No reactions yet</Text>
-          ) : (
-            names.map((name, i) => (
-              <Text key={i} style={feedS.reactorName}>
-                {name}
-              </Text>
-            ))
-          )}
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-}
-
-// ── Emoji picker sheet — shown when user taps the "+" add-reaction button ──
-
-function EmojiPickerModal({
-  item,
-  onToggle,
-  onClose,
-}: {
-  item: FeedItem;
-  onToggle: (type: ReactionType) => void;
-  onClose: () => void;
-}) {
-  return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={feedS.sheetOverlay} onPress={onClose}>
-        <Pressable style={feedS.pickerPanel}>
-          <View style={feedS.sheetHandle} />
-          <Text style={feedS.pickerLabel}>React</Text>
-          <View style={feedS.pickerRow}>
-            {(["💪", "🔥", "👏"] as ReactionType[]).map((emoji) => {
-              const rx = item.reactions.find((r) => r.type === emoji)!;
-              return (
-                <Pressable
-                  key={emoji}
-                  style={[
-                    feedS.pickerBtn,
-                    rx.hasReacted && feedS.pickerBtnActive,
-                  ]}
-                  onPress={() => {
-                    onClose();
-                    onToggle(emoji);
-                  }}
-                >
-                  <Text style={feedS.pickerEmoji}>{emoji}</Text>
-                  {rx.count > 0 && (
-                    <Text style={feedS.pickerCount}>{rx.count}</Text>
-                  )}
-                </Pressable>
-              );
-            })}
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Streak Section
-// ─────────────────────────────────────────────────────────────────────────────
-
-function StreakSection({ members }: { members: MemberScore[] }) {
-  const { user: currentUser } = useCurrentUser();
-  const streakers = members.filter((m) => m.streak_multiplier > 1);
-  if (streakers.length === 0) return null;
-
-  const sorted = [...streakers].sort((a, b) => {
-    const mDiff = b.streak_multiplier - a.streak_multiplier;
-    if (mDiff !== 0) return mDiff;
-    return b.streak_days - a.streak_days;
+  const time = d.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
   });
 
-  return (
-    <View style={streakS.container}>
-      <Text style={streakS.header}>🔥 ON A STREAK</Text>
-      {sorted.map((m) => {
-        const isMe = m.user_id === currentUser?.id;
-        const displayName = isMe && currentUser ? currentUser.displayName : m.display_name;
-        const avatarUrl = isMe && currentUser ? currentUser.avatarUrl : m.avatar_url;
-        return (
-        <View key={m.user_id} style={streakS.row}>
-          <PackMemberDisplay
-            userId={m.user_id}
-            displayName={displayName}
-            progressPct={0}
-            rank={99}
-            currentUserId={undefined}
-            leaderId={undefined}
-            size={32}
-            strokeWidth={2}
-            avatarUrl={avatarUrl}
-            showName={false}
-          />
-          <View style={streakS.textCol}>
-            <Text style={streakS.name}>{displayName}</Text>
-            <Text style={streakS.detail}>
-              {m.streak_days} {m.streak_days === 1 ? "day" : "days"} · {m.streak_multiplier}x points
-            </Text>
-          </View>
-        </View>
-        );
-      })}
-    </View>
-  );
-}
-
-const transferS = StyleSheet.create({
-  pickerTitle: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: C.textSecondary,
-    paddingHorizontal: 16,
-    paddingBottom: 8,
-  },
-});
-
-const streakS = StyleSheet.create({
-  container: { marginTop: 24, marginHorizontal: 16, gap: 8 },
-  header: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: C.textTertiary,
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 6 },
-  textCol: { flex: 1, gap: 2 },
-  name: { fontSize: 14, fontWeight: "600", color: C.textPrimary },
-  detail: { fontSize: 12, color: C.textSecondary },
-});
-
-// ── Feed card ──
-
-const REPORT_REASONS = ["Inappropriate", "Spam", "Nudity", "Violence"] as const;
-
-function FeedItemRow({
-  item,
-  currentUserId,
-  currentUserName,
-  onToggleReaction,
-  removePhotoFromItem,
-}: {
-  item: FeedItem;
-  currentUserId: string | undefined;
-  currentUserName: string;
-  onToggleReaction: (id: string, type: ReactionType) => Promise<void>;
-  removePhotoFromItem: (id: string) => void;
-}) {
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [reactorEmoji, setReactorEmoji] = useState<ReactionType | null>(null);
-  const [commentsOpen, setCommentsOpen] = useState(false);
-  const [localCommentCount, setLocalCommentCount] = useState(item.commentCount);
-  const [signedPhotoUrl, setSignedPhotoUrl] = useState<string | null>(null);
-  const [fullscreenOpen, setFullscreenOpen] = useState(false);
-  const [photoMenuOpen, setPhotoMenuOpen] = useState(false);
-  const [reportMenuOpen, setReportMenuOpen] = useState(false);
-
-  const { user: currentUser } = useCurrentUser();
-  const isMe = item.userId === currentUserId;
-  const resolvedName = isMe && currentUser ? currentUser.displayName : item.displayName;
-  const resolvedAvatar = isMe && currentUser ? currentUser.avatarUrl : item.avatarUrl;
-  const name = formatName(resolvedName, 0);
-  const initial = (resolvedName.trim().charAt(0) || "?").toUpperCase();
-
-  useEffect(() => {
-    if (!item.photoUrl) { setSignedPhotoUrl(null); return; }
-    getSignedUrl(item.photoUrl).then((url) => setSignedPhotoUrl(url)).catch(() => {});
-  }, [item.photoUrl]);
-
-  // TODO: pass packWaterTarget as prop when available
-  const WATER_TARGET_FALLBACK = 64;
-
-  let activityPhrase: string;
-  switch (item.activityType) {
-    case "steps":
-      activityPhrase = ` logged ${item.value.toLocaleString()} steps`;
-      break;
-    case "workout":
-      activityPhrase = " logged a workout";
-      break;
-    case "calories":
-      activityPhrase = ` burned ${item.value.toLocaleString()} active calories`;
-      break;
-    case "water":
-      activityPhrase =
-        item.value >= WATER_TARGET_FALLBACK
-          ? isMe
-            ? " hit your water goal"
-            : " hit their water goal"
-          : ` logged ${item.value} oz of water`;
-      break;
-    case "took_lead":
-      activityPhrase = " took the lead";
-      break;
-    case "all_goals":
-      activityPhrase =
-        item.value > 0
-          ? ` completed all ${item.value} goals today`
-          : " completed all goals today";
-      break;
-    case "daily_winner":
-      activityPhrase = " 🏆 won yesterday";
-      break;
-    default:
-      activityPhrase = ` completed ${item.activityType}`;
+  let prefix: string;
+  if (dDate === today) prefix = "Today";
+  else if (dDate === today - 86400000) prefix = "Yesterday";
+  else {
+    const diffDays = Math.floor((today - dDate) / 86400000);
+    if (diffDays > 0 && diffDays < 7) {
+      prefix = d.toLocaleDateString([], { weekday: "short" });
+    } else {
+      prefix = d.toLocaleDateString([], { month: "short", day: "numeric" });
+    }
   }
 
-  const phraseColor = isMe ? "#FFFFFF" : "#9CA3AF";
-  const visibleChips = item.reactions.filter((rx) => rx.count > 0);
-
-  const handleDeletePhoto = async () => {
-    setPhotoMenuOpen(false);
-    if (item.photoUrl) {
-      deletePhoto(item.photoUrl).catch(() => {});
-    }
-    removePhotoFromItem(item.id);
-  };
-
-  const handleReport = (reason: string) => {
-    setReportMenuOpen(false);
-    if (currentUserId && item.photoUrl) {
-      reportPhoto(currentUserId, item.id, item.photoUrl, reason).catch(() => {});
-      Alert.alert("Reported", "Thanks for letting us know. We'll review this photo.");
-    }
-  };
-
   return (
-    <View style={feedS.card}>
-      {/* Top row: avatar + event text */}
-      <View style={feedS.cardTop}>
-        <View style={feedS.avatar}>
-          {resolvedAvatar ? (
-            <Image
-              source={{ uri: resolvedAvatar }}
-              style={{ width: 36, height: 36, borderRadius: 18 }}
-            />
-          ) : (
-            <Text style={feedS.avatarText}>{initial}</Text>
-          )}
-        </View>
-        <View style={feedS.content}>
-          <Text style={feedS.line1Text}>
-            <Text style={isMe ? feedS.nameTextSelf : feedS.nameText}>
-              {name}
-            </Text>
-            <Text style={{ color: phraseColor }}>{activityPhrase}</Text>
-          </Text>
-          <Text style={feedS.time}>
-            {item.activityType === "daily_winner"
-              ? `${item.pointsEarned} pts · yesterday`
-              : getRelativeTime(item.createdAt)}
-          </Text>
-        </View>
-        {item.pointsEarned > 0 && item.activityType !== "daily_winner" && (
-          <View style={feedS.ptsPill}>
-            {item.entryMethod === "manual" &&
-              (item.activityType === "steps" ||
-                item.activityType === "calories") && <ManualBadge />}
-            <Text style={feedS.ptsPillText}>+{item.pointsEarned} pts</Text>
-          </View>
-        )}
-      </View>
-
-      {/* Photo */}
-      {signedPhotoUrl && (
-        <TouchableOpacity
-          style={item.activityType === "daily_winner" ? feedS.victoryPhotoWrap : feedS.photoWrap}
-          onPress={() => { analytics.photoViewedFullscreen(item.id); setFullscreenOpen(true); }}
-          onLongPress={() => setPhotoMenuOpen(true)}
-          activeOpacity={0.92}
-        >
-          <Image source={{ uri: signedPhotoUrl }} style={feedS.photo} resizeMode="cover" />
-        </TouchableOpacity>
-      )}
-
-      {/* Caption (daily_winner enriched post only) */}
-      {item.activityType === "daily_winner" && item.caption ? (
-        <Text style={feedS.victoryCaption}>{item.caption}</Text>
-      ) : null}
-
-      {/* Chips row: reaction summary + add button */}
-      <View style={feedS.chipsRow}>
-        {visibleChips.map((rx) => (
-          <Pressable
-            key={rx.type}
-            style={[feedS.chip, rx.hasReacted && feedS.chipActive]}
-            onPress={() => onToggleReaction(item.id, rx.type)}
-            onLongPress={() => setReactorEmoji(rx.type)}
-            hitSlop={4}
-          >
-            <Text style={feedS.chipEmoji}>{rx.type}</Text>
-            <Text
-              style={[feedS.chipCount, rx.hasReacted && feedS.chipCountActive]}
-            >
-              {rx.count}
-            </Text>
-          </Pressable>
-        ))}
-        <Pressable
-          style={feedS.addBtn}
-          onPress={() => setPickerOpen(true)}
-          hitSlop={4}
-        >
-          <Ionicons name="happy-outline" size={18} color="#6B7280" />
-        </Pressable>
-      </View>
-
-      {/* Comment tap target */}
-      <TouchableOpacity
-        style={feedS.commentTap}
-        onPress={() => setCommentsOpen(true)}
-        hitSlop={4}
-      >
-        <Ionicons name="chatbubble-outline" size={13} color={C.textTertiary} />
-        <Text style={feedS.commentTapText}>
-          {localCommentCount > 0
-            ? `${localCommentCount} comment${localCommentCount === 1 ? "" : "s"}`
-            : "Add a comment…"}
-        </Text>
-      </TouchableOpacity>
-
-      {/* Emoji picker */}
-      {pickerOpen && (
-        <EmojiPickerModal
-          item={item}
-          onToggle={(type) => onToggleReaction(item.id, type)}
-          onClose={() => setPickerOpen(false)}
-        />
-      )}
-
-      {/* Who reacted sheet */}
-      {reactorEmoji !== null && (
-        <ReactorListModal
-          feedItemId={item.id}
-          emoji={reactorEmoji}
-          onClose={() => setReactorEmoji(null)}
-        />
-      )}
-
-      {/* Full-screen photo viewer */}
-      {fullscreenOpen && (
-        <Modal visible transparent animationType="fade" onRequestClose={() => setFullscreenOpen(false)}>
-          <Pressable style={feedS.fullscreenOverlay} onPress={() => setFullscreenOpen(false)}>
-            <Image source={{ uri: signedPhotoUrl! }} style={feedS.fullscreenImage} resizeMode="contain" />
-          </Pressable>
-        </Modal>
-      )}
-
-      {/* Photo context menu */}
-      {photoMenuOpen && (
-        <Modal visible transparent animationType="fade" onRequestClose={() => setPhotoMenuOpen(false)}>
-          <Pressable style={feedS.sheetOverlay} onPress={() => setPhotoMenuOpen(false)}>
-            <Pressable style={feedS.contextSheet}>
-              <View style={feedS.sheetHandle} />
-              {isMe && (
-                <>
-                  <TouchableOpacity style={feedS.contextRow} onPress={handleDeletePhoto} activeOpacity={0.7}>
-                    <Ionicons name="trash-outline" size={18} color="#F87171" />
-                    <Text style={[feedS.contextRowText, { color: "#F87171" }]}>Delete photo</Text>
-                  </TouchableOpacity>
-                  <View style={feedS.contextDivider} />
-                </>
-              )}
-              <TouchableOpacity
-                style={feedS.contextRow}
-                onPress={() => { setPhotoMenuOpen(false); setReportMenuOpen(true); }}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="flag-outline" size={18} color={C.textPrimary} />
-                <Text style={feedS.contextRowText}>Report photo</Text>
-              </TouchableOpacity>
-              <View style={feedS.contextDivider} />
-              <TouchableOpacity style={feedS.contextRow} onPress={() => setPhotoMenuOpen(false)} activeOpacity={0.7}>
-                <Text style={[feedS.contextRowText, { color: C.textTertiary }]}>Cancel</Text>
-              </TouchableOpacity>
-            </Pressable>
-          </Pressable>
-        </Modal>
-      )}
-
-      {/* Report reason sheet */}
-      {reportMenuOpen && (
-        <Modal visible transparent animationType="fade" onRequestClose={() => setReportMenuOpen(false)}>
-          <Pressable style={feedS.sheetOverlay} onPress={() => setReportMenuOpen(false)}>
-            <Pressable style={feedS.contextSheet}>
-              <View style={feedS.sheetHandle} />
-              <Text style={feedS.reportTitle}>Report photo</Text>
-              {REPORT_REASONS.map((reason, i) => (
-                <React.Fragment key={reason}>
-                  <TouchableOpacity style={feedS.contextRow} onPress={() => handleReport(reason)} activeOpacity={0.7}>
-                    <Text style={feedS.contextRowText}>{reason}</Text>
-                  </TouchableOpacity>
-                  {i < REPORT_REASONS.length - 1 && <View style={feedS.contextDivider} />}
-                </React.Fragment>
-              ))}
-              <View style={feedS.contextDivider} />
-              <TouchableOpacity style={feedS.contextRow} onPress={() => setReportMenuOpen(false)} activeOpacity={0.7}>
-                <Text style={[feedS.contextRowText, { color: C.textTertiary }]}>Cancel</Text>
-              </TouchableOpacity>
-            </Pressable>
-          </Pressable>
-        </Modal>
-      )}
-
-      {/* Comments sheet */}
-      <CommentsSheet
-        feedItemId={item.id}
-        feedItemUserId={item.userId}
-        feedItemSummary={`${name}${activityPhrase}`}
-        packId={item.packId}
-        currentUserId={currentUserId}
-        currentUserName={currentUserName}
-        visible={commentsOpen}
-        onClose={() => setCommentsOpen(false)}
-        onCommentAdded={() => setLocalCommentCount((n) => n + 1)}
-      />
+    <View style={tchS.row}>
+      <Text style={tchS.text}>
+        {prefix} {time}
+      </Text>
     </View>
   );
 }
 
-function FeedTab({
+const tchS = StyleSheet.create({
+  row: {
+    paddingVertical: 16,
+    alignItems: "center",
+  },
+  text: {
+    fontSize: 12,
+    color: "#8A8A8E",
+    fontWeight: "500",
+  },
+});
+
+// Settle window duration. Every onContentSizeChange within this window
+// re-pins the chat ScrollView to the bottom — so async image / photo
+// loads don't leave the viewport stranded at a stale fake-bottom from
+// the first paint. Tunable: extend if slow networks leave images still
+// loading past the cutoff.
+const INITIAL_SETTLE_MS = 1500;
+
+function ChatTab({
   packId,
   currentUserId,
   currentUserName,
@@ -2807,367 +2472,536 @@ function FeedTab({
   currentUserId: string | undefined;
   currentUserName: string;
 }) {
-  const { items, isLoading, toggleReaction, removePhotoFromItem } = useActivityFeed(
-    packId,
-    currentUserId,
+  // usePackTimeline owns sort order + chat_messages fetch + writes.
+  // useActivityFeed remains the source of truth for activity-row reactions
+  // (optimistic toggles update its state). For each activity TimelineItem we
+  // prefer the live useActivityFeed item by id, falling back to the
+  // timeline's snapshot if the id isn't in useActivityFeed's window.
+  const {
+    timeline,
+    loading,
+    sendMessage,
+    editMessage,
+    softDeleteMessage,
+    toggleChatReaction,
+  } = usePackTimeline(packId, currentUserId);
+  const {
+    items: activityItems,
+    toggleReaction,
+    removePhotoFromItem,
+  } = useActivityFeed(packId, currentUserId);
+
+  const scrollRef = useRef<ScrollView>(null);
+  const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(
+    null,
+  );
+  const [actionMenuMessage, setActionMenuMessage] =
+    useState<ChatMessage | null>(null);
+  const [actionMenuAnchor, setActionMenuAnchor] =
+    useState<AnchorPosition | null>(null);
+
+  // ReactionPicker state — agnostic to target type. The picker fires
+  // a single onToggle(emoji) callback; we route to either
+  // toggleReaction (activity) or toggleChatReaction (chat) based on
+  // the captured target kind.
+  const [pickerTarget, setPickerTarget] = useState<
+    | { kind: "activity"; id: string; existingReactions: string[] }
+    | { kind: "message"; id: string; existingReactions: string[] }
+    | null
+  >(null);
+  const [pickerAnchor, setPickerAnchor] = useState<AnchorPosition | null>(null);
+
+  const handleActionMenuOpen = useCallback(
+    (message: ChatMessage, anchor: AnchorPosition) => {
+      setActionMenuMessage(message);
+      setActionMenuAnchor(anchor);
+    },
+    [],
   );
 
-  if (isLoading) {
-    return (
-      <ActivityIndicator
-        size="small"
-        color={C.accent}
-        style={{ marginTop: 48 }}
-      />
-    );
-  }
+  const closeActionMenu = useCallback(() => {
+    setActionMenuMessage(null);
+    setActionMenuAnchor(null);
+  }, []);
 
-  if (items.length === 0) {
-    return (
-      <View style={feedS.empty}>
-        <Text style={feedS.emptyTitle}>No activity yet</Text>
-        <Text style={feedS.emptySub}>
-          Big moments in the pack will show up here
-        </Text>
-      </View>
-    );
-  }
+  const handleOpenActivityPicker = useCallback(
+    (item: FeedItem, anchor: AnchorPosition) => {
+      const existing = item.reactions
+        .filter((r) => r.user_id === currentUserId)
+        .map((r) => r.reaction_type);
+      setPickerTarget({ kind: "activity", id: item.id, existingReactions: existing });
+      setPickerAnchor(anchor);
+    },
+    [currentUserId],
+  );
 
-  return (
-    <View>
-      {items.map((item) => (
-        <FeedItemRow
-          key={item.id}
-          item={item}
-          currentUserId={currentUserId}
-          currentUserName={currentUserName}
-          onToggleReaction={toggleReaction}
-          removePhotoFromItem={removePhotoFromItem}
+  const handleOpenMessagePicker = useCallback(
+    (messageId: string, anchor: AnchorPosition) => {
+      const tlItem = timeline.find(
+        (it) => it.kind === "message" && it.data.id === messageId,
+      );
+      const existing =
+        tlItem?.kind === "message"
+          ? tlItem.data.reactions
+              .filter((r) => r.user_id === currentUserId)
+              .map((r) => r.reaction_type)
+          : [];
+      setPickerTarget({ kind: "message", id: messageId, existingReactions: existing });
+      setPickerAnchor(anchor);
+    },
+    [currentUserId, timeline],
+  );
+
+  const closePicker = useCallback(() => {
+    setPickerTarget(null);
+    setPickerAnchor(null);
+  }, []);
+
+  const handlePickerToggle = useCallback(
+    (emoji: string) => {
+      if (!pickerTarget) return;
+      if (pickerTarget.kind === "activity") {
+        toggleReaction(pickerTarget.id, emoji);
+      } else {
+        toggleChatReaction(pickerTarget.id, emoji);
+      }
+    },
+    [pickerTarget, toggleReaction, toggleChatReaction],
+  );
+
+  // Auto-scroll bookkeeping — newest renders at the BOTTOM of the list.
+  // - On initial settle window: re-pin to bottom on every onContentSizeChange
+  //   so async image/photo loads (avatars, activity attachments) don't leave
+  //   the viewport pinned at a fake mid-list "bottom" while content grows
+  //   underneath. Window auto-closes after INITIAL_SETTLE_MS, OR earlier if
+  //   the user manually scrolls.
+  // - On own send: always scroll to bottom.
+  // - On other-user send via realtime: scroll only if the user is already
+  //   near the bottom (within 100pt). Don't yank them while they're reading.
+  //
+  // TODO(perf): ScrollView renders all 50 children synchronously, which is
+  // fine at the current usePackTimeline.limit(50) cap. If the limit grows
+  // past ~200, convert to FlatList for virtualization.
+
+  // 0 = settle window has not opened yet (no content has rendered).
+  // > 0 = timestamp at which the window closes. Compared against Date.now()
+  // every time we check `isSettleWindowActive()`.
+  const settleWindowEndAtRef = useRef(0);
+  // Set true on the first user-initiated scroll. Exits the settle window
+  // immediately so we stop fighting the user's intent.
+  const userHasScrolledRef = useRef(false);
+  // Timestamp of "ignore onScroll-as-user-scroll until at least this ms".
+  // Set forward by every scrollToEndProgrammatic call. handleScroll checks
+  // Date.now() < this value before tripping userHasScrolledRef.
+  //
+  // Why timestamp not boolean: RN's native bridge delivers the onScroll
+  // event from a programmatic scroll a few ms after we kick it off (3ms
+  // observed on iPhone). A boolean flag cleared via setTimeout(0) races
+  // the bridge — the timer can fire BEFORE the bridge delivers onScroll,
+  // letting our own scroll trip the user-scrolled flag and self-terminate
+  // the settle window. A timestamp 200ms in the future is well above
+  // bridge latency and below any plausible user reaction time.
+  const programmaticUntilRef = useRef(0);
+
+  const isNearBottomRef = useRef(true);
+  const prevTimelineLengthRef = useRef(0);
+  // Set true when the keyboard opens to defer the scroll-to-end until
+  // onContentSizeChange fires (so we use the new contentSize, not the
+  // stale one). A setTimeout-based scroll races the layout commit and
+  // sometimes lands at the old end, leaving the last message far above
+  // the input bar.
+  const pendingKeyboardScrollRef = useRef(false);
+
+  const isSettleWindowActive = () => {
+    if (settleWindowEndAtRef.current === 0) return false;
+    if (userHasScrolledRef.current) return false;
+    return Date.now() < settleWindowEndAtRef.current;
+  };
+
+  // Wraps scrollToEnd so handleScroll can distinguish "we just scrolled"
+  // from "the user scrolled." The 200ms suppression is well above the
+  // observed 3ms RN bridge latency and well below user reaction time.
+  const PROGRAMMATIC_SUPPRESS_MS = 200;
+  const scrollToEndProgrammatic = (animated: boolean) => {
+    programmaticUntilRef.current = Date.now() + PROGRAMMATIC_SUPPRESS_MS;
+    scrollRef.current?.scrollToEnd({ animated });
+  };
+
+  const handleScroll = (e: {
+    nativeEvent: {
+      layoutMeasurement: { height: number };
+      contentOffset: { y: number };
+      contentSize: { height: number };
+    };
+  }) => {
+    const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+    // Trip the user-scrolled flag only when the scroll event is NOT the
+    // tail of one of our own programmatic scrollToEnd calls. The 200ms
+    // suppression window absorbs RN bridge latency (observed 3ms but
+    // budgeting headroom). Without this guard, our own programmatic
+    // scrolls fire onScroll a few ms later and would self-terminate the
+    // settle window before images settle.
+    const isProgrammaticTail = Date.now() < programmaticUntilRef.current;
+    if (!isProgrammaticTail && isSettleWindowActive()) {
+      userHasScrolledRef.current = true;
+    }
+    const distanceFromBottom =
+      contentSize.height - (layoutMeasurement.height + contentOffset.y);
+    isNearBottomRef.current = distanceFromBottom < 100;
+  };
+
+  const handleContentSizeChange = (_width: number, _height: number) => {
+    // Open the settle window the first time content actually exists. The
+    // window stays open for INITIAL_SETTLE_MS, during which every
+    // contentSize change re-pins to the bottom — so async image / photo
+    // loads (avatars, activity attachments) don't leave the viewport
+    // stranded at a stale "fake bottom" that was the bottom at T0 but
+    // isn't the bottom by the time everything has rendered.
+    if (settleWindowEndAtRef.current === 0 && timeline.length > 0) {
+      settleWindowEndAtRef.current = Date.now() + INITIAL_SETTLE_MS;
+      scrollToEndProgrammatic(false);
+      return;
+    }
+
+    // While the settle window is active, every contentSize growth pins
+    // back to bottom so the viewport tracks the real end as images settle.
+    if (isSettleWindowActive()) {
+      scrollToEndProgrammatic(false);
+      return;
+    }
+
+    // After the settle window: keyboard-show paddingBottom growths still
+    // need to re-pin so the last message lands flush above the input bar.
+    if (pendingKeyboardScrollRef.current) {
+      pendingKeyboardScrollRef.current = false;
+      scrollToEndProgrammatic(true);
+    }
+  };
+
+  // Auto-scroll on new arrivals: own messages always scroll; others' only
+  // when the user is already near the bottom. Skipped until the settle
+  // window has opened (timeline first rendered) so this doesn't fight
+  // the initial pin-to-bottom logic in handleContentSizeChange.
+  useEffect(() => {
+    const grew = timeline.length > prevTimelineLengthRef.current;
+    prevTimelineLengthRef.current = timeline.length;
+    if (!grew) return;
+    if (settleWindowEndAtRef.current === 0) return; // no content rendered yet
+    const last = timeline[timeline.length - 1];
+    const isOwn =
+      last && last.kind === "message" && last.data.user_id === currentUserId;
+    if (isOwn || isNearBottomRef.current) {
+      scrollToEndProgrammatic(true);
+    }
+  }, [timeline, currentUserId]);
+
+  // Track keyboard height so we can grow the message-list contentContainer
+  // by the amount the keyboard + input bar would otherwise cover, then
+  // scroll to the new end. This is the "messages push above keyboard"
+  // behavior.
+  //
+  // CRITICAL: pendingKeyboardScrollRef is set SYNCHRONOUSLY inside the
+  // listener (before setKeyboardHeight). If we set it in a useEffect on
+  // [keyboardHeight] change, that effect races onContentSizeChange — the
+  // native side might fire its callback before the JS effect runs, in
+  // which case the pending flag is still false and the auto-scroll
+  // silently fails. Setting it in the listener guarantees the flag is
+  // true before React even schedules the re-render.
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    const showEvent =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showSub = Keyboard.addListener(showEvent, (e) => {
+      // Set the scroll-pending flag BEFORE setState so it's reliably
+      // true by the time onContentSizeChange fires.
+      if (isNearBottomRef.current) {
+        pendingKeyboardScrollRef.current = true;
+      }
+      setKeyboardHeight(e.endCoordinates.height);
+    });
+    const hideSub = Keyboard.addListener(hideEvent, () => {
+      // Clear pending in case onContentSizeChange never consumed it.
+      pendingKeyboardScrollRef.current = false;
+      setKeyboardHeight(0);
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  // Calculate ScrollView paddingBottom needed to land the last message's
+  // text flush with the input bar's top edge when the keyboard is open.
+  //
+  // Geometry (screen coords, y-up from screen bottom):
+  //   - chat slot bottom = top of bottom tab nav = tabNavHeight
+  //   - input bar (KSV) is a flex sibling of the ScrollView inside the
+  //     <View flex:1>, so it takes barHeight of layout space — meaning
+  //     ScrollView's visible bottom is at tabNavHeight + barHeight
+  //   - When keyboard opens, KSV translates the bar to y=keyboardHeight
+  //     (flush with keyboard top, given offset.opened=tabNavHeight)
+  //   - Bar top is then at y = keyboardHeight + barHeight
+  //
+  // When ScrollView is scrolled to end, the last row's bottom edge in
+  // screen coords is at: ScrollView_visible_bottom + paddingBottom.
+  // Inside the row, paddingVertical:10 puts the visible text 10pt above
+  // row bottom. So:
+  //   text_bottom_y = (tabNavHeight + barHeight) + paddingBottom + rowPad
+  //
+  // For text_bottom_y == bar_top_y (zero gap):
+  //   (tabNavHeight + barHeight) + paddingBottom + rowPad = keyboardHeight + barHeight
+  //   paddingBottom = keyboardHeight - tabNavHeight - rowPad
+  //
+  // Confirmed by [keyboard-heights] diagnostics that lib + RN agree on
+  // keyboardHeight — no predictive-bar offset to compensate.
+  const tabNavHeight = Platform.OS === "ios" ? 84 : 64;
+  const rowVerticalPadding = 10; // matches ChatMessageRow's paddingVertical
+  const breathingRoom = 12; // small gap between last message and input bar
+  const dynamicPaddingBottom =
+    keyboardHeight > 0
+      ? Math.max(
+          0,
+          keyboardHeight - tabNavHeight - rowVerticalPadding + breathingRoom,
+        )
+      : 8;
+
+  const handleSend = async (body: string) => {
+    try {
+      await sendMessage(body);
+      // Newest renders at the bottom; jump there so the just-sent message
+      // is visible. The useEffect above also catches this; calling here
+      // makes the response feel snappier.
+      scrollToEndProgrammatic(true);
+    } catch (err) {
+      Alert.alert(
+        "Send failed",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  };
+
+  const handleEdit = async (messageId: string, newBody: string) => {
+    try {
+      await editMessage(messageId, newBody);
+      setEditingMessage(null);
+    } catch (err) {
+      Alert.alert(
+        "Edit failed",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  };
+
+  const handleDeleteRequest = (messageId: string) => {
+    Alert.alert("Delete message?", "This can't be undone.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await softDeleteMessage(messageId);
+          } catch (err) {
+            Alert.alert(
+              "Delete failed",
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        },
+      },
+    ]);
+  };
+
+  const renderListContents = () => {
+    if (loading) {
+      return (
+        <ActivityIndicator
+          size="small"
+          color={C.accent}
+          style={{ marginTop: 48 }}
         />
-      ))}
+      );
+    }
+    if (timeline.length === 0) {
+      return (
+        <View style={chatTabS.emptyContainer}>
+          <Ionicons name="chatbubble-outline" size={48} color="#3A3A3C" />
+          <Text style={chatTabS.emptyTitle}>{den.feed.empty.headline}</Text>
+          <Text style={chatTabS.emptySub}>{den.feed.empty.body}</Text>
+        </View>
+      );
+    }
+    // Walk the timeline and inject:
+    //   - time-cluster headers when the gap between consecutive items is
+    //     ≥ 30 minutes
+    //   - isGrouped flag on chat messages whose previous neighbor is a
+    //     message from the same author within 5 minutes (any non-message
+    //     item resets the grouping chain).
+    const result: React.ReactNode[] = [];
+    let prevSortKey: string | null = null;
+    let prevMessageAuthorId: string | null = null;
+    let prevMessageAt: number | null = null;
+
+    for (const tlItem of timeline) {
+      const itemAt = new Date(tlItem.sortKey).getTime();
+
+      if (prevSortKey !== null) {
+        const gapMs = itemAt - new Date(prevSortKey).getTime();
+        if (gapMs >= 30 * 60 * 1000) {
+          result.push(
+            <TimeClusterHeader
+              key={`tch-${tlItem.sortKey}-${result.length}`}
+              isoString={tlItem.sortKey}
+            />,
+          );
+        }
+      }
+
+      let isGrouped = false;
+      if (tlItem.kind === "message") {
+        if (
+          prevMessageAuthorId === tlItem.data.user_id &&
+          prevMessageAt !== null &&
+          itemAt - prevMessageAt < 5 * 60 * 1000
+        ) {
+          isGrouped = true;
+        }
+        prevMessageAuthorId = tlItem.data.user_id;
+        prevMessageAt = itemAt;
+      } else {
+        prevMessageAuthorId = null;
+        prevMessageAt = null;
+      }
+
+      result.push(
+        <TimelineRow
+          key={
+            tlItem.kind === "activity"
+              ? `a-${tlItem.data.id}`
+              : `m-${tlItem.data.id}`
+          }
+          item={tlItem}
+          currentUserId={currentUserId}
+          isGrouped={isGrouped}
+          renderActivity={(feedItem) => {
+            const live =
+              activityItems.find((i) => i.id === feedItem.id) ?? feedItem;
+            return (
+              <FeedItemRow
+                item={live}
+                currentUserId={currentUserId}
+                onToggleReaction={toggleReaction}
+                onOpenPicker={handleOpenActivityPicker}
+                removePhotoFromItem={removePhotoFromItem}
+              />
+            );
+          }}
+          onActionMenuOpen={handleActionMenuOpen}
+          onOpenPicker={handleOpenMessagePicker}
+          onToggleChatReaction={toggleChatReaction}
+        />,
+      );
+
+      prevSortKey = tlItem.sortKey;
+    }
+
+    return result;
+  };
+
+  // KeyboardStickyView pins ChatInputBar above the keyboard. Tried the
+  // library's KeyboardAvoidingView (which would shrink the message list
+  // too), but it hid the input entirely when the keyboard opened.
+  // KeyboardStickyView leaves a small cosmetic gap above the keyboard
+  // but is otherwise the working state — input visible, tap-through
+  // works, send and ⋮ fire on first tap.
+  return (
+    <View style={{ flex: 1 }}>
+      <ScrollView
+        ref={scrollRef}
+        style={{ flex: 1 }}
+        contentContainerStyle={
+          timeline.length === 0 && !loading
+            ? chatTabS.contentContainerEmpty
+            : { paddingBottom: dynamicPaddingBottom }
+        }
+        showsVerticalScrollIndicator={false}
+        onScroll={handleScroll}
+        onContentSizeChange={handleContentSizeChange}
+        scrollEventThrottle={32}
+        keyboardShouldPersistTaps="handled"
+      >
+        {renderListContents()}
+      </ScrollView>
+      {/* opened offset compensates for the bottom tab nav height (84pt
+          iOS / 64pt Android — see app/(app)/_layout.tsx). KeyboardStickyView
+          shifts by exactly -keyboardHeight; without this offset it
+          overshoots by the tab nav height, leaving a visible gap above
+          the keyboard. */}
+      <KeyboardStickyView
+        offset={{
+          closed: 0,
+          opened: Platform.OS === "ios" ? 84 : 64,
+        }}
+      >
+        <ChatInputBar
+          onSend={handleSend}
+          onEdit={handleEdit}
+          editingMessage={editingMessage}
+          onCancelEdit={() => setEditingMessage(null)}
+        />
+      </KeyboardStickyView>
+      <ReactionPicker
+        visible={!!pickerTarget && !!pickerAnchor}
+        onClose={closePicker}
+        anchorPosition={pickerAnchor ?? { x: 0, y: 0, width: 0, height: 0 }}
+        existingReactions={pickerTarget?.existingReactions ?? []}
+        onToggle={handlePickerToggle}
+      />
+      <MessageActionMenu
+        visible={!!actionMenuMessage && !!actionMenuAnchor}
+        onClose={closeActionMenu}
+        anchorPosition={actionMenuAnchor ?? { x: 0, y: 0, width: 0, height: 0 }}
+        isOwn={actionMenuMessage?.user_id === currentUserId}
+        onEdit={() => {
+          if (actionMenuMessage) setEditingMessage(actionMenuMessage);
+        }}
+        onDelete={() => {
+          if (actionMenuMessage) handleDeleteRequest(actionMenuMessage.id);
+        }}
+      />
     </View>
   );
 }
 
-const feedS = StyleSheet.create({
-  // ── Card ──
-  card: {
-    backgroundColor: C.surface,
-    borderBottomWidth: 0.5,
-    borderBottomColor: C.border,
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 12,
-  },
-  cardTop: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-  },
-  avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: C.surfaceRaised,
-    alignItems: "center",
+const chatTabS = StyleSheet.create({
+  // Used on the ScrollView's contentContainerStyle when timeline is empty,
+  // so the empty state renders centered in the full visible area instead
+  // of pinned to the top.
+  contentContainerEmpty: {
+    flexGrow: 1,
     justifyContent: "center",
-    flexShrink: 0,
   },
-  avatarText: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: C.textPrimary,
-  },
-  content: {
-    flex: 1,
-    gap: 3,
-  },
-  line1Row: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "baseline",
-  },
-  line1Text: {
-    fontSize: 14,
-    color: "#FFFFFF",
-    lineHeight: 20,
-  },
-  nameText: {
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
-  nameTextSelf: {
-    fontWeight: "700",
-    color: C.accent,
-  },
-  ptsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    flexShrink: 0,
-  },
-  ptsInline: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: colors.accent,
-  },
-  time: {
-    fontSize: 11,
-    color: "#4B5563",
-    marginTop: 3,
-  },
-
-  // ── Chips row ──
-  chipsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
-    gap: 6,
-    marginTop: 10,
-    marginLeft: 48, // align under text, past avatar (36) + gap (12)
-  },
-  chip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 99,
-    backgroundColor: "#1A2030",
-    borderWidth: 1,
-    borderColor: "#30363D",
-  },
-  chipActive: {
-    backgroundColor: "#1E3A5F",
-    borderColor: colors.accent,
-  },
-  chipEmoji: { fontSize: 13 },
-  chipCount: {
-    fontSize: 12,
-    fontWeight: "500",
-    color: "#6B7280",
-  },
-  chipCountActive: { color: "#93C5FD" },
-  addBtn: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: "#1A2030",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#30363D",
-  },
-  addBtnText: {
-    fontSize: 16,
-    color: "#6B7280",
-    lineHeight: 20,
-  },
-  ptsPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: "rgba(59,130,246,0.12)",
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    flexShrink: 0,
-  },
-  ptsPillText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: colors.accent,
-  },
-  commentTap: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    marginTop: 6,
-    marginLeft: 48,
-  },
-  commentTapText: {
-    fontSize: 12,
-    color: C.textTertiary,
-  },
-
-  // ── Shared sheet base ──
-  sheetOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
-    justifyContent: "flex-end",
-  },
-  sheetHandle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "#374151",
-    alignSelf: "center",
-    marginBottom: 16,
-  },
-
-  // ── Emoji picker sheet ──
-  pickerPanel: {
-    backgroundColor: C.surfaceRaised,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 40,
-  },
-  pickerLabel: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: C.textTertiary,
-    textAlign: "center",
-    marginBottom: 20,
-    letterSpacing: 0.8,
-    textTransform: "uppercase",
-  },
-  pickerRow: {
-    flexDirection: "row",
-    justifyContent: "space-around",
-  },
-  pickerBtn: {
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderRadius: 16,
-    backgroundColor: "#0F1623",
-    borderWidth: 1,
-    borderColor: "transparent",
-    minWidth: 88,
-  },
-  pickerBtnActive: {
-    backgroundColor: "#1E3A5F",
-    borderColor: colors.accent,
-  },
-  pickerEmoji: { fontSize: 34 },
-  pickerCount: {
-    fontSize: 12,
-    color: "#6B7280",
-    fontWeight: "500",
-  },
-
-  // ── Reactor list sheet ──
-  reactorSheet: {
-    backgroundColor: C.surfaceRaised,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 40,
-    gap: 0,
-  },
-  reactorHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 16,
-  },
-  reactorEmoji: { fontSize: 22 },
-  reactorTitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#FFFFFF",
-  },
-  reactorName: {
-    fontSize: 15,
-    color: C.textSecondary,
-    paddingVertical: 10,
-    borderBottomWidth: 0.5,
-    borderBottomColor: C.border,
-  },
-  reactorEmpty: {
-    fontSize: 14,
-    color: C.textTertiary,
-    marginTop: 8,
-  },
-
-  // ── Empty feed state ──
-  empty: {
-    paddingTop: 64,
+  emptyContainer: {
+    paddingVertical: 32,
+    paddingHorizontal: 32,
     alignItems: "center",
     gap: 8,
   },
   emptyTitle: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: "600",
-    color: C.textSecondary,
+    color: "#FFFFFF",
+    marginTop: 8,
   },
   emptySub: {
-    fontSize: 13,
-    color: C.textTertiary,
-    textAlign: "center",
-    paddingHorizontal: 32,
-  },
-
-  // ── Photo ──
-  photoWrap: {
-    marginTop: 10,
-    marginLeft: 48,
-    borderRadius: 10,
-    overflow: "hidden",
-  },
-  victoryPhotoWrap: {
-    marginTop: 10,
-    borderRadius: 10,
-    overflow: "hidden",
-  },
-  photo: {
-    width: "100%",
-    aspectRatio: 4 / 3,
-    backgroundColor: C.surfaceRaised,
-  },
-  victoryCaption: {
-    marginTop: 8,
     fontSize: 14,
-    color: C.textSecondary,
-    lineHeight: 20,
-  },
-  fullscreenOverlay: {
-    flex: 1,
-    backgroundColor: "#000",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  fullscreenImage: {
-    width: "100%",
-    height: "100%",
-  },
-
-  // ── Photo context / report sheets ──
-  contextSheet: {
-    backgroundColor: C.surfaceRaised,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: Platform.OS === "ios" ? 34 : 16,
-    borderTopWidth: 0.5,
-    borderColor: C.border,
-  },
-  contextRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingVertical: 16,
-  },
-  contextRowText: {
-    fontSize: 16,
-    color: C.textPrimary,
-  },
-  contextDivider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: C.border,
-  },
-  reportTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: C.textPrimary,
-    marginBottom: 4,
+    color: "#8A8A8E",
+    textAlign: "center",
   },
 });
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main Screen
@@ -3187,7 +3021,7 @@ export default function PackScreen() {
   const pageScrollRef = React.useRef<ScrollView>(null);
   const scrollX = React.useRef(new Animated.Value(0)).current;
 
-  const TAB_ORDER: TabId[] = ["compete", "feed", "history"];
+  const TAB_ORDER: TabId[] = ["compete", "chat", "history"];
 
   const [scores, setScores] = useState<MemberScore[]>([]);
   const [weeklyTotals, setWeeklyTotals] = useState<Record<string, number>>({});
@@ -3201,7 +3035,10 @@ export default function PackScreen() {
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showTransferPicker, setShowTransferPicker] = useState(false);
-  const [transferTarget, setTransferTarget] = useState<{ id: string; name: string } | null>(null);
+  const [transferTarget, setTransferTarget] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
 
   // Reset to Compete tab every time this screen is focused
   useFocusEffect(
@@ -3211,10 +3048,31 @@ export default function PackScreen() {
     }, []),
   );
 
+  // Belt-and-suspenders: also snap the pager to x=0 on mount. The
+  // useFocusEffect above runs on every focus, but on the very first
+  // focus pageScrollRef.current can be null (the ref attaches after
+  // layout), making its scrollTo a no-op. This effect runs once after
+  // first commit, when the ref is guaranteed populated.
+  useEffect(() => {
+    pageScrollRef.current?.scrollTo({ x: 0, animated: false });
+  }, []);
+
+  // Dismiss the keyboard whenever the user moves away from the Chat tab,
+  // either by swipe or by tapping a different label. Without this, the
+  // keyboard stays up while a different tab is showing, which feels
+  // wrong (the input is no longer visible).
+  useEffect(() => {
+    if (activeTab !== "chat") {
+      Keyboard.dismiss();
+    }
+  }, [activeTab]);
+
   // Determine if current user is the pack creator
   useEffect(() => {
     if (!user?.id || !id) return;
-    canUserDeletePack(user.id, id).then(setIsCreator).catch(() => {});
+    canUserDeletePack(user.id, id)
+      .then(setIsCreator)
+      .catch(() => {});
   }, [user?.id, id]);
 
   const handleTabChange = (tab: TabId) => {
@@ -3374,7 +3232,11 @@ export default function PackScreen() {
   const memberNameMap = new Map<string, string>();
   const memberAvatarMap = new Map<string, string | null>();
   (packData?.members ?? []).forEach((m) => {
-    const u = (m as unknown as { users: { display_name: string; avatar_url: string | null } | null }).users;
+    const u = (
+      m as unknown as {
+        users: { display_name: string; avatar_url: string | null } | null;
+      }
+    ).users;
     if (u?.display_name) memberNameMap.set(m.user_id, u.display_name);
     memberAvatarMap.set(m.user_id, u?.avatar_url ?? null);
   });
@@ -3438,7 +3300,8 @@ export default function PackScreen() {
   if (!fullRoster.find((r) => r.user_id === user?.id)) {
     fullRoster.push({
       user_id: user?.id ?? "",
-      display_name: (user?.user_metadata?.display_name as string | undefined) ?? "",
+      display_name:
+        (user?.user_metadata?.display_name as string | undefined) ?? "",
       ...zero(),
     });
   }
@@ -3541,6 +3404,12 @@ export default function PackScreen() {
         // Prevent the horizontal pager from stealing vertical scroll events
         // inside each page's vertical ScrollView on Android.
         disableIntervalMomentum
+        // "handled" lets descendants like the chat send button + ⋮ icon
+        // receive their first tap when the keyboard is open. Default
+        // "never" would cause the pager (the outermost ScrollView ancestor
+        // of every Pressable on the chat tab) to dismiss the keyboard
+        // before the tap propagates, swallowing the action.
+        keyboardShouldPersistTaps="handled"
       >
         {/* ── PAGE 0: COMPETE ────────────────────────────────────────── */}
         <ScrollView
@@ -3548,79 +3417,36 @@ export default function PackScreen() {
           contentContainerStyle={s.content}
           showsVerticalScrollIndicator={false}
         >
-          {!scoresLoading && packData.activeRun && (
-            <RingLeaderboard
-              entries={ranked}
-              pack={pack}
-              activeRun={packData.activeRun}
-              currentUserId={user?.id}
-            />
-          )}
-
-          {!scoresLoading && packData.activeRun && (
-            <StreakSection members={ranked} />
-          )}
-
-          {!scoresLoading && (
-            <DailySection
-              ranked={ranked}
-              userId={user?.id}
-              pack={pack}
-              isSyncing={isSyncing}
-            />
-          )}
-
           {scoresLoading ? (
             <View style={s.loadingBox}>
               <ActivityIndicator size="small" color={C.textTertiary} />
             </View>
-          ) : (
-            <View>
-              <View style={s.standingsHeader}>
-                <Text style={s.standingsLabel}>STANDINGS</Text>
-                <Text style={s.standingsSubLabel}>weekly pts</Text>
-              </View>
-              {ranked.map((score) => (
-                <LeaderboardListRow
-                  key={score.user_id}
-                  score={score}
-                  rank={score.rank}
-                  pack={pack}
-                  isCurrentUser={score.user_id === user?.id}
-                  isExpanded={expandedId === score.user_id}
-                  onToggle={() => handleToggle(score.user_id)}
-                  tieCaption={
-                    score.tiebreaker === "streak"
-                      ? "Leading by streak"
-                      : score.tiebreaker === "time"
-                        ? "Got there first"
-                        : null
-                  }
-                />
-              ))}
-            </View>
-          )}
-
-          {!scoresLoading && others.length === 0 && (
-            <EmptyMembers onInvite={handleInvite} />
-          )}
+          ) : packData.activeRun ? (
+            <PackGridView
+              entries={ranked}
+              pack={pack}
+              activeRun={packData.activeRun}
+              currentUserId={user?.id}
+              onInvite={handleInvite}
+            />
+          ) : null}
 
           <View style={{ height: 40 }} />
         </ScrollView>
 
-        {/* ── PAGE 1: FEED ───────────────────────────────────────────── */}
-        <ScrollView
-          style={{ width: screenWidth }}
-          contentContainerStyle={s.content}
-          showsVerticalScrollIndicator={false}
-        >
-          <FeedTab
+        {/* ── PAGE 1: CHAT ───────────────────────────────────────────── */}
+        {/* ChatTab manages its own internal scroll + KeyboardAvoidingView,
+            so the page slot is a flex column rather than a ScrollView. */}
+        <View style={{ width: screenWidth, flex: 1 }}>
+          <ChatTab
             packId={pack.id}
             currentUserId={user?.id}
-            currentUserName={ranked.find((r) => r.user_id === user?.id)?.display_name ?? "Pack member"}
+            currentUserName={
+              ranked.find((r) => r.user_id === user?.id)?.display_name ??
+              "Pack member"
+            }
           />
-          <View style={{ height: 40 }} />
-        </ScrollView>
+        </View>
 
         {/* ── PAGE 2: HISTORY ────────────────────────────────────────── */}
         <ScrollView
@@ -3648,10 +3474,7 @@ export default function PackScreen() {
         animationType="fade"
         onRequestClose={() => setShowPackMenu(false)}
       >
-        <Pressable
-          style={s.menuOverlay}
-          onPress={() => setShowPackMenu(false)}
-        >
+        <Pressable style={s.menuOverlay} onPress={() => setShowPackMenu(false)}>
           <View style={s.menuSheet}>
             {isCreator ? (
               <>
@@ -3662,7 +3485,11 @@ export default function PackScreen() {
                     setShowTransferPicker(true);
                   }}
                 >
-                  <Ionicons name="person-add-outline" size={18} color={C.textSecondary} />
+                  <Ionicons
+                    name="person-add-outline"
+                    size={18}
+                    color={C.textSecondary}
+                  />
                   <Text style={s.menuRowText}>Transfer Ownership</Text>
                 </TouchableOpacity>
                 <View style={s.menuDivider} />
@@ -3714,7 +3541,44 @@ export default function PackScreen() {
         onConfirm={async () => {
           if (!user?.id || !id) return;
           try {
+            // Pass 9 funnel — capture pack_left properties BEFORE the leave,
+            // since some queries (joined_at, points totals) require the
+            // membership row that the leave call deactivates.
+            const [memberRes, pointsRes] = await Promise.all([
+              supabase
+                .from("pack_members")
+                .select("joined_at")
+                .eq("pack_id", id)
+                .eq("user_id", user.id)
+                .maybeSingle(),
+              supabase
+                .from("daily_scores")
+                .select("total_points, runs!inner(pack_id)")
+                .eq("user_id", user.id)
+                .eq("runs.pack_id", id),
+            ]);
+            const { count: memberCount } = await supabase
+              .from("pack_members")
+              .select("id", { count: "exact", head: true })
+              .eq("pack_id", id)
+              .eq("is_active", true);
+            const joinedAt = memberRes.data?.joined_at as string | undefined;
+            const daysInPack = joinedAt
+              ? Math.max(0, Math.floor((Date.now() - new Date(joinedAt).getTime()) / 86400000))
+              : 0;
+            const pointsEarned = (pointsRes.data ?? []).reduce(
+              (sum, row: { total_points: number | null }) => sum + (row.total_points ?? 0),
+              0,
+            );
+
             await leavePack(user.id, id);
+
+            analytics.packLeft({
+              pack_member_count_at_leave: memberCount ?? 0,
+              days_in_pack: daysInPack,
+              points_earned_in_pack: pointsEarned,
+            });
+
             setShowLeaveConfirm(false);
             showToast({ message: "Left pack", kind: "success" });
             router.replace("/home");
@@ -3738,7 +3602,36 @@ export default function PackScreen() {
         onConfirm={async () => {
           if (!user?.id || !id) return;
           try {
+            // Pass 9 funnel — capture pack_deleted properties BEFORE the
+            // cascade delete wipes the data sources. total_activities_in_pack
+            // is a COUNT against activity_feed for this pack — cheap, but if
+            // it ever becomes expensive on a busy pack, drop to null.
+            const [packRes, memberCountRes, activityCountRes] = await Promise.all([
+              supabase.from("packs").select("created_at").eq("id", id).maybeSingle(),
+              supabase
+                .from("pack_members")
+                .select("id", { count: "exact", head: true })
+                .eq("pack_id", id)
+                .eq("is_active", true),
+              supabase
+                .from("activity_feed")
+                .select("id", { count: "exact", head: true })
+                .eq("pack_id", id),
+            ]);
+            const createdAt = packRes.data?.created_at as string | undefined;
+            const daysExisted = createdAt
+              ? Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 86400000))
+              : 0;
+
             await deletePack(id, user.id);
+
+            analytics.packDeleted({
+              pack_member_count_at_deletion: memberCountRes.count ?? 0,
+              days_pack_existed: daysExisted,
+              pack_was_owner: true,
+              total_activities_in_pack: activityCountRes.count ?? null,
+            });
+
             setShowDeleteConfirm(false);
             showToast({ message: "Pack deleted", kind: "success" });
             router.replace("/home");
@@ -3764,7 +3657,17 @@ export default function PackScreen() {
           onPress={() => setShowTransferPicker(false)}
         >
           <View style={[s.menuSheet, { paddingBottom: 24 }]}>
-            <Text style={transferS.pickerTitle}>Transfer ownership to…</Text>
+            <Text
+              style={{
+                fontSize: 13,
+                fontWeight: "600",
+                color: C.textSecondary,
+                paddingHorizontal: 16,
+                paddingBottom: 8,
+              }}
+            >
+              Transfer ownership to…
+            </Text>
             {(packData?.members ?? [])
               .filter((m) => m.user_id !== user?.id && m.is_active)
               .map((m) => {
@@ -3778,7 +3681,11 @@ export default function PackScreen() {
                       setShowTransferPicker(false);
                     }}
                   >
-                    <Ionicons name="person-outline" size={18} color={C.textSecondary} />
+                    <Ionicons
+                      name="person-outline"
+                      size={18}
+                      color={C.textSecondary}
+                    />
                     <Text style={s.menuRowText}>{name}</Text>
                   </TouchableOpacity>
                 );
@@ -3798,7 +3705,9 @@ export default function PackScreen() {
       <ConfirmDialog
         visible={transferTarget !== null}
         title="Transfer ownership?"
-        message={`${transferTarget?.name ?? "This member"} will become the new pack owner. You'll still be a member but won't be able to delete the pack.`}
+        message={t(den.transferConfirm, {
+          name: transferTarget?.name ?? "This member",
+        })}
         confirmLabel="Transfer"
         onConfirm={async () => {
           if (!user?.id || !id || !transferTarget) return;
@@ -3816,8 +3725,7 @@ export default function PackScreen() {
             });
             showToast({ message: "Ownership transferred", kind: "success" });
           } catch (err: unknown) {
-            const msg =
-              err instanceof Error ? err.message : "Transfer failed.";
+            const msg = err instanceof Error ? err.message : "Transfer failed.";
             Alert.alert("Transfer failed", msg);
           }
         }}

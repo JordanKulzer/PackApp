@@ -4,6 +4,7 @@ import * as Linking from "expo-linking";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { useAuthStore } from "../stores/authStore";
+import { normalizeDisplayName } from "../lib/displayName";
 
 // Auth state is owned by the root _layout.tsx (getSession + onAuthStateChange).
 // This hook only reads from the store and provides action functions.
@@ -12,17 +13,19 @@ import { useAuthStore } from "../stores/authStore";
 export type SignUpResult = "signed_in" | "confirm_email";
 
 // Fallback chain: full_name → name → identity full_name → email prefix → "User"
+// Output is normalized via normalizeDisplayName so social signups (Apple,
+// Google) and email-fallback names land canonical at write time. The
+// email-prefix branch's per-token title-casing is now redundant with the
+// normalizer but kept inline as defense-in-depth.
 export function resolveDisplayName(user: User): string {
   const meta = user.user_metadata ?? {};
-  if (meta.full_name && meta.full_name !== "") return meta.full_name as string;
-  if (meta.name && meta.name !== "") return meta.name as string;
-  const identityName = user.identities?.[0]?.identity_data?.full_name;
-  if (identityName && identityName !== "") return identityName as string;
-  if (user.email) {
-    const prefix = user.email.split("@")[0];
-    return prefix.charAt(0).toUpperCase() + prefix.slice(1);
-  }
-  return "User";
+  const raw =
+    (meta.full_name && meta.full_name !== "" ? (meta.full_name as string) : "") ||
+    (meta.name && meta.name !== "" ? (meta.name as string) : "") ||
+    (user.identities?.[0]?.identity_data?.full_name as string | undefined) ||
+    (user.email ? user.email.split("@")[0] : "") ||
+    "User";
+  return normalizeDisplayName(raw) || "User";
 }
 
 // Upsert the users row after social sign-in.
@@ -74,7 +77,7 @@ export function useAuth() {
       const { error: profileError } = await supabase.from("users").upsert(
         {
           id: data.user.id,
-          display_name: displayName,
+          display_name: normalizeDisplayName(displayName),
           healthkit_authorized: false,
           subscription_tier: "free",
         },

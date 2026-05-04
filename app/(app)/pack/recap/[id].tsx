@@ -9,6 +9,55 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { usePackHistory } from "../../../../src/hooks/usePackHistory";
 import { colors } from "../../../../src/theme/colors";
+import { recap, den, t } from "../../../../src/constants/strings";
+import { formatName } from "../../../../src/lib/displayName";
+
+interface RunForRecap {
+  winner: { displayName: string; totalPoints: number };
+  standings: ReadonlyArray<{ totalPoints: number; displayName: string; rank: number }>;
+}
+
+// Branched headline picker driven by run shape. Caller renders the returned
+// headline above the trophy hero; subtitle (when present) renders below.
+//
+// fullPackHit branch reserved for Pass 7 — once daily_scores aggregation
+// or a denormalized pack_runs.full_pack_hit flag exists, wire it in here.
+function pickRecapHeadline(
+  run: RunForRecap,
+): { headline: string; subtitle?: string } {
+  const total = run.standings.length;
+  if (total === 1) {
+    return {
+      headline: recap.headline.solo,
+      subtitle: t(recap.subtitle.soloPts, { pts: run.winner.totalPoints }),
+    };
+  }
+
+  const tiedAtTop = run.standings.filter(
+    (s) => s.totalPoints === run.winner.totalPoints,
+  );
+  if (tiedAtTop.length >= 2) {
+    return { headline: recap.headline.tiedAtTop };
+  }
+
+  const margin = run.winner.totalPoints - run.standings[1].totalPoints;
+  if (run.winner.totalPoints > 0 && margin / run.winner.totalPoints > 0.3) {
+    return {
+      headline: t(recap.headline.runaway, { winner: formatName(run.winner.displayName) }),
+      subtitle: t(recap.subtitle.margin, { pts: margin }),
+    };
+  }
+  if (margin <= 5) {
+    return {
+      headline: recap.headline.photoFinish,
+      subtitle: t(recap.subtitle.margin, { pts: margin }),
+    };
+  }
+  return {
+    headline: t(recap.headline.default, { winner: formatName(run.winner.displayName) }),
+    subtitle: t(recap.subtitle.margin, { pts: margin }),
+  };
+}
 
 const MONTHS = [
   "Jan","Feb","Mar","Apr","May","Jun",
@@ -84,6 +133,7 @@ export default function RecapScreen() {
   const winnerPts = run.winner.totalPoints;
   const second = run.standings[1];
   const third = run.standings[2];
+  const { headline, subtitle } = pickRecapHeadline(run);
 
   return (
     <ScrollView style={s.scroll} contentContainerStyle={s.content}>
@@ -97,11 +147,18 @@ export default function RecapScreen() {
         </Text>
       </View>
 
+      {/* Branched headline — characterizes the week's shape (runaway,
+          photo-finish, tie, solo, default). Sits above the trophy hero. */}
+      <View style={s.headlineBlock}>
+        <Text style={s.headlineText}>{headline}</Text>
+        {subtitle && <Text style={s.headlineSubtitle}>{subtitle}</Text>}
+      </View>
+
       {/* Hero */}
       <View style={s.hero}>
         <Text style={s.trophy}>🏆</Text>
         <AvatarCircle name={run.winner.displayName} size={64} bg={colors.leader} />
-        <Text style={s.winnerName}>{run.winner.displayName}</Text>
+        <Text style={s.winnerName}>{formatName(run.winner.displayName)}</Text>
         <Text style={s.winnerPts}>{run.winner.totalPoints} pts</Text>
       </View>
 
@@ -112,7 +169,7 @@ export default function RecapScreen() {
             <AvatarCircle name={second.displayName} size={40} bg="#1F2937" />
             <Text style={s.podiumRank}>#2</Text>
             <Text style={s.podiumName} numberOfLines={1}>
-              {second.displayName}
+              {formatName(second.displayName)}
             </Text>
             <Text style={s.podiumPts}>{second.totalPoints} pts</Text>
           </View>
@@ -120,7 +177,7 @@ export default function RecapScreen() {
             <AvatarCircle name={third.displayName} size={40} bg="#1F2937" />
             <Text style={s.podiumRank}>#3</Text>
             <Text style={s.podiumName} numberOfLines={1}>
-              {third.displayName}
+              {formatName(third.displayName)}
             </Text>
             <Text style={s.podiumPts}>{third.totalPoints} pts</Text>
           </View>
@@ -129,7 +186,7 @@ export default function RecapScreen() {
 
       {/* Full standings */}
       <View style={s.standingsCard}>
-        <Text style={s.standingsTitle}>STANDINGS</Text>
+        <Text style={s.standingsTitle}>{den.standings.title.toUpperCase()}</Text>
         {run.standings.map((standing) => {
           const barPct =
             winnerPts > 0
@@ -144,7 +201,7 @@ export default function RecapScreen() {
               <View style={s.standingInfo}>
                 <View style={s.standingMeta}>
                   <Text style={s.standingName} numberOfLines={1}>
-                    {standing.displayName}
+                    {formatName(standing.displayName, standing.rank)}
                   </Text>
                   <Text style={s.standingPts}>{standing.totalPoints} pts</Text>
                 </View>
@@ -172,7 +229,7 @@ export default function RecapScreen() {
         onPress={() => router.replace(`/(app)/pack/${packId}` as any)}
         activeOpacity={0.85}
       >
-        <Text style={s.ctaText}>This week is live →</Text>
+        <Text style={s.ctaText}>{recap.liveCta}</Text>
       </TouchableOpacity>
     </ScrollView>
   );
@@ -196,6 +253,26 @@ const s = StyleSheet.create({
   },
   backText: { color: "#9CA3AF", fontSize: 15, fontWeight: "500" },
   weekLabel: { fontSize: 13, color: "#9CA3AF", fontWeight: "600", letterSpacing: 0.3 },
+  // Branded headline block — sits above the trophy hero so the week's
+  // shape (runaway, photo-finish, tie, etc.) lands first.
+  headlineBlock: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    alignItems: "center",
+    gap: 4,
+  },
+  headlineText: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    textAlign: "center",
+    letterSpacing: -0.3,
+  },
+  headlineSubtitle: {
+    fontSize: 14,
+    color: "#9CA3AF",
+    textAlign: "center",
+  },
   hero: {
     alignItems: "center",
     paddingVertical: 32,

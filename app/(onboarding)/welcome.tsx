@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -8,9 +8,13 @@ import {
   SafeAreaView,
 } from "react-native";
 import { useRouter } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCurrentUser } from "../../src/context/CurrentUserContext";
 import { useAuthStore } from "../../src/stores/authStore";
-import { completeOnboarding } from "../../src/lib/onboarding";
+import { completeOnboarding, SIGNUP_STARTED_AT_KEY } from "../../src/lib/onboarding";
+import { PackLogo } from "../../src/components/brand/PackLogo";
+import { onboarding, t } from "../../src/constants/strings";
+import { BrandColors } from "../../src/constants/brand";
 
 const C = {
   bg: "#0B0F14",
@@ -28,10 +32,18 @@ export default function Welcome() {
 
   const firstName = (currentUser?.displayName ?? "").split(" ")[0] || "there";
 
+  // Mark onboarding-flow start time on first mount of the welcome screen.
+  // Read by completeOnboarding to compute onboarding_duration_sec. Idempotent —
+  // if a stale key exists from a prior session that didn't complete, we
+  // overwrite it (the most recent welcome view is the meaningful start).
+  useEffect(() => {
+    AsyncStorage.setItem(SIGNUP_STARTED_AT_KEY, String(Date.now())).catch(() => {});
+  }, []);
+
   const handleSkip = () => {
     Alert.alert(
       "Skip setup?",
-      "You can always connect Apple Health and create a pack later.",
+      "You can connect a tracker and start a pack later.",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -40,7 +52,7 @@ export default function Welcome() {
           onPress: async () => {
             if (!authUser?.id || completing) return;
             setCompleting(true);
-            await completeOnboarding(authUser.id);
+            await completeOnboarding(authUser.id, "skip");
             applyLocal({ hasCompletedOnboarding: true });
             router.replace("/(app)/home");
           },
@@ -53,32 +65,27 @@ export default function Welcome() {
     <SafeAreaView style={s.safe}>
       <View style={s.container}>
         <TouchableOpacity style={s.skipBtn} onPress={handleSkip} hitSlop={12}>
-          <Text style={s.skipText}>Skip</Text>
+          <Text style={s.skipText}>{onboarding.welcome.skip}</Text>
         </TouchableOpacity>
 
         <View style={s.hero}>
-          <Text style={s.wordmark}>PACK</Text>
-          <Text style={s.greeting}>Welcome to Pack, {firstName}</Text>
+          <PackLogo size={120} />
+          <View style={s.heroText}>
+            <Text style={s.greeting}>
+              {t(onboarding.welcome.greeting, { firstName })}
+            </Text>
+            <Text style={s.headline}>{onboarding.welcome.headline}</Text>
+          </View>
         </View>
 
-        <View style={s.body}>
-          <Text style={s.bodyLine}>
-            Compete with friends on steps, workouts, calories, and water.
-          </Text>
-          <Text style={s.bodyLine}>
-            Weekly competitions. Streak multipliers for showing up.
-          </Text>
-          <Text style={s.bodyLine}>
-            Let's get you set up — takes about 30 seconds.
-          </Text>
-        </View>
+        <Text style={s.subhead}>{onboarding.welcome.subhead}</Text>
 
         <TouchableOpacity
           style={s.primaryBtn}
           onPress={() => router.push("/(onboarding)/profile-setup")}
           activeOpacity={0.85}
         >
-          <Text style={s.primaryBtnText}>Continue</Text>
+          <Text style={s.primaryBtnText}>{onboarding.welcome.cta}</Text>
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -97,41 +104,50 @@ const s = StyleSheet.create({
     paddingBottom: 40,
     justifyContent: "center",
   },
+  // Skip is an escape hatch for power users — present but visually quiet.
+  // Smaller font + inkMuted + further into the corner per design feedback.
   skipBtn: {
     position: "absolute",
-    top: 16,
-    right: 28,
+    top: 12,
+    right: 16,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
   },
   skipText: {
-    fontSize: 14,
-    color: C.textTertiary,
+    fontSize: 13,
+    color: BrandColors.inkMuted,
   },
   hero: {
     alignItems: "center",
-    marginBottom: 48,
-    gap: 12,
+    marginBottom: 40,
+    gap: 24,
   },
-  wordmark: {
-    fontSize: 48,
-    fontWeight: "800",
-    letterSpacing: 8,
-    color: C.textPrimary,
+  heroText: {
+    alignItems: "center",
+    gap: 6,
   },
+  // Greeting sits visually subordinate to the brand line: muted color,
+  // smaller weight/size, so the two read as a single layered hero
+  // rather than two competing headlines.
   greeting: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: C.textPrimary,
+    fontSize: 19,
+    fontWeight: "500",
+    color: BrandColors.inkMuted,
     textAlign: "center",
   },
-  body: {
-    gap: 14,
-    marginBottom: 56,
+  headline: {
+    fontSize: 34,
+    fontWeight: "700",
+    letterSpacing: -0.5,
+    color: BrandColors.ink,
+    textAlign: "center",
   },
-  bodyLine: {
+  subhead: {
     fontSize: 15,
     color: C.textSecondary,
     lineHeight: 22,
     textAlign: "center",
+    marginBottom: 56,
   },
   primaryBtn: {
     height: 52,

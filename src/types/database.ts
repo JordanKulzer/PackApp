@@ -21,6 +21,10 @@ export interface User {
   healthkit_authorized: boolean;
   subscription_tier: SubscriptionTier;
   subscription_expires_at: string | null;
+  // Pinned activity categories driving the LogSheet "Quick Select" grid.
+  // Up to 6, order preserved (first = leftmost). Empty array means
+  // unpinned / new user before onboarding category step.
+  quick_select_categories: string[];
   created_at: string;
   updated_at: string;
 }
@@ -123,6 +127,17 @@ export interface FeedComment {
   is_deleted: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  pack_id: string;
+  user_id: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+  edited_at: string | null;
+  is_deleted: boolean;
 }
 
 // Leaderboard row — joined query result

@@ -6,6 +6,7 @@ import {
   LayoutAnimation,
   Modal,
   Platform,
+  Pressable,
   ScrollView,
   TextInput,
   View,
@@ -21,10 +22,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuthStore } from "../stores/authStore";
 import { useScoreStore } from "../stores/scoreStore";
 import { supabase } from "../lib/supabase";
-import { POINTS, WORKOUT_MAX_DAILY, getStreakMultiplier } from "../lib/scoring";
-import { computeStreakForRun } from "../lib/computeStreak";
+import { POINTS, WORKOUT_MAX_DAILY } from "../lib/scoring";
 import { syncManualActivityToDailyScores } from "../lib/logActivity";
-import { packToday, packTodayStartUTC } from "../lib/packDates";
+import { packToday } from "../lib/packDates";
 import { notifyPackMembers } from "../lib/notifications";
 import {
   getTodaySteps,
@@ -41,6 +41,19 @@ import { colors } from "../theme/colors";
 import { PhotoPicker } from "./PhotoPicker";
 import { uploadPhoto, attachPhotoToLatestFeedEntry, type PickedPhoto } from "../lib/photoUpload";
 import { analytics } from "../lib/analytics";
+import { syncWaterToDailyScores } from "../lib/syncWater";
+import { CategoryChip, EmptyChipSlot } from "./CategoryChip";
+import { SeeMoreCategoriesSheet, type SeeMoreEntryPoint } from "./SeeMoreCategoriesSheet";
+import {
+  CATEGORY_DISPLAY_NAMES,
+  type ActivityCategory,
+} from "../lib/activityCategoryMap";
+import { useCurrentUser } from "../context/CurrentUserContext";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { activity as activityCopy } from "../constants/strings";
+
+const QUICK_SELECT_MAX = 6;
+const QUICK_SELECT_HINT_KEY = "pack:logsheet:hint:quickselect";
 
 if (
   Platform.OS === "android" &&
@@ -338,139 +351,6 @@ const sk = StyleSheet.create({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sync water total to daily_scores (unchanged)
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function syncWaterToDailyScores(userId: string): Promise<void> {
-  try {
-    const { data: memberships, error: memberError } = await supabase
-      .from("pack_members")
-      .select("pack_id")
-      .eq("user_id", userId)
-      .eq("is_active", true);
-
-    if (memberError || !memberships || memberships.length === 0) return;
-
-    for (const membership of memberships) {
-      const { data: pack } = await supabase
-        .from("packs")
-        .select("id, water_enabled, water_target_oz, timezone")
-        .eq("id", membership.pack_id)
-        .single();
-
-      if (!pack || !pack.water_enabled) continue;
-
-      const today = packToday(pack.timezone ?? "UTC");
-
-      const { data: run } = await supabase
-        .from("runs")
-        .select("id")
-        .eq("pack_id", pack.id)
-        .eq("status", "active")
-        .single();
-
-      if (!run) continue;
-
-      const deviceToday = new Intl.DateTimeFormat("en-CA").format(new Date());
-      const { data: todayLogs } = await supabase
-        .from("water_logs")
-        .select("amount_oz")
-        .eq("user_id", userId)
-        .eq("log_date", deviceToday);
-
-      const trueTotalOz = (todayLogs ?? []).reduce(
-        (sum, row) => sum + row.amount_oz,
-        0,
-      );
-
-      const water_achieved = trueTotalOz >= pack.water_target_oz;
-
-      const { data: existing } = await supabase
-        .from("daily_scores")
-        .select(
-          "total_points, water_achieved, steps_achieved, workout_achieved, workout_count, calories_achieved",
-        )
-        .eq("run_id", run.id)
-        .eq("user_id", userId)
-        .eq("score_date", today)
-        .single();
-
-      const anyAchieved =
-        water_achieved ||
-        (existing?.steps_achieved ?? false) ||
-        (existing?.workout_achieved ?? false) ||
-        (existing?.calories_achieved ?? false);
-      const streakDays = await computeStreakForRun(userId, run.id, today, anyAchieved, pack.timezone ?? "UTC");
-      const multiplier = getStreakMultiplier(streakDays);
-
-      const wCount = existing?.workout_count ?? 0;
-      const basePointsWithoutWater =
-        (existing?.steps_achieved ? POINTS.steps : 0) +
-        Math.min(wCount, WORKOUT_MAX_DAILY) * POINTS.workout +
-        (existing?.calories_achieved ? POINTS.calories : 0);
-      const waterPoints = water_achieved ? POINTS.water : 0;
-      const newTotalPoints = Math.round(
-        (basePointsWithoutWater + waterPoints) * multiplier,
-      );
-
-      const { error: upsertError } = await supabase.from("daily_scores").upsert(
-        {
-          run_id: run.id,
-          user_id: userId,
-          score_date: today,
-          water_achieved,
-          water_oz_count: Math.round(trueTotalOz),
-          total_points: newTotalPoints,
-          streak_days: streakDays,
-          streak_multiplier: multiplier,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "run_id,user_id,score_date" },
-      );
-
-      if (upsertError) {
-        console.error("[LogSheet] daily_scores upsert error:", upsertError);
-      }
-
-      if (water_achieved) {
-        const wPoints = Math.round(POINTS.water * multiplier);
-        const todayStart = packTodayStartUTC(pack.timezone ?? "UTC");
-
-        const { data: existingFeed, error: feedCheckError } = await supabase
-          .from("activity_feed")
-          .select("id")
-          .eq("pack_id", pack.id)
-          .eq("user_id", userId)
-          .eq("activity_type", "water")
-          .gte("created_at", todayStart.toISOString())
-          .maybeSingle();
-
-        if (feedCheckError) {
-          console.error("[LogSheet] activity_feed check error:", feedCheckError);
-        } else if (!existingFeed) {
-          const { error: feedInsertError } = await supabase.from("activity_feed").insert({
-            pack_id: pack.id,
-            user_id: userId,
-            activity_type: "water",
-            value: Math.round(trueTotalOz),
-            points_earned: wPoints,
-          });
-          if (!feedInsertError) {
-            notifyPackMembers(userId, pack.id, {
-              kind: "goal",
-              activityType: "water",
-              pointsEarned: wPoints,
-            }).catch(() => {});
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.error("[LogSheet] syncWaterToDailyScores error:", err);
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -547,6 +427,77 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
   const [feedback, setFeedback] = useState<{ text: string; positive: boolean } | null>(null);
   const feedbackAnim = useRef(new Animated.Value(0)).current;
   const prevRankRef = useRef<number | null>(null);
+
+  // ── Quick Select (workout category chips inside the Workout row) ─────────
+  const { user: currentUser, applyLocal } = useCurrentUser();
+  const quickSelectCategories: ActivityCategory[] =
+    currentUser?.quickSelectCategories ?? [];
+
+  const [seeMoreState, setSeeMoreState] = useState<{
+    open: boolean;
+    entryPoint: SeeMoreEntryPoint;
+    replaceTargetIndex?: number;
+  }>({ open: false, entryPoint: "add" });
+
+  const [chipMenuIndex, setChipMenuIndex] = useState<number | null>(null);
+
+  const [hintDismissed, setHintDismissed] = useState(true);
+  useEffect(() => {
+    AsyncStorage.getItem(QUICK_SELECT_HINT_KEY).then((v) => {
+      setHintDismissed(v === "1");
+    });
+  }, []);
+  const dismissHint = () => {
+    if (hintDismissed) return;
+    setHintDismissed(true);
+    AsyncStorage.setItem(QUICK_SELECT_HINT_KEY, "1").catch(() => {});
+  };
+
+  const saveQuickSelect = async (next: ActivityCategory[]) => {
+    if (!userId) return;
+    applyLocal({ quickSelectCategories: next });
+    const { error } = await supabase
+      .from("users")
+      .update({ quick_select_categories: next })
+      .eq("id", userId);
+    if (error) {
+      console.error("[LogSheet] save quick_select_categories error:", error);
+    }
+  };
+
+  const handlePinCategory = async (cat: ActivityCategory) => {
+    if (quickSelectCategories.includes(cat)) return;
+    const next = [...quickSelectCategories, cat].slice(0, QUICK_SELECT_MAX);
+    await saveQuickSelect(next);
+  };
+
+  const handleReplaceCategory = async (idx: number, cat: ActivityCategory) => {
+    if (idx < 0 || idx >= quickSelectCategories.length) return;
+    const next = [...quickSelectCategories];
+    const existingIdx = next.indexOf(cat);
+    if (existingIdx !== -1) {
+      // Swap if the chosen category is already pinned elsewhere
+      next[existingIdx] = next[idx];
+    }
+    next[idx] = cat;
+    await saveQuickSelect(next);
+  };
+
+  const handleRemoveCategory = async (idx: number) => {
+    const next = quickSelectCategories.filter((_, i) => i !== idx);
+    await saveQuickSelect(next);
+  };
+
+  const openSeeMore = (
+    entryPoint: SeeMoreEntryPoint,
+    replaceTargetIndex?: number,
+  ) => {
+    dismissHint();
+    setSeeMoreState({ open: true, entryPoint, replaceTargetIndex });
+  };
+
+  const closeSeeMore = () =>
+    setSeeMoreState((prev) => ({ ...prev, open: false }));
 
   // ── Data hook ─────────────────────────────────────────────────────────────
 
@@ -683,26 +634,33 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
         text = "You took the lead";
         positive = true;
         if (packRun?.packId) {
-          const todayStart = packTodayStartUTC(packRun.packTimezone ?? "UTC");
-          const { data: existingLead } = await supabase
+          // Idempotent upsert keyed on the partial unique index extended
+          // by 20260429_expand_activity_type_check (covers the new types
+          // alongside steps/calories/water): one took_lead row per
+          // (user, pack, day). Re-takes within the same day or concurrent
+          // races become silent no-ops; we notify only on actual insert.
+          const { data: insertedLead, error: leadError } = await supabase
             .from("activity_feed")
-            .select("id")
-            .eq("pack_id", packRun.packId)
-            .eq("user_id", uid)
-            .eq("activity_type", "took_lead")
-            .gte("created_at", todayStart.toISOString())
-            .maybeSingle();
-          if (!existingLead) {
-            const { error: leadError } = await supabase.from("activity_feed").insert({
-              pack_id: packRun.packId,
-              user_id: uid,
-              activity_type: "took_lead",
-              value: 0,
-              points_earned: 0,
-            });
-            if (!leadError) {
-              notifyPackMembers(uid, packRun.packId, { kind: "took_lead" }).catch(() => {});
-            }
+            .upsert(
+              {
+                pack_id: packRun.packId,
+                user_id: uid,
+                activity_type: "took_lead",
+                value: 0,
+                points_earned: 0,
+                entry_method: "system",
+                score_date: today,
+              },
+              {
+                onConflict: "user_id,pack_id,activity_type,score_date",
+                ignoreDuplicates: true,
+              },
+            )
+            .select("id");
+          if (leadError) {
+            console.error("[LogSheet] took_lead upsert error:", leadError);
+          } else if (insertedLead && insertedLead.length > 0) {
+            notifyPackMembers(uid, packRun.packId, { kind: "took_lead" }).catch(() => {});
           }
         }
       } else if (lead === 0) {
@@ -782,13 +740,14 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
 
   // ── Log workout ────────────────────────────────────────────────────────────
 
-  const handleLogWorkout = async () => {
+  const handleLogWorkout = async (category: ActivityCategory) => {
     if (!userId || workoutSaving) return;
 
     const currentCount = localScore?.workout_count ?? 0;
     if (currentCount >= WORKOUT_MAX_DAILY) return; // silently guard; UI already disables
 
     setWorkoutSaving(true);
+    dismissHint();
     Vibration.vibrate(40);
 
     const newWorkoutCount = currentCount + 1;
@@ -826,7 +785,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     setWorkoutLogs((prev) => [...prev, { logged_at: new Date().toISOString(), entry_method: "manual" }]);
 
     try {
-      await syncManualActivityToDailyScores(userId, "workout", 1);
+      await syncManualActivityToDailyScores(userId, "workout", 1, category);
       if (photos.workout) uploadPhotoInBackground("workout", photos.workout);
       invalidateLogActivitySheetCache();
       bumpLogVersion();
@@ -1111,7 +1070,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
           </View>
 
           {/* Header */}
-          <Text style={s.header}>Log Activity</Text>
+          <Text style={s.header}>{activityCopy.logSheet.title}</Text>
 
           <ScrollView
             showsVerticalScrollIndicator={false}
@@ -1124,7 +1083,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
               <View style={s.card}>
                 {/* ── STEPS ───────────────────────────────────────────── */}
                 <ActivityRow
-                  label="Steps"
+                  label={activityCopy.logSheet.types.steps}
                   rightContent={hkRowRight(stepsDisplay, stepTarget, "steps", stepsAchieved, hasManualSteps)}
                   showChevron={hkAvailable && hkAuthorized}
                   isExpanded={expandedId === "steps"}
@@ -1174,9 +1133,14 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                 {(() => {
                   const wCount = localScore?.workout_count ?? 0;
                   const atCap = wCount >= WORKOUT_MAX_DAILY;
+                  const emptySlots = Math.max(
+                    0,
+                    QUICK_SELECT_MAX - quickSelectCategories.length,
+                  );
+                  const showHint = !hintDismissed && emptySlots > 0;
                   return (
                     <ActivityRow
-                      label="Workout"
+                      label={activityCopy.logSheet.types.workout}
                       rightContent={
                         atCap
                           ? <Text style={s.valueSuccess}>{wCount}/{WORKOUT_MAX_DAILY} ✓</Text>
@@ -1188,33 +1152,59 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                       isExpanded={expandedId === "workout"}
                       onPress={() => toggleRow("workout")}
                     >
-                      {/* Log button */}
                       {atCap ? (
                         <Text style={ar.workoutDoneText}>
                           {WORKOUT_MAX_DAILY}/{WORKOUT_MAX_DAILY} workouts today — max reached
                         </Text>
                       ) : (
-                        <TouchableOpacity
-                          style={[ar.workoutBtn, workoutSaving && ar.workoutBtnDisabled]}
-                          onPress={handleLogWorkout}
-                          disabled={workoutSaving}
-                          activeOpacity={0.8}
-                        >
-                          <Text style={ar.workoutBtnText}>
-                            {wCount === 1
-                              ? `Log Another Workout  +${POINTS.workout} pts`
-                              : `Log Workout  +${POINTS.workout} pts`}
-                          </Text>
-                        </TouchableOpacity>
-                      )}
+                        <>
+                          {/* Quick Select grid: 2 rows × 3 cols. Filled chips
+                              come from quickSelectCategories in pinned order;
+                              remaining slots up to QUICK_SELECT_MAX render as
+                              dashed + slots that open See More. */}
+                          <View style={qs.grid}>
+                            {quickSelectCategories.map((cat, idx) => (
+                              <View key={`chip-${idx}`} style={qs.cell}>
+                                <CategoryChip
+                                  label={CATEGORY_DISPLAY_NAMES[cat]}
+                                  onPress={() => {
+                                    dismissHint();
+                                    handleLogWorkout(cat);
+                                  }}
+                                  onLongPress={() => setChipMenuIndex(idx)}
+                                  disabled={workoutSaving}
+                                />
+                              </View>
+                            ))}
+                            {Array.from({ length: emptySlots }).map((_, i) => (
+                              <View key={`empty-${i}`} style={qs.cell}>
+                                <EmptyChipSlot
+                                  onPress={() => openSeeMore("add")}
+                                />
+                              </View>
+                            ))}
+                          </View>
 
-                      {!atCap && (
-                        <PhotoPicker
-                          photo={photos.workout ?? null}
-                          onPhotoSelected={(p) => setPhotos((prev) => ({ ...prev, workout: p }))}
-                          onPhotoRemoved={() => setPhotos((prev) => { const n = { ...prev }; delete n.workout; return n; })}
-                          disabled={workoutSaving}
-                        />
+                          {showHint && (
+                            <Text style={qs.hint}>Tap + to add more.</Text>
+                          )}
+
+                          <TouchableOpacity
+                            onPress={() => openSeeMore("browse")}
+                            activeOpacity={0.7}
+                          >
+                            <Text style={qs.seeMoreLink}>
+                              See more categories →
+                            </Text>
+                          </TouchableOpacity>
+
+                          <PhotoPicker
+                            photo={photos.workout ?? null}
+                            onPhotoSelected={(p) => setPhotos((prev) => ({ ...prev, workout: p }))}
+                            onPhotoRemoved={() => setPhotos((prev) => { const n = { ...prev }; delete n.workout; return n; })}
+                            disabled={workoutSaving}
+                          />
+                        </>
                       )}
 
                       {/* History of today's workouts */}
@@ -1288,7 +1278,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
 
                 {/* ── WATER ───────────────────────────────────────────── */}
                 <ActivityRow
-                  label="Water"
+                  label={activityCopy.logSheet.types.water}
                   rightContent={
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                       <Text style={s.rowValue}>{totalOz} / {waterTarget} oz</Text>
@@ -1366,6 +1356,70 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
             )}
           </ScrollView>
         </Animated.View>
+
+        {/* See More + ChipMenu render INSIDE LogSheet's Modal as siblings of
+            <Animated.View>. They render on top because they come later in
+            child order. Keeping them inside the Modal sidesteps iOS's
+            sibling-Modal-presentation rule (a Modal can't reliably present
+            on top of an already-presenting Modal). */}
+        <SeeMoreCategoriesSheet
+          visible={seeMoreState.open}
+          entryPoint={seeMoreState.entryPoint}
+          pinnedCategories={quickSelectCategories}
+          userId={userId ?? null}
+          onClose={closeSeeMore}
+          onSelect={(cat) => {
+            const ep = seeMoreState.entryPoint;
+            const idx = seeMoreState.replaceTargetIndex;
+            closeSeeMore();
+            if (ep === "add") {
+              handlePinCategory(cat);
+            } else if (ep === "replace" && typeof idx === "number") {
+              handleReplaceCategory(idx, cat);
+            } else if (ep === "browse") {
+              handleLogWorkout(cat);
+            }
+          }}
+        />
+
+        {/* Chip long-press menu — Replace / Remove. Inline overlay; not a
+            separate Modal. Tapping outside dismisses via the backdrop
+            Pressable's onPress. */}
+        {chipMenuIndex !== null && (
+          <Pressable
+            style={cm.overlay}
+            onPress={() => setChipMenuIndex(null)}
+          >
+            <Pressable style={cm.sheet}>
+              <View style={cm.handle} />
+              <TouchableOpacity
+                style={cm.row}
+                activeOpacity={0.7}
+                onPress={() => {
+                  const idx = chipMenuIndex;
+                  setChipMenuIndex(null);
+                  if (idx !== null) openSeeMore("replace", idx);
+                }}
+              >
+                <Ionicons name="swap-horizontal-outline" size={18} color="#FFFFFF" />
+                <Text style={cm.rowText}>Replace</Text>
+              </TouchableOpacity>
+              <View style={cm.divider} />
+              <TouchableOpacity
+                style={cm.row}
+                activeOpacity={0.7}
+                onPress={() => {
+                  const idx = chipMenuIndex;
+                  setChipMenuIndex(null);
+                  if (idx !== null) handleRemoveCategory(idx);
+                }}
+              >
+                <Ionicons name="trash-outline" size={18} color="#F87171" />
+                <Text style={[cm.rowText, cm.rowTextDestructive]}>Remove</Text>
+              </TouchableOpacity>
+            </Pressable>
+          </Pressable>
+        )}
       </View>
     </Modal>
   );
@@ -1461,4 +1515,78 @@ const s = StyleSheet.create({
   },
   feedbackPositive: { color: C.success },
   feedbackNeutral: { color: C.textSecondary },
+});
+
+// Quick Select grid styles — 2 rows × 3 cols, 8pt gaps. Each cell is a
+// fixed share of the row so all 6 chips render identical dimensions
+// regardless of label length. 30% × 3 = 90% leaves 10% for the 2
+// inter-cell gaps and a small slack — fits comfortably on iPhone SE
+// (256pt content width inside card+row padding) through Pro Max.
+const qs = StyleSheet.create({
+  grid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 4,
+  },
+  cell: {
+    width: "30%",
+    flexGrow: 1,
+  },
+  hint: {
+    fontSize: 12,
+    color: C.textTertiary,
+    marginTop: 4,
+  },
+  seeMoreLink: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: C.accent,
+    marginTop: 4,
+    marginBottom: 4,
+  },
+});
+
+// ChipMenu styles — small bottom sheet that pops up on chip long-press.
+// Inline overlay (no nested Modal); absolute fill positions over the
+// LogSheet content.
+const cm = StyleSheet.create({
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
+  },
+  sheet: {
+    backgroundColor: "#1C1C1E",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingTop: 8,
+    paddingBottom: 32,
+    paddingHorizontal: 16,
+  },
+  handle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#3A3A3C",
+    alignSelf: "center",
+    marginBottom: 12,
+  },
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    gap: 10,
+  },
+  rowText: {
+    fontSize: 16,
+    color: "#FFFFFF",
+  },
+  rowTextDestructive: {
+    color: "#F87171",
+  },
+  divider: {
+    height: 1,
+    backgroundColor: "#2C2C2E",
+  },
 });

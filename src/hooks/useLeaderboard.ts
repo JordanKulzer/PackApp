@@ -27,7 +27,7 @@ export function useLeaderboard(
             .select("user_id, users(display_name, avatar_url)")
             .eq("pack_id", packId)
             .eq("is_active", true)
-        : Promise.resolve({ data: [] as { user_id: string; users: { display_name: string; avatar_url: string | null } | null }[] }),
+        : Promise.resolve({ data: [] as { user_id: string; users: { display_name: string; avatar_url: string | null } | null }[], error: null }),
       supabase
         .from("daily_scores")
         .select("user_id, total_points")

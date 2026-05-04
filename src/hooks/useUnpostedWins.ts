@@ -57,7 +57,7 @@ export function useUnpostedWins(userId: string | undefined): {
 
     const result: UnpostedWin[] = [];
     for (const row of data) {
-      const tz = (row.packs as { timezone: string } | null)?.timezone ?? "UTC";
+      const tz = (row.packs as unknown as { timezone: string } | null)?.timezone ?? "UTC";
       const yesterday = getYesterdayInTz(tz);
       if (row.score_date !== yesterday) continue;
 

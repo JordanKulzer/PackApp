@@ -1,22 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Platform } from "react-native";
-import AppleHealthKit from "react-native-health";
 import { supabase } from "../lib/supabase";
 import {
+  isHealthKitAvailable,
   requestHealthKitPermissions,
+  getHealthKitAuthStatus,
   syncHealthDataToSupabase,
-  syncWorkoutsToSupabase,
+  syncHealthDataForUser,
   logWaterToHealthKit,
 } from "../lib/healthkit";
+import { syncWaterToDailyScores } from "../lib/syncWater";
 import type { Pack } from "../types/database";
 
-function nativeAvailable(): boolean {
-  return (
-    Platform.OS === "ios" &&
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    typeof (AppleHealthKit as any)?.initHealthKit === "function"
-  );
-}
+const nativeAvailable = isHealthKitAvailable;
 
 export function useHealthKit(userId: string | null) {
   const [isAuthorized, setIsAuthorized] = useState(false);
@@ -26,69 +21,27 @@ export function useHealthKit(userId: string | null) {
   const autoSyncFired = useRef(false);
 
   // ── Check authorization on mount ────────────────────────────────────────
+  // Asks iOS for the actual authorization-request status (every cold launch).
+  // Stateless — replaces the older `users.healthkit_authorized` shadow flag,
+  // which could go stale and produce a false "Connected" state when iOS had
+  // never actually been prompted.
 
   useEffect(() => {
     if (!userId || !nativeAvailable()) return;
-
-    supabase
-      .from("users")
-      .select("healthkit_authorized")
-      .eq("id", userId)
-      .single()
-      .then(({ data }) => {
-        if (data?.healthkit_authorized) {
-          setIsAuthorized(true);
-        }
-      });
+    getHealthKitAuthStatus().then(setIsAuthorized);
   }, [userId]);
 
   // ── Auto-sync all packs once when authorized ────────────────────────────
 
+  // Foreground entry point — delegates to the shared orchestrator in
+  // healthkit.ts so the same throttled sync path serves both this hook and
+  // the background-observer subscription in app/_layout.tsx.
   const syncAllPacks = useCallback(async (uid: string) => {
     if (!nativeAvailable()) return;
     setIsSyncing(true);
     setError(null);
-
     try {
-      // Fetch all active pack memberships
-      const { data: memberships } = await supabase
-        .from("pack_members")
-        .select("pack_id")
-        .eq("user_id", uid)
-        .eq("is_active", true);
-
-      if (!memberships || memberships.length === 0) return;
-
-      const packIds = memberships.map((m) => m.pack_id);
-
-      // Fetch pack details
-      const { data: packs } = await supabase
-        .from("packs")
-        .select("*")
-        .in("id", packIds)
-        .eq("is_active", true);
-
-      if (!packs || packs.length === 0) return;
-
-      // For each pack, get active run and sync
-      await Promise.all([
-        ...((packs as Pack[]).map(async (pack) => {
-          const { data: run } = await supabase
-            .from("runs")
-            .select("id")
-            .eq("pack_id", pack.id)
-            .eq("status", "active")
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .maybeSingle();
-
-          if (!run) return;
-
-          await syncHealthDataToSupabase(uid, pack.id, run.id, pack);
-        })),
-        syncWorkoutsToSupabase(uid),
-      ]);
-
+      await syncHealthDataForUser(uid);
       setLastSyncedAt(new Date());
     } catch (err) {
       console.error("[useHealthKit] syncAllPacks error:", err);
@@ -174,6 +127,11 @@ export function useHealthKit(userId: string | null) {
       if (insertError) {
         console.error("[useHealthKit] water_logs insert error:", insertError);
         throw insertError;
+      }
+      try {
+        await syncWaterToDailyScores(userId);
+      } catch (err) {
+        console.error("[useHealthKit] syncWaterToDailyScores error:", err);
       }
     },
     [isAuthorized, userId],

@@ -21,6 +21,7 @@ import { analytics } from "../../../src/lib/analytics";
 import { colors } from "../../../src/theme/colors";
 import { POINTS } from "../../../src/lib/scoring";
 import { weekStartInPackTz, weekEndInPackTz, getDeviceTimezone } from "../../../src/lib/packDates";
+import { onboarding } from "../../../src/constants/strings";
 
 function generateInviteCode(): string {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -146,6 +147,23 @@ export default function CreatePack() {
       if (error) throw error;
 
       const packId = (data as { pack_id: string }).pack_id;
+
+      // Pack 9 funnel — pack_created. is_first_pack derived from the count
+      // query above (count was the user's pack count BEFORE this insert).
+      // current_pack_count is count + 1 (the just-created pack).
+      const goalCount =
+        (stepsEnabled ? 1 : 0) +
+        (workoutsEnabled ? 1 : 0) +
+        (caloriesEnabled ? 1 : 0) +
+        (waterEnabled ? 1 : 0);
+      analytics.packCreated({
+        is_first_pack: (count ?? 0) === 0,
+        goal_count: goalCount,
+        member_limit_chosen: isPro ? 25 : 10,
+        cadence: window === "monthly" ? "monthly" : "weekly",
+        current_pack_count: (count ?? 0) + 1,
+      });
+
       // Replace create screen so Back from pack detail returns to Home, not here.
       router.replace(`/(app)/pack/${packId}`);
     } catch (error) {
@@ -191,7 +209,7 @@ export default function CreatePack() {
           <Text style={styles.sectionTitle}>Pack Name</Text>
           <TextInput
             style={styles.input}
-            placeholder="e.g. Morning Warriors"
+            placeholder={onboarding.firstPack.namePlaceholder}
             placeholderTextColor="#9CA3AF"
             value={name}
             onChangeText={setName}

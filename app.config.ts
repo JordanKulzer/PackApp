@@ -2,16 +2,16 @@ import { ExpoConfig, ConfigContext } from "expo/config";
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
-  newArchEnabled: false,
+  newArchEnabled: true,
   name: "Pack",
   slug: "pack-app",
   version: "1.0.0",
   orientation: "portrait",
-  icon: "./assets/icon.png",
+  icon: "./assets/images/icon.png",
   userInterfaceStyle: "automatic",
   scheme: "packapp",
   splash: {
-    image: "./assets/splash.png",
+    image: "./assets/images/splash.png",
     resizeMode: "contain",
     backgroundColor: "#000000",
   },
@@ -19,11 +19,18 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     bundleIdentifier: "com.jordankulzer.pack",
     supportsTablet: false,
     usesAppleSignIn: true,
+    // ──────────────────────────────────────────────────────────────
+    // ADDED: explicit icon path for iOS
+    // (Optional — iOS falls back to the top-level icon if omitted, but
+    // declaring it explicitly is clearer when adaptive android icon
+    // also exists.)
+    // ──────────────────────────────────────────────────────────────
+    icon: "./assets/images/icon.png",
     infoPlist: {
       NSHealthShareUsageDescription:
         "Pack reads your steps, workouts, and active calories to score your daily competition.",
       NSHealthUpdateUsageDescription:
-        "Pack does not write data to Apple Health.",
+        "Pack writes water intake to Apple Health when you log it manually.",
       NSCameraUsageDescription:
         "Pack needs camera access so you can take photos to share with your pack.",
       NSPhotoLibraryUsageDescription:
@@ -40,7 +47,18 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       "aps-environment": "production",
     },
   },
+  // ──────────────────────────────────────────────────────────────
+  // ADDED: Android adaptive icon block.
+  // Add this only if you plan to publish to Android. Skip otherwise.
+  // ──────────────────────────────────────────────────────────────
+  android: {
+    adaptiveIcon: {
+      foregroundImage: "./assets/images/adaptive-icon.png",
+      backgroundColor: "#3B82F6",
+    },
+  },
   plugins: [
+    "expo-build-properties",
     "expo-router",
     "expo-secure-store",
     "expo-apple-authentication",
@@ -55,12 +73,20 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       },
     ],
     [
-      "react-native-health",
+      "@kingstinct/react-native-healthkit",
       {
-        isClinicalDataEnabled: false,
-        healthSharePermission:
+        NSHealthShareUsageDescription:
           "Pack reads your activity data from Apple Health to automatically sync steps, workouts, and calories with your pack.",
-        healthUpdatePermission: "Pack does not write data to Apple Health.",
+        NSHealthUpdateUsageDescription:
+          "Pack writes water intake to Apple Health when you log it manually.",
+        background: true,
+      },
+    ],
+    [
+      "@sentry/react-native/expo",
+      {
+        organization: "the-pack-app",
+        project: "react-native",
       },
     ],
   ],

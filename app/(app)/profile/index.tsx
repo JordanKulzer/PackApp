@@ -12,8 +12,6 @@ import {
   TextInput,
   Linking,
   ActionSheetIOS,
-  Image,
-  Pressable,
   Platform,
 } from "react-native";
 import { ConfirmDialog } from "../../../src/components/ConfirmDialog";
@@ -32,6 +30,7 @@ import {
   WhoopIcon,
 } from "../../../src/components/IntegrationIcons";
 import { supabase } from "../../../src/lib/supabase";
+import { normalizeDisplayName } from "../../../src/lib/displayName";
 import type { User } from "../../../src/types/database";
 import { useCurrentUser } from "../../../src/context/CurrentUserContext";
 import {
@@ -40,6 +39,8 @@ import {
   uploadAvatar,
   deleteAvatar,
 } from "../../../src/lib/photoUpload";
+import { EditableAvatar } from "../../../src/components/EditableAvatar";
+import { profile as profileCopy } from "../../../src/constants/strings";
 
 const C = {
   bg: "#0B0F14",
@@ -204,7 +205,6 @@ export default function Profile() {
   const [editNameVisible, setEditNameVisible] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
-  const [showDeleteAccountConfirm, setShowDeleteAccountConfirm] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
 
   const handleAvatarPress = () => {
@@ -341,10 +341,11 @@ export default function Profile() {
   const handleSaveName = async (newName: string) => {
     setEditNameVisible(false);
     if (!user) return;
-    applyLocal({ displayName: newName });
+    const normalized = normalizeDisplayName(newName);
+    applyLocal({ displayName: normalized });
     const { error } = await supabase
       .from("users")
-      .update({ display_name: newName })
+      .update({ display_name: normalized })
       .eq("id", user.id);
     if (error) {
       await refreshCurrentUser();
@@ -356,7 +357,7 @@ export default function Profile() {
 
   const handleSignOut = () => setShowSignOutConfirm(true);
 
-  const handleDeleteAccount = () => setShowDeleteAccountConfirm(true);
+  const handleDeleteAccount = () => router.push("/(app)/profile/delete-account");
 
   const handleHealthKit = async () => {
     if (isAuthorized || hkRequesting) return;
@@ -405,31 +406,15 @@ export default function Profile() {
 
         {/* ── Avatar + identity ─────────────────────────────────────────── */}
         <View style={styles.avatarSection}>
-          <Pressable
-            style={styles.avatarWrap}
+          <EditableAvatar
+            imageUri={currentUser?.avatarUrl ?? profile?.avatar_url ?? null}
+            fallbackInitial={(currentUser?.displayName ?? profile?.display_name ?? user?.email ?? "?")
+              .charAt(0)
+              .toUpperCase()}
+            size={80}
+            uploading={avatarUploading}
             onPress={handleAvatarPress}
-            disabled={avatarUploading}
-          >
-            {(currentUser?.avatarUrl ?? profile?.avatar_url) ? (
-              <Image
-                source={{ uri: currentUser?.avatarUrl ?? profile?.avatar_url! }}
-                style={styles.avatarImage}
-              />
-            ) : (
-              <View style={styles.avatar}>
-                <Text style={styles.avatarInitials}>
-                  {(currentUser?.displayName ?? profile?.display_name ?? user?.email ?? "?")
-                    .charAt(0)
-                    .toUpperCase()}
-                </Text>
-              </View>
-            )}
-            {avatarUploading && (
-              <View style={styles.avatarOverlay}>
-                <ActivityIndicator color="#FFF" />
-              </View>
-            )}
-          </Pressable>
+          />
 
           <TouchableOpacity
             style={styles.nameRow}
@@ -437,33 +422,36 @@ export default function Profile() {
             activeOpacity={0.7}
           >
             <Text style={styles.displayName}>
-              {currentUser?.displayName ?? profile?.display_name ?? "—"}
+              {normalizeDisplayName(currentUser?.displayName ?? profile?.display_name ?? "") || "—"}
             </Text>
             <Text style={styles.editHint}>Edit</Text>
           </TouchableOpacity>
 
           <Text style={styles.email}>{user?.email}</Text>
 
-          {/* Subscription pill */}
+          {/* Tier line — subtle status under email rather than a floating
+              pill. Profile is the wrong place to push hard for upgrade;
+              the dedicated paywall surface has its own job. */}
           {isPro ? (
-            <View style={[styles.tierBadge, styles.tierBadgePro]}>
-              <Text style={[styles.tierText, styles.tierTextPro]}>Pro</Text>
-            </View>
+            <Text style={styles.tierLinePro}>Pro</Text>
           ) : (
             <TouchableOpacity
-              style={styles.tierBadge}
               activeOpacity={0.7}
               onPress={() => router.push("/paywall?trigger=profile")}
             >
-              <Text style={styles.tierText}>
-                Free Tier <Text style={styles.upgradeText}>· Upgrade</Text>
+              <Text style={styles.tierLineFree}>
+                Free Tier <Text style={styles.tierLineUpgrade}>· Upgrade</Text>
               </Text>
             </TouchableOpacity>
           )}
         </View>
 
         {/* ── Stats ─────────────────────────────────────────────────────── */}
-        {stats && (
+        {/* Hide-until-earned: gate on totalDaysLogged > 0 so the moment a
+            user records anything (even before a streak builds), the grid
+            reveals. Four zeros on a fresh profile reads bleak; a single
+            instructional line is a kinder first impression. */}
+        {stats && stats.totalDaysLogged > 0 ? (
           <View style={styles.statsGrid}>
             <View style={styles.statCard}>
               <PointsBadge points={stats.totalPoints} size="lg" highlight />
@@ -482,7 +470,9 @@ export default function Profile() {
               <Text style={styles.statLabel}>Days Logged</Text>
             </View>
           </View>
-        )}
+        ) : stats ? (
+          <Text style={styles.emptyStatsHint}>{profileCopy.emptyStatsHint}</Text>
+        ) : null}
 
         {/* ── Integrations ─────────────────────────────────────────────── */}
         <View style={styles.section}>
@@ -601,7 +591,7 @@ export default function Profile() {
               disabled={signingOut}
               activeOpacity={0.7}
             >
-              <Text style={[styles.rowLabel, styles.dangerText]}>
+              <Text style={styles.rowLabel}>
                 {signingOut ? "Signing out…" : "Sign Out"}
               </Text>
             </TouchableOpacity>
@@ -652,21 +642,6 @@ export default function Profile() {
         onCancel={() => setShowSignOutConfirm(false)}
       />
 
-      <ConfirmDialog
-        visible={showDeleteAccountConfirm}
-        title="Delete your account?"
-        message="This permanently deletes your account, all your packs, activity, and photos. This cannot be undone."
-        confirmLabel="Delete Account"
-        confirmDestructive
-        onConfirm={async () => {
-          setShowDeleteAccountConfirm(false);
-          Alert.alert(
-            "Not available",
-            "Account deletion is coming soon. Please contact support@packapp.com to delete your account.",
-          );
-        }}
-        onCancel={() => setShowDeleteAccountConfirm(false)}
-      />
     </>
   );
 }
@@ -690,55 +665,38 @@ const styles = StyleSheet.create({
 
   // Avatar
   avatarSection: { alignItems: "center", gap: 6, paddingVertical: 8 },
-  avatarWrap: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    marginBottom: 4,
-    overflow: "hidden",
-  },
-  avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: C.surfaceRaised,
-    borderWidth: 0.5,
-    borderColor: C.border,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarImage: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-  },
-  avatarOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarInitials: { fontSize: 32, fontWeight: "700", color: C.textPrimary },
   nameRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   displayName: { fontSize: 22, fontWeight: "700", color: C.textPrimary },
   editHint: { fontSize: 13, color: C.accent, fontWeight: "600" },
   email: { fontSize: 14, color: C.textSecondary },
-  tierBadge: {
-    backgroundColor: C.surfaceRaised,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
+  // Tier line — subtle status text under email. Replaces the floating
+  // pill so the profile doesn't push hard for upgrade.
+  tierLineFree: {
+    fontSize: 12,
+    color: C.textTertiary,
     marginTop: 4,
-    borderWidth: 0.5,
-    borderColor: C.border,
   },
-  tierBadgePro: { borderColor: "#D4AF37" },
-  tierText: { fontSize: 13, fontWeight: "600", color: C.textSecondary },
-  tierTextPro: { color: "#D4AF37" },
-  upgradeText: { color: C.accent },
+  tierLinePro: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#D4AF37",
+    marginTop: 4,
+    letterSpacing: 0.5,
+  },
+  tierLineUpgrade: { color: C.accent, fontWeight: "600" },
 
   // Stats
   statsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  // Empty-state hint — replaces the four-zero stats grid when the user
+  // hasn't logged any activity yet. Single line, packmate voice.
+  emptyStatsHint: {
+    fontSize: 14,
+    color: C.textTertiary,
+    textAlign: "center",
+    paddingHorizontal: 24,
+    paddingVertical: 16,
+    fontStyle: "italic",
+  },
   statCard: {
     flex: 1,
     minWidth: "45%",

@@ -1,0 +1,14 @@
+diff --git a/node_modules/react-native-worklets/package.json b/node_modules/react-native-worklets/package.json
+index 13fa4d5..6bd3bae 100644
+--- a/node_modules/react-native-worklets/package.json
++++ b/node_modules/react-native-worklets/package.json
+@@ -143,6 +143,9 @@
+         "RCTBundleConsumer": [
+           "WorkletsModule"
+         ]
++      },
++      "modulesProvider": {
++        "WorkletsModule": "WorkletsModule"
+       }
+     }
+   }

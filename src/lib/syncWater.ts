@@ -1,0 +1,219 @@
+import { supabase } from "./supabase";
+import { POINTS, WORKOUT_MAX_DAILY, getStreakMultiplier } from "./scoring";
+import { computeStreakForRun } from "./computeStreak";
+import { packToday } from "./packDates";
+import { notifyPackMembers } from "./notifications";
+import { analytics } from "./analytics";
+
+export async function syncWaterToDailyScores(userId: string): Promise<void> {
+  try {
+    const { data: memberships, error: memberError } = await supabase
+      .from("pack_members")
+      .select("pack_id")
+      .eq("user_id", userId)
+      .eq("is_active", true);
+
+    if (memberError || !memberships || memberships.length === 0) return;
+
+    for (const membership of memberships) {
+      const { data: pack } = await supabase
+        .from("packs")
+        .select("id, water_enabled, water_target_oz, timezone")
+        .eq("id", membership.pack_id)
+        .single();
+
+      if (!pack || !pack.water_enabled) continue;
+
+      const today = packToday(pack.timezone ?? "UTC");
+
+      const { data: run } = await supabase
+        .from("runs")
+        .select("id")
+        .eq("pack_id", pack.id)
+        .eq("status", "active")
+        .single();
+
+      if (!run) continue;
+
+      const deviceToday = new Intl.DateTimeFormat("en-CA").format(new Date());
+      const { data: todayLogs } = await supabase
+        .from("water_logs")
+        .select("amount_oz")
+        .eq("user_id", userId)
+        .eq("log_date", deviceToday);
+
+      const trueTotalOz = (todayLogs ?? []).reduce(
+        (sum, row) => sum + row.amount_oz,
+        0,
+      );
+
+      const water_achieved = trueTotalOz >= pack.water_target_oz;
+
+      const { data: existing } = await supabase
+        .from("daily_scores")
+        .select(
+          "total_points, water_achieved, steps_achieved, workout_achieved, workout_count, calories_achieved, streak_days",
+        )
+        .eq("run_id", run.id)
+        .eq("user_id", userId)
+        .eq("score_date", today)
+        .single();
+      const prevStreakDays = existing?.streak_days ?? 0;
+      const prevWaterAchieved = existing?.water_achieved ?? false;
+      const oldTotalPoints = existing?.total_points ?? 0;
+
+      const anyAchieved =
+        water_achieved ||
+        (existing?.steps_achieved ?? false) ||
+        (existing?.workout_achieved ?? false) ||
+        (existing?.calories_achieved ?? false);
+      const streakDays = await computeStreakForRun(userId, run.id, today, anyAchieved, pack.timezone ?? "UTC");
+      const multiplier = getStreakMultiplier(streakDays);
+
+      const wCount = existing?.workout_count ?? 0;
+      const basePointsWithoutWater =
+        (existing?.steps_achieved ? POINTS.steps : 0) +
+        Math.min(wCount, WORKOUT_MAX_DAILY) * POINTS.workout +
+        (existing?.calories_achieved ? POINTS.calories : 0);
+      const waterPoints = water_achieved ? POINTS.water : 0;
+      const newTotalPoints = Math.round(
+        (basePointsWithoutWater + waterPoints) * multiplier,
+      );
+
+      const { error: upsertError } = await supabase.from("daily_scores").upsert(
+        {
+          run_id: run.id,
+          user_id: userId,
+          score_date: today,
+          water_achieved,
+          water_oz_count: Math.round(trueTotalOz),
+          total_points: newTotalPoints,
+          streak_days: streakDays,
+          streak_multiplier: multiplier,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "run_id,user_id,score_date" },
+      );
+
+      if (upsertError) {
+        console.error("[LogSheet] daily_scores upsert error:", upsertError);
+      }
+
+      // ── Pass 9 funnel: activity_logged (water) + streak_milestone ──
+      // Transition gate uses `existing` (fresh DB read above), never in-memory.
+      if (water_achieved && !prevWaterAchieved) {
+        let isFirstEver = false;
+        if (oldTotalPoints === 0 && newTotalPoints > 0) {
+          const { count } = await supabase
+            .from("daily_scores")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", userId)
+            .gt("total_points", 0);
+          isFirstEver = (count ?? 0) <= 1;
+        }
+        analytics.activityLogged({
+          activity_type: "water",
+          source: "manual",
+          points_earned: Math.round(POINTS.water * multiplier),
+          is_first_ever: isFirstEver,
+          streak_days_after: streakDays,
+          goal_hit_today: anyAchieved,
+        });
+      }
+
+      const STREAK_MILESTONES = [3, 7, 14, 30, 60, 90] as const;
+      let crossedMilestone: 3 | 7 | 14 | 30 | 60 | 90 | null = null;
+      let priorMilestone = 0;
+      for (const m of STREAK_MILESTONES) {
+        if (prevStreakDays >= m) priorMilestone = m;
+        if (prevStreakDays < m && streakDays >= m) crossedMilestone = m;
+      }
+      if (crossedMilestone) {
+        analytics.streakMilestone({
+          milestone_days: crossedMilestone,
+          pack_id: pack.id,
+          prior_milestone_days: priorMilestone,
+        });
+      }
+
+      if (water_achieved) {
+        const wPoints = Math.round(POINTS.water * multiplier);
+
+        // ── activity_feed idempotent insert — race-safe via 23505 catch ────
+        //
+        // ANCHOR EXPLANATION (referenced by 4 other call sites in
+        // src/lib/healthkit.ts and src/lib/logActivity.ts).
+        //
+        // We previously used `.upsert(..., { onConflict: "...", ignoreDuplicates: true })`
+        // here, but that fails with Postgres error 42P10 ("no unique or
+        // exclusion constraint matching the ON CONFLICT specification").
+        //
+        // Why: the unique constraint on activity_feed is a PARTIAL unique
+        // index (idx_activity_feed_no_dup_goals from migration 20260428b,
+        // extended in 20260429):
+        //
+        //   CREATE UNIQUE INDEX idx_activity_feed_no_dup_goals
+        //     ON activity_feed (user_id, pack_id, activity_type, score_date)
+        //     WHERE activity_type IN ('steps', 'calories', 'water',
+        //                             'took_lead', 'all_goals');
+        //
+        // Postgres can match a NON-partial unique index from columns alone
+        // in `ON CONFLICT (cols)`. But for a PARTIAL index, the planner
+        // requires the WHERE predicate to be specified explicitly in
+        // `ON CONFLICT (cols) WHERE predicate` — see Postgres docs:
+        //   https://www.postgresql.org/docs/current/sql-insert.html
+        //   "If an index_predicate is specified, it must, as a further
+        //    requirement for inference, satisfy arbiter indexes."
+        //
+        // supabase-js's `onConflict` parameter only accepts a comma-
+        // separated column list — there is no syntax for the WHERE
+        // predicate. So the partial index cannot be used as an arbiter
+        // via the JS client. Hence 42P10.
+        //
+        // The fix: plain INSERT with a 23505 (unique_violation) catch.
+        // The partial unique index STILL enforces uniqueness on INSERT —
+        // it just can't be inferred as an ON CONFLICT arbiter. So the
+        // race shape is:
+        //   - Single writer: INSERT succeeds, side effects fire normally
+        //   - Concurrent writers: one INSERT wins, the other gets 23505;
+        //     we treat 23505 as a successful no-op (the row that "would
+        //     have been the dup" was already written)
+        // This preserves the previous `ignoreDuplicates: true` semantics
+        // exactly: concurrent re-fires are silent no-ops, side effects
+        // (notifyPackMembers) only fire on the writer that won the race.
+        //
+        // 23505 is NOT logged as an error — it's the expected race
+        // outcome. Other error codes still log.
+        const { data: insertedRows, error: feedInsertError } = await supabase
+          .from("activity_feed")
+          .insert({
+            pack_id: pack.id,
+            user_id: userId,
+            activity_type: "water",
+            value: Math.round(trueTotalOz),
+            points_earned: wPoints,
+            entry_method: "manual",
+            score_date: today,
+          })
+          .select("id");
+
+        if (feedInsertError) {
+          if (feedInsertError.code !== "23505") {
+            console.error(
+              "[syncWater] activity_feed insert error:",
+              feedInsertError,
+            );
+          }
+        } else if (insertedRows && insertedRows.length > 0) {
+          notifyPackMembers(userId, pack.id, {
+            kind: "goal",
+            activityType: "water",
+            pointsEarned: wPoints,
+          }).catch(() => {});
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[LogSheet] syncWaterToDailyScores error:", err);
+  }
+}

@@ -20,6 +20,14 @@ export function initRevenueCat(userId?: string): void {
   }
 }
 
+// TODO(pass-11 subscription-canceled): wire external-cancellation detection.
+// On AppState change to "active", read getCustomerInfo(), compare to last-known
+// pro status persisted in AsyncStorage. When status flips active → not active,
+// fire analytics.subscriptionCanceled({ via: "external_detection", ... }). Edge
+// cases to handle: cold-launch first time after install (no last-seen state —
+// don't fire), customerInfo network failure (skip the flip check, retry next
+// foreground), sign-out vs cancellation (auth state vs subscription state are
+// different signals). See Pass 9 audit for the full discussion and properties.
 export async function getCustomerInfo(): Promise<CustomerInfo> {
   return Purchases.getCustomerInfo();
 }

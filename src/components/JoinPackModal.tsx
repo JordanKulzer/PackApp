@@ -9,9 +9,13 @@ import {
   StyleSheet,
 } from "react-native";
 import { useAuthStore } from "../stores/authStore";
+import { useCurrentUser } from "../context/CurrentUserContext";
 import { supabase } from "../lib/supabase";
 import { packToday } from "../lib/packDates";
 import { ensureUserProfile } from "../lib/ensureUserProfile";
+import { analytics } from "../lib/analytics";
+import { notifyPackMembers } from "../lib/notifications";
+import { fallbacks } from "../constants/strings";
 import { colors } from "../theme/colors";
 
 const C = {
@@ -35,6 +39,7 @@ export interface JoinPackModalProps {
 
 export function JoinPackModal({ visible, onClose, onJoined }: JoinPackModalProps) {
   const user = useAuthStore((s) => s.user);
+  const { user: currentUser } = useCurrentUser();
   const [code, setCode] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -127,6 +132,33 @@ export function JoinPackModal({ visible, onClose, onJoined }: JoinPackModalProps
 
       if (joinError) throw joinError;
 
+      // Pass 9 funnel — pack_joined. Post-insert COUNT for current_pack_count
+      // includes the just-inserted membership. is_first_join: count === 1.
+      const { count: userPackCount } = await supabase
+        .from("pack_members")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("is_active", true);
+      analytics.packJoined({
+        is_first_join: (userPackCount ?? 1) === 1,
+        pack_member_count_at_join: (count ?? 0) + 1,
+        current_pack_count: userPackCount ?? 1,
+        join_source: "modal",
+      });
+
+      // Pass 7c — broadcast new_member push to existing packmates. Server-side
+      // copy generated via push.newMemberJoined from _shared/push-strings.ts.
+      // displayName fallback covers the rare brand-new-social-signup race
+      // where useCurrentUser hasn't hydrated yet (ensureUserProfile above
+      // guarantees the row exists; the context refetch may lag by a tick).
+      const newMemberName =
+        currentUser?.displayName?.trim() || fallbacks.newMemberName;
+      notifyPackMembers(userId, pack.id, {
+        kind: "new_member",
+        newMemberName,
+        packName: pack.name,
+      }).catch(() => {});
+
       // Step 6: Create initial daily_scores row so the new member appears immediately
       const { data: activeRun, error: runError } = await supabase
         .from("runs")
@@ -184,7 +216,7 @@ export function JoinPackModal({ visible, onClose, onJoined }: JoinPackModalProps
     >
       <View style={s.overlay}>
         <View style={s.card}>
-          <Text style={s.title}>Join a Pack</Text>
+          <Text style={s.title}>Join a pack</Text>
           <Text style={s.subtitle}>
             Enter the invite code shared by your friend
           </Text>
@@ -221,7 +253,7 @@ export function JoinPackModal({ visible, onClose, onJoined }: JoinPackModalProps
               {isLoading ? (
                 <ActivityIndicator color="#FFFFFF" size="small" />
               ) : (
-                <Text style={s.joinBtnText}>Join Pack</Text>
+                <Text style={s.joinBtnText}>Join pack</Text>
               )}
             </TouchableOpacity>
           </View>

@@ -1,5 +1,6 @@
 import { View, Text, StyleSheet } from "react-native";
 import type { LeaderboardEntry } from "../types/database";
+import { formatName } from "../lib/displayName";
 
 interface LeaderboardRowProps {
   entry: LeaderboardEntry;
@@ -13,7 +14,7 @@ export function LeaderboardRow({ entry, isCurrentUser = false }: LeaderboardRowP
       <View style={styles.row}>
         <View style={styles.left}>
           <Text style={styles.name} numberOfLines={1}>
-            {entry.display_name}
+            {formatName(entry.display_name, entry.rank)}
           </Text>
           {isCurrentUser && (
             <Text style={styles.you}> (you)</Text>
