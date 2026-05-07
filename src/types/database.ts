@@ -3,7 +3,7 @@
 
 export type SubscriptionTier = "free" | "pro";
 export type CompetitionWindow = "weekly" | "monthly";
-export type ActivityType = "steps" | "workout" | "calories" | "water" | "daily_winner";
+export type ActivityType = "steps" | "workout" | "calories" | "water" | "daily_winner" | "goals_updated" | "pack_renamed";
 export type RunStatus = "active" | "completed";
 export type MemberRole = "admin" | "member";
 export type NotificationType =
@@ -45,6 +45,14 @@ export interface Pack {
   competition_window: CompetitionWindow;
   timezone: string;
   created_at: string;
+  // Pending goal-target changes (Pass 20). NULL = no pending change for
+  // that field. Applied to the live target at the next run rollover and
+  // cleared. pending_changes_at is a single timestamp covering the entire
+  // pending state (D3 — overwrite on re-edit).
+  pending_step_target: number | null;
+  pending_calorie_target: number | null;
+  pending_water_target_oz: number | null;
+  pending_changes_at: string | null;
 }
 
 export interface PackMember {

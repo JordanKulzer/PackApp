@@ -58,3 +58,18 @@ export function formatName(
   if (rank !== undefined) return `Player ${rank}`;
   return "Member";
 }
+
+/**
+ * Returns a single uppercase character to use as an avatar initial.
+ * Handles null/undefined, empty strings, and whitespace-only input
+ * with a "?" fallback. No smart logic for emojis, multi-word names,
+ * or non-Latin scripts — just first-char + toUpperCase. Sufficient
+ * for all current call sites; expand later if a smarter variant is
+ * needed.
+ */
+export function getInitial(name: string | null | undefined): string {
+  if (!name) return "?";
+  const trimmed = name.trim();
+  if (!trimmed) return "?";
+  return trimmed.charAt(0).toUpperCase();
+}

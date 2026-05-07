@@ -27,6 +27,8 @@ export interface FeedItem {
     | "water"
     | "took_lead"
     | "all_goals"
+    | "goals_updated"
+    | "pack_renamed"
     | "daily_winner";
   value: number;
   pointsEarned: number;

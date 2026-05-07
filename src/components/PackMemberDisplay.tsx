@@ -2,7 +2,7 @@ import React from "react";
 import { View, Text, StyleSheet, Animated, Image } from "react-native";
 import Svg, { Circle } from "react-native-svg";
 import { colors } from "../theme/colors";
-import { formatName } from "../lib/displayName";
+import { formatName, getInitial } from "../lib/displayName";
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
@@ -84,7 +84,7 @@ export function PackMemberDisplay({
   const nameColor = getNameColor(userId, currentUserId);
   const hasPts = progressPct > 0;
   const isFirst = rank === 1;
-  const initial = displayName.trim().charAt(0).toUpperCase() || "?";
+  const initial = getInitial(displayName);
   const cx = size / 2;
   const cy = size / 2;
   const radius = (size - strokeWidth) / 2;

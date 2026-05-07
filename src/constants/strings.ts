@@ -286,8 +286,8 @@ export const activity = {
   streak: {
     // Singular variant for count===1 (avoid "1 days" grammar bug). Caller
     // picks which key via ternary on the count value.
-    day: "1 day on the trail",
-    days: "{count} days on the trail",
+    day: "1 day streak",
+    days: "{count} day streak",
     dayOf: "Day {current} of {total}",
     inDanger: "{hours} hours left on the trail",
     broken: "Off the trail. Get back on.",
@@ -375,6 +375,43 @@ export const errors = {
   notFound: "We couldn't find that.",
   inviteCodeInvalid: "Invalid invite code.",
   inviteCodeExpired: "This invite code has expired.",
+} as const;
+
+/* ============================================================
+ * Pack Edit (Pass 20c) — placeholder copy, defer to voice review.
+ * Goal-target changes queue for next run; name applies immediately.
+ * `goalsApplyAt` uses {date} interpolation token consumed by t().
+ * ============================================================ */
+export const packEdit = {
+  menu: {
+    label: "Edit Pack",
+  },
+  screen: {
+    title: "Edit Pack",
+    cancel: "Cancel",
+    save: "Save",
+    saving: "Saving…",
+    nameLabel: "Pack Name",
+    goalTargetsHeader: "Goal Targets · Applies {date}",
+    stepTargetLabel: "Step Target",
+    calorieTargetLabel: "Calorie Target",
+    waterTargetLabel: "Water Target (oz)",
+    // Orphan — section header now carries the queueing message. Kept for
+    // potential future reuse (e.g., banner on Pack Detail).
+    queueHint: "Goal changes apply at the start of next week's run.",
+  },
+  toast: {
+    nameUpdated: "Pack name updated",
+    goalsApplyAt: "Goal changes apply {date}",
+    bothChanged: "Pack updated · Goals apply {date}",
+    noChanges: "No changes",
+  },
+  validation: {
+    stepRange: "Step target must be between 1,000 and 50,000",
+    calorieRange: "Calorie target must be between 100 and 2,000",
+    waterRange: "Water target must be between 16 and 256 oz",
+    nameRequired: "Pack name can't be empty",
+  },
 } as const;
 
 /* ============================================================
@@ -554,5 +591,5 @@ export function t(
 
 // Usage examples:
 // t(packs.packCard.membersOf, { count: 4, max: 10 })  → "4 of 10"
-// t(activity.streak.days, { count: 8 })               → "8 days on the trail"
+// t(activity.streak.days, { count: 8 })               → "8 day streak"
 // t(den.feed.howlAtCta, { name: 'Sarah' })            → "Howl at Sarah"

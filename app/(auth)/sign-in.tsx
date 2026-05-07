@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import {
   View,
   Text,
@@ -8,11 +8,10 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
-  Alert,
   ScrollView,
+  SafeAreaView,
 } from "react-native";
 import { Link, useRouter } from "expo-router";
-import * as AppleAuthentication from "expo-apple-authentication";
 import { useAuth } from "../../src/hooks/useAuth";
 import { PackLogo } from "../../src/components/brand/PackLogo";
 import { auth, forgotPassword } from "../../src/constants/strings";
@@ -20,73 +19,40 @@ import { BrandColors, BrandTypography, BrandSpacing } from "../../src/constants/
 
 export default function SignIn() {
   const router = useRouter();
-  const { signIn, signInWithApple, signInWithGoogle } = useAuth();
+  const { signIn } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [socialLoading, setSocialLoading] = useState<"apple" | "google" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [appleAvailable, setAppleAvailable] = useState(false);
-
-  useEffect(() => {
-    AppleAuthentication.isAvailableAsync().then(setAppleAvailable).catch(() => {});
-  }, []);
 
   const handleSignIn = async () => {
     setError(null);
     if (!email.trim() || !password) {
-      Alert.alert("Missing fields", "Please enter your email and password.");
+      setError("Please enter your email and password.");
       return;
     }
     setIsLoading(true);
     try {
       await signIn(email.trim().toLowerCase(), password);
     } catch (err) {
-      Alert.alert(
-        "Sign in failed",
-        err instanceof Error ? err.message : "Please try again.",
-      );
+      setError(err instanceof Error ? err.message : "Sign in failed. Please try again.");
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleApple = async () => {
-    setError(null);
-    setSocialLoading("apple");
-    try {
-      await signInWithApple();
-    } catch (err: unknown) {
-      // ERR_CANCELED = user dismissed the sheet — not an error worth showing
-      if ((err as { code?: string }).code === "ERR_CANCELED") return;
-      setError(err instanceof Error ? err.message : "Apple sign-in failed. Please try again.");
-    } finally {
-      setSocialLoading(null);
-    }
-  };
-
-  const handleGoogle = async () => {
-    setError(null);
-    setSocialLoading("google");
-    try {
-      await signInWithGoogle();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Google sign-in failed. Please try again.");
-    } finally {
-      setSocialLoading(null);
-    }
-  };
-
   return (
-    <KeyboardAvoidingView
-      style={styles.flex}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-    >
-      <ScrollView
-        contentContainerStyle={styles.container}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
+    <SafeAreaView style={styles.safe}>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
+        <ScrollView
+          style={styles.flex}
+          contentContainerStyle={styles.container}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
         <View style={styles.hero}>
           <PackLogo size={80} />
           <Text style={styles.wordmark}>Pack</Text>
@@ -102,7 +68,10 @@ export default function SignIn() {
             autoCapitalize="none"
             autoCorrect={false}
             value={email}
-            onChangeText={setEmail}
+            onChangeText={(t) => {
+              setEmail(t);
+              if (error) setError(null);
+            }}
           />
           <TextInput
             style={styles.input}
@@ -110,7 +79,10 @@ export default function SignIn() {
             placeholderTextColor={BrandColors.inkMuted}
             secureTextEntry
             value={password}
-            onChangeText={setPassword}
+            onChangeText={(t) => {
+              setPassword(t);
+              if (error) setError(null);
+            }}
           />
 
           <TouchableOpacity
@@ -133,43 +105,10 @@ export default function SignIn() {
               <Text style={styles.buttonText}>Sign In</Text>
             )}
           </TouchableOpacity>
-        </View>
 
-        {/* Social auth divider — flanking lines on either side of "or" */}
-        <View style={styles.dividerRow}>
-          <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>or</Text>
-          <View style={styles.dividerLine} />
-        </View>
-
-        {/* Social buttons */}
-        <View style={styles.socialGroup}>
-          {appleAvailable && (
-            <AppleAuthentication.AppleAuthenticationButton
-              buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-              buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
-              cornerRadius={12}
-              style={styles.appleBtn}
-              onPress={handleApple}
-            />
-          )}
-
-          <TouchableOpacity
-            style={[styles.googleBtn, socialLoading === "google" && styles.buttonDisabled]}
-            onPress={handleGoogle}
-            disabled={!!socialLoading}
-            activeOpacity={0.85}
-          >
-            {socialLoading === "google" ? (
-              <ActivityIndicator color="#1F1F1F" />
-            ) : (
-              <View style={styles.googleBtnInner}>
-                <GoogleG />
-                <Text style={styles.googleBtnText}>Continue with Google</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-
+          {/* Inline error — covers email/password validation and sign-in failure.
+              Apple/Google were removed in Pass 17 revision; will be re-added when
+              providers are configured in Supabase. */}
           {error && <Text style={styles.errorText}>{error}</Text>}
         </View>
 
@@ -181,41 +120,26 @@ export default function SignIn() {
             </TouchableOpacity>
           </Link>
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
-
-// Google "G" logo using colored letters — Google brand requirement.
-function GoogleG() {
-  return (
-    <View style={g.wrapper}>
-      <Text style={[g.letter, { color: "#4285F4" }]}>G</Text>
-      <Text style={[g.letter, { color: "#EA4335" }]}>o</Text>
-      <Text style={[g.letter, { color: "#FBBC05" }]}>o</Text>
-      <Text style={[g.letter, { color: "#4285F4" }]}>g</Text>
-      <Text style={[g.letter, { color: "#34A853" }]}>l</Text>
-      <Text style={[g.letter, { color: "#EA4335" }]}>e</Text>
-    </View>
-  );
-}
-
-const g = StyleSheet.create({
-  wrapper: { flexDirection: "row", marginRight: 8 },
-  letter: { fontSize: 15, fontWeight: "700" },
-});
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: BrandColors.background },
-  // contentContainerStyle on the ScrollView — flexGrow:1 lets the content
-  // fill available height when short, justifyContent:center keeps the form
-  // visually centered when no keyboard is present, and the ScrollView's
-  // overflow handles the keyboard-up case without pushing the logo into
-  // the status bar.
+  // SafeAreaView wraps everything; flex:1 ensures full-screen + provides the
+  // safe-area bottom inset that KeyboardAvoidingView needs to compute padding
+  // correctly when the keyboard opens. Mirrors forgot-password.tsx.
+  safe: { flex: 1, backgroundColor: BrandColors.background },
+  flex: { flex: 1 },
+  // Top-aligned content (Pass 17.5 fix). The previous flexGrow + justifyContent:
+  // center combo conflicted with KAV's padding behavior — the form re-centered
+  // within the shrunken viewport but only by half the keyboard height, leaving
+  // the focused input under the keyboard. Top-aligning lets ScrollView scroll
+  // naturally so the focused input always rises above the keyboard.
   container: {
-    flexGrow: 1,
     padding: 24,
-    justifyContent: "center",
+    paddingBottom: 48,
     gap: 28,
   },
   hero: {
@@ -274,46 +198,6 @@ const styles = StyleSheet.create({
     color: "#FFF",
     fontSize: 16,
     fontWeight: "700",
-  },
-  dividerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  dividerLine: {
-    flex: 1,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: "#30363D",
-  },
-  dividerText: {
-    fontSize: 13,
-    color: BrandColors.inkMuted,
-    fontWeight: "500",
-  },
-  socialGroup: {
-    gap: 12,
-  },
-  appleBtn: {
-    height: 52,
-    width: "100%",
-  },
-  googleBtn: {
-    height: 52,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#30363D",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  googleBtnInner: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  googleBtnText: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#1F1F1F",
   },
   errorText: {
     fontSize: 13,

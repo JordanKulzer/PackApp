@@ -2,12 +2,10 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Alert,
   Animated,
-  Easing,
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  Image,
   Keyboard,
   ScrollView,
   Share,
@@ -32,12 +30,13 @@ import {
 } from "../../../src/lib/packLifecycle";
 import { notifyUser } from "../../../src/lib/notifications";
 import { showToast } from "../../../src/lib/toast";
-import { packToday, currentDayOfRun } from "../../../src/lib/packDates";
+import { packToday } from "../../../src/lib/packDates";
 import { useAuthStore } from "../../../src/stores/authStore";
 import { usePack } from "../../../src/hooks/usePack";
 import { usePackHistory } from "../../../src/hooks/usePackHistory";
 import { useIsPro } from "../../../src/hooks/useIsPro";
 import {
+  FREE_HISTORY_WEEKS,
   FREE_MEMBER_LIMIT,
   PRO_MEMBER_LIMIT,
 } from "../../../src/lib/revenuecat";
@@ -57,20 +56,14 @@ import type { FeedItem } from "../../../src/hooks/useActivityFeed";
 import { useHealthKit } from "../../../src/hooks/useHealthKit";
 import { supabase } from "../../../src/lib/supabase";
 import { formatName } from "../../../src/lib/displayName";
-import { POINTS, getStreakMultiplier } from "../../../src/lib/scoring";
-import {
-  buildGapLine,
-  gainConsequenceText,
-  rankWithTiebreakers,
-} from "../../../src/lib/competitionCopy";
+import { rankWithTiebreakers } from "../../../src/lib/competitionCopy";
 import { useScoreStore } from "../../../src/stores/scoreStore";
 import type { Pack, Run } from "../../../src/types/database";
 import { colors } from "../../../src/theme/colors";
-import { PackMemberDisplay } from "../../../src/components/PackMemberDisplay";
 import { PackGridView } from "../../../src/components/PackGridView";
 import { useCurrentUser } from "../../../src/context/CurrentUserContext";
 import { useRefreshCurrentUserOnFocus } from "../../../src/hooks/useRefreshCurrentUserOnFocus";
-import { den, packs as packsCopy, t } from "../../../src/constants/strings";
+import { den, packs as packsCopy, packEdit, t } from "../../../src/constants/strings";
 
 if (
   Platform.OS === "android" &&
@@ -82,6 +75,18 @@ if (
 // ─────────────────────────────────────────────────────────────────────────────
 // Colors
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Color rule (mirrors src/theme/colors.ts — keep in sync):
+//   colors.leader (#E3A000 gold)  → leader-only signal: #1 rank, leader name,
+//                                   leader's points, leader's ring arc.
+//   colors.self / C.accent (blue) → self-identity + UI chrome: own row border,
+//                                   own name, day picker active button,
+//                                   tab indicator, progress bars.
+//   C.success (green)             → achievement signal: 100% bar fill, goal-hit.
+//   C.danger (red)                → destructive only: delete actions, errors.
+//
+// Future drift: keep gold strictly leader-only. Don't use gold for chrome.
+// Don't introduce a third blue. Token consolidation tracked in X1.
 
 const C = {
   bg: "#0B0F14",
@@ -152,15 +157,6 @@ type ScoreRow = {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function maxPossiblePoints(pack: Pack): number {
-  let pts = 0;
-  if (pack.steps_enabled) pts += 10;
-  if (pack.workouts_enabled) pts += 15;
-  if (pack.calories_enabled) pts += 10;
-  if (pack.water_enabled) pts += 8;
-  return pts;
-}
-
 function mapRows(
   data: ScoreRow[],
   nameMap: Record<string, string>,
@@ -222,1107 +218,6 @@ const mbS = StyleSheet.create({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Progress Row (dark)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function ProgressRow({
-  label,
-  achieved,
-  current,
-  target,
-  unit = "",
-  isManual = false,
-}: {
-  label: string;
-  achieved: boolean;
-  current: number;
-  target: number;
-  unit?: string;
-  isManual?: boolean;
-}) {
-  const fillPct = target > 0 ? Math.min(1, current / target) : 0;
-  const fillColor = achieved ? C.success : C.accent;
-  const widthPct = `${Math.round(fillPct * 100)}%` as `${number}%`;
-  const overTarget = achieved && current > target;
-
-  return (
-    <View style={barS.row}>
-      <Text style={barS.label}>{label}</Text>
-      <View style={barS.track}>
-        <View
-          style={[barS.fill, { width: widthPct, backgroundColor: fillColor }]}
-        />
-      </View>
-      <View style={barS.fracBlock}>
-        <View style={barS.fracRow}>
-          <Text
-            style={[barS.frac, achieved && { color: C.success }]}
-            numberOfLines={1}
-          >
-            {achieved
-              ? `${current.toLocaleString()}${unit} ✓`
-              : `${current.toLocaleString()}${unit} / ${target.toLocaleString()}${unit}`}
-          </Text>
-          {isManual && <ManualBadge />}
-        </View>
-        {overTarget && (
-          <Text style={barS.overflow}>
-            goal: {target.toLocaleString()}
-            {unit}
-          </Text>
-        )}
-      </View>
-    </View>
-  );
-}
-
-const barS = StyleSheet.create({
-  row: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 30 },
-  label: { width: 72, fontSize: 13, color: C.textSecondary, fontWeight: "500" },
-  track: {
-    flex: 1,
-    height: 6,
-    backgroundColor: C.border,
-    borderRadius: 3,
-    overflow: "hidden",
-  },
-  fill: { height: 6, borderRadius: 3 },
-  fracBlock: { width: 88, alignItems: "flex-end", gap: 1 },
-  fracRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    justifyContent: "flex-end",
-  },
-  frac: { fontSize: 12, color: C.textSecondary, textAlign: "right" },
-  overflow: { fontSize: 10, color: C.textTertiary, textAlign: "right" },
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Today section — competitive consequence copy
-// ─────────────────────────────────────────────────────────────────────────────
-
-type ActivitySlot = {
-  label: string;
-  actionPhrase: string; // verb phrase for use in action hint sentences
-  base: number;
-  enabled: boolean;
-  achieved: boolean;
-};
-
-// Effort order: water → steps → workout → calories (lowest to highest effort).
-// actionPhrase is a concrete verb phrase that reads naturally in a sentence.
-function buildActivitySlots(
-  pack: Pack,
-  myScore: MemberScore | null,
-): ActivitySlot[] {
-  const stepsLeft = Math.max(
-    0,
-    (pack.step_target ?? 10000) - (myScore?.steps_count ?? 0),
-  );
-  const stepsPhrase =
-    stepsLeft > 0
-      ? `Walk ${stepsLeft.toLocaleString()} more steps`
-      : "Hit your steps goal";
-
-  return [
-    {
-      label: "Water",
-      actionPhrase: "Log your water",
-      base: POINTS.water,
-      enabled: pack.water_enabled,
-      achieved: myScore?.water_achieved ?? false,
-    },
-    {
-      label: "Steps",
-      actionPhrase: stepsPhrase,
-      base: POINTS.steps,
-      enabled: pack.steps_enabled,
-      achieved: myScore?.steps_achieved ?? false,
-    },
-    {
-      label: "Workout",
-      actionPhrase: "Log a workout",
-      base: POINTS.workout,
-      enabled: pack.workouts_enabled,
-      achieved: myScore?.workout_achieved ?? false,
-    },
-    {
-      label: "Calories",
-      actionPhrase: "Hit your calorie goal",
-      base: POINTS.calories,
-      enabled: pack.calories_enabled,
-      achieved: myScore?.calories_achieved ?? false,
-    },
-  ];
-}
-
-type TodaySection = {
-  status: string;
-  secondary: string | null;
-  action: string;
-  actionVariant: "success" | "action" | "info";
-};
-
-// Returns all three lines of Today copy driven by live competition context.
-// Adapts to: leading / behind / tied / alone / no points yet / all done.
-function buildTodaySection(
-  pack: Pack,
-  myScore: MemberScore | null,
-  ranked: MemberScore[],
-  userId: string | undefined,
-): TodaySection {
-  const myIndex = ranked.findIndex((s) => s.user_id === userId);
-  const myRank = myIndex + 1;
-  const personAhead = myIndex > 0 ? ranked[myIndex - 1] : null;
-  const isAlone = ranked.length <= 1;
-
-  const todayPts = myScore?.total_points ?? 0;
-  const weeklyPts = myScore?.weekly_points ?? 0;
-  const hasPointsToday = todayPts > 0;
-  const multiplier = getStreakMultiplier(myScore?.streak_days ?? 0);
-
-  const slots = buildActivitySlots(pack, myScore);
-  const enabled = slots.filter((a) => a.enabled);
-  const incomplete = enabled.filter((a) => !a.achieved);
-  const totalGainRemaining = incomplete.reduce(
-    (sum, a) => sum + Math.round(a.base * multiplier),
-    0,
-  );
-
-  // ── Status line (rank headline) — with tie detection ─────────────────
-  let status: string;
-  if (isAlone) {
-    status = "You're ranked #1 · No rivals yet";
-  } else if (myRank === 1) {
-    const lead = weeklyPts - ranked[1].weekly_points;
-    status = lead === 0 ? "Tied for #1" : "You're leading";
-  } else {
-    status = `You're ranked #${myRank} of ${ranked.length}`;
-  }
-
-  // ── Secondary line — gap + today context (shared helper, tie-aware) ──
-  const secondary = buildGapLine(ranked, userId, todayPts);
-
-  // ── No goals configured ───────────────────────────────────────────────
-  if (enabled.length === 0) {
-    return {
-      status,
-      secondary,
-      action: "No tracked activities configured",
-      actionVariant: "info",
-    };
-  }
-
-  // ── All goals done ────────────────────────────────────────────────────
-  if (incomplete.length === 0) {
-    if (isAlone) {
-      return {
-        status,
-        secondary,
-        action: "All goals hit today — keep the streak",
-        actionVariant: "success",
-      };
-    }
-    if (!personAhead) {
-      return {
-        status,
-        secondary,
-        action: "All goals hit today — lead is safe",
-        actionVariant: "success",
-      };
-    }
-    return {
-      status,
-      secondary,
-      action: "All goals hit today — keep the streak",
-      actionVariant: "success",
-    };
-  }
-
-  const best = incomplete[0];
-  const bestGain = Math.round(best.base * multiplier);
-
-  // ── Alone in pack ─────────────────────────────────────────────────────
-  if (isAlone) {
-    return {
-      status,
-      secondary,
-      action: hasPointsToday
-        ? `${best.actionPhrase} for +${bestGain} pts`
-        : `${best.actionPhrase} to get on the board`,
-      actionVariant: "action",
-    };
-  }
-
-  // ── Leading ───────────────────────────────────────────────────────────
-  if (!personAhead) {
-    const lead = weeklyPts - (ranked[1]?.weekly_points ?? 0);
-    if (!hasPointsToday) {
-      return {
-        status,
-        secondary,
-        action: `${best.actionPhrase} to lead by +${lead + bestGain} pts`,
-        actionVariant: "action",
-      };
-    }
-    return {
-      status,
-      secondary,
-      action:
-        incomplete.length === 1
-          ? `${best.actionPhrase} to lock in today's lead`
-          : `${best.actionPhrase} to lead by +${lead + bestGain} pts`,
-      actionVariant: "action",
-    };
-  }
-
-  // ── Behind (or tied — any gain breaks the tie and advances rank) ──────
-  const gapToAhead = personAhead.weekly_points - weeklyPts;
-  const gapToFirst = ranked[0].weekly_points - weeklyPts;
-  const opponentName = formatName(personAhead.display_name, myRank - 1);
-
-  if (!hasPointsToday) {
-    const consequence = gainConsequenceText(
-      bestGain,
-      gapToAhead,
-      gapToFirst,
-      opponentName,
-      best.actionPhrase,
-    );
-    if (consequence) {
-      return {
-        status,
-        secondary,
-        action: consequence,
-        actionVariant: "action",
-      };
-    }
-    return {
-      status,
-      secondary,
-      action: `${best.actionPhrase} for +${bestGain} pts today`,
-      actionVariant: "action",
-    };
-  }
-
-  // Has points today — find the single activity that meaningfully closes a gap
-  for (const activity of incomplete) {
-    const gain = Math.round(activity.base * multiplier);
-    const consequence = gainConsequenceText(
-      gain,
-      gapToAhead,
-      gapToFirst,
-      opponentName,
-      activity.actionPhrase,
-    );
-    if (consequence) {
-      return {
-        status,
-        secondary,
-        action: consequence,
-        actionVariant: "action",
-      };
-    }
-  }
-
-  // Check if completing all remaining goals closes or exceeds a gap
-  const allConsequence = gainConsequenceText(
-    totalGainRemaining,
-    gapToAhead,
-    gapToFirst,
-    opponentName,
-    `Complete all ${incomplete.length} remaining goals`,
-  );
-  if (allConsequence) {
-    return {
-      status,
-      secondary,
-      action: allConsequence,
-      actionVariant: "action",
-    };
-  }
-
-  // Can't close any gap today — grind message
-  return {
-    status,
-    secondary,
-    action: `${best.actionPhrase} for +${bestGain} pts`,
-    actionVariant: "action",
-  };
-}
-
-function DailySection({
-  ranked,
-  userId,
-  pack,
-  isSyncing,
-}: {
-  ranked: MemberScore[];
-  userId: string | undefined;
-  pack: Pack;
-  isSyncing: boolean;
-}) {
-  const { status, secondary, action, actionVariant } = buildTodaySection(
-    pack,
-    ranked.find((s) => s.user_id === userId) ?? null,
-    ranked,
-    userId,
-  );
-
-  return (
-    <View style={dsS.container}>
-      {/* Section label */}
-      <View style={dsS.labelRow}>
-        <Text style={dsS.sectionLabel}>TODAY</Text>
-        {isSyncing && <ActivityIndicator size="small" color={C.textTertiary} />}
-      </View>
-
-      {/* Status headline */}
-      <Text style={dsS.statusText}>{status}</Text>
-
-      {/* Gap + today context */}
-      {secondary !== null && <Text style={dsS.secondaryText}>{secondary}</Text>}
-
-      {/* Next action */}
-      <Text
-        style={[
-          dsS.actionText,
-          actionVariant === "success" && dsS.actionSuccess,
-          actionVariant === "info" && dsS.actionInfo,
-        ]}
-      >
-        {action}
-      </Text>
-    </View>
-  );
-}
-
-const dsS = StyleSheet.create({
-  // Compact, utility feel — clearly distinct from the prominent weekly rings above
-  container: {
-    backgroundColor: C.surface,
-    paddingHorizontal: 20,
-    paddingTop: 14,
-    paddingBottom: 16,
-    borderBottomWidth: 0.5,
-    borderBottomColor: C.border,
-  },
-  labelRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 10,
-  },
-  sectionLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: C.textTertiary,
-    letterSpacing: 1.0,
-  },
-  statusText: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: C.textPrimary,
-  },
-  secondaryText: {
-    fontSize: 13,
-    color: C.textSecondary,
-    marginTop: 2,
-  },
-  actionText: {
-    fontSize: 12,
-    color: C.textSecondary,
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 0.5,
-    borderTopColor: C.border,
-  },
-  actionSuccess: {
-    color: C.success,
-  },
-  actionInfo: {
-    color: C.textTertiary,
-  },
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Animated bar — only rendered for the current user's row
-// ─────────────────────────────────────────────────────────────────────────────
-
-function AnimatedSelfBar({ pct, color }: { pct: number; color: string }) {
-  const animPct = React.useRef(new Animated.Value(pct)).current;
-
-  React.useEffect(() => {
-    Animated.timing(animPct, {
-      toValue: pct,
-      duration: 350,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false, // width% interpolation requires JS thread
-    }).start();
-  }, [pct]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const widthPct = animPct.interpolate({
-    inputRange: [0, 100],
-    outputRange: ["0%", "100%"],
-  });
-
-  return (
-    <View style={lrS.barTrackSelf}>
-      <Animated.View
-        style={[lrS.barFillSelf, { width: widthPct, backgroundColor: color }]}
-      />
-    </View>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Section 2 — Leaderboard List Row
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Returns the streak signal to show beneath a member's name — only when meaningful.
-// Goals count is already shown in the pts block; streak is the only extra signal worth surfacing.
-function rowSignal(score: MemberScore): { text: string; color: string } {
-  if (score.streak_days >= 2) {
-    return {
-      text: `🔥 ${score.streak_days}`,
-      color: score.streak_days >= 5 ? C.success : C.textSecondary,
-    };
-  }
-  return { text: "", color: C.textTertiary };
-}
-
-function LeaderboardListRow({
-  score,
-  rank,
-  pack,
-  isCurrentUser,
-  isExpanded,
-  onToggle,
-  tieCaption = null,
-}: {
-  score: MemberScore;
-  rank: number;
-  pack: Pack;
-  isCurrentUser: boolean;
-  isExpanded: boolean;
-  onToggle: () => void;
-  tieCaption?: string | null;
-}) {
-  const displayName = formatName(score.display_name, rank);
-  const signal = rowSignal(score);
-
-  const enabledCount = [
-    pack.steps_enabled,
-    pack.workouts_enabled,
-    pack.calories_enabled,
-    pack.water_enabled,
-  ].filter(Boolean).length;
-  const doneCount = [
-    pack.steps_enabled && score.steps_achieved,
-    pack.workouts_enabled && score.workout_achieved,
-    pack.calories_enabled && score.calories_achieved,
-    pack.water_enabled && score.water_achieved,
-  ].filter(Boolean).length;
-  const completionPct =
-    enabledCount === 0 ? 0 : Math.round((doneCount / enabledCount) * 100);
-  const barFillColor =
-    completionPct === 0
-      ? "#374151"
-      : completionPct === 100
-        ? "#22C55E"
-        : colors.accent;
-
-  return (
-    <TouchableOpacity
-      onPress={onToggle}
-      activeOpacity={0.7}
-      style={[lrS.row, isCurrentUser && lrS.rowSelf]}
-    >
-      {/* Main info row */}
-      <View style={lrS.mainRow}>
-        <View style={lrS.rankBlock}>
-          <Text style={lrS.rank}>#{rank}</Text>
-        </View>
-        <View style={lrS.nameBlock}>
-          <Text
-            style={[lrS.name, isCurrentUser && lrS.nameSelf]}
-            numberOfLines={1}
-          >
-            {displayName}
-          </Text>
-          {tieCaption && (
-            <Text style={lrS.tiebreakerCaption}>{tieCaption}</Text>
-          )}
-          {score.total_points > 0 && (
-            <Text style={lrS.todaySubtext}>
-              Today: +{score.total_points} pts
-            </Text>
-          )}
-        </View>
-        <View style={lrS.ptsBlock}>
-          <Text style={lrS.pts}>{score.weekly_points} pts</Text>
-          {enabledCount > 0 && (
-            <Text style={lrS.goalsFrac}>
-              {doneCount}/{enabledCount} goals
-            </Text>
-          )}
-        </View>
-      </View>
-
-      {/* Secondary signal — sits below name block, above bar */}
-      {signal.text !== "" && (
-        <Text style={[lrS.signal, { color: signal.color }]}>{signal.text}</Text>
-      )}
-
-      {/* Progress bar — goal completion percentage */}
-      {isCurrentUser ? (
-        <AnimatedSelfBar pct={completionPct} color={barFillColor} />
-      ) : (
-        <View style={lrS.barTrack}>
-          <View
-            style={[
-              lrS.barFill,
-              {
-                width: `${completionPct}%` as `${number}%`,
-                backgroundColor: barFillColor,
-              },
-            ]}
-          />
-        </View>
-      )}
-
-      {/* Expanded detail — per-activity progress bars only */}
-      {isExpanded && (
-        <View style={lrS.expandedDetail}>
-          {pack.steps_enabled && (
-            <ProgressRow
-              label="Steps"
-              achieved={score.steps_achieved}
-              current={score.steps_count}
-              target={pack.step_target}
-              isManual={score.has_manual_steps}
-            />
-          )}
-          {pack.workouts_enabled && (
-            <ProgressRow
-              label="Workouts"
-              achieved={score.workout_achieved}
-              current={score.workout_count}
-              target={1}
-            />
-          )}
-          {pack.calories_enabled && (
-            <ProgressRow
-              label="Calories"
-              achieved={score.calories_achieved}
-              current={score.calories_count}
-              target={pack.calorie_target}
-              isManual={score.has_manual_calories}
-            />
-          )}
-          {pack.water_enabled && (
-            <ProgressRow
-              label="Water"
-              achieved={score.water_achieved}
-              current={score.water_oz_count}
-              target={pack.water_target_oz}
-              unit=" oz"
-            />
-          )}
-        </View>
-      )}
-    </TouchableOpacity>
-  );
-}
-
-const lrS = StyleSheet.create({
-  row: {
-    backgroundColor: C.surface,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 10,
-    borderBottomWidth: 0.5,
-    borderBottomColor: C.border,
-  },
-  rowSelf: {
-    backgroundColor: C.surfaceRaised,
-    borderLeftWidth: 2,
-    borderLeftColor: C.accent,
-    paddingLeft: 14,
-  },
-  mainRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 4,
-  },
-  rankBlock: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    width: 28,
-  },
-  rank: {
-    fontSize: 13,
-    color: C.textTertiary,
-  },
-  tiebreakerCaption: {
-    fontSize: 10,
-    color: C.textTertiary,
-    fontWeight: "500",
-  },
-  nameBlock: {
-    flex: 1,
-    gap: 1,
-  },
-  name: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: C.textPrimary,
-  },
-  nameSelf: {
-    color: C.accent,
-  },
-  todaySubtext: {
-    fontSize: 11,
-    color: C.textTertiary,
-    fontWeight: "500",
-  },
-  pts: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: C.textPrimary,
-  },
-  signal: {
-    fontSize: 12,
-    marginLeft: 28,
-    marginBottom: 7,
-  },
-  barTrack: {
-    height: 3,
-    backgroundColor: "#1F2937",
-    borderRadius: 2,
-    marginTop: 4,
-    overflow: "hidden",
-  },
-  barFill: {
-    height: 3,
-    borderRadius: 2,
-  },
-  ptsBlock: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  goalsFrac: {
-    fontSize: 11,
-    color: "#6B7280",
-  },
-  barTrackSelf: {
-    width: "100%",
-    height: 3,
-    backgroundColor: "#1F2937",
-    borderRadius: 2,
-    marginTop: 4,
-    overflow: "hidden",
-  },
-  barFillSelf: {
-    height: 3,
-    borderRadius: 2,
-  },
-  expandedDetail: {
-    marginTop: 12,
-    gap: 2,
-  },
-  ringHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingBottom: 10,
-    marginBottom: 6,
-    borderBottomWidth: 0.5,
-    borderBottomColor: C.border,
-  },
-  ringMeta: {
-    gap: 3,
-  },
-  ringMetaLabel: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: C.textTertiary,
-    letterSpacing: 0.8,
-  },
-  ringMetaValue: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: C.textSecondary,
-  },
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
-// Empty Members State (dark)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function EmptyMembers({ onInvite }: { onInvite: () => void }) {
-  return (
-    <View style={emS.container}>
-      <Ionicons name="person-add-outline" size={48} color={C.textTertiary} />
-      <Text style={emS.title}>No one else is in this pack yet.</Text>
-      <Text style={emS.sub}>Invite friends to start competing.</Text>
-      <TouchableOpacity style={emS.button} onPress={onInvite}>
-        <Text style={emS.buttonText}>Invite Friends</Text>
-      </TouchableOpacity>
-    </View>
-  );
-}
-
-const emS = StyleSheet.create({
-  container: {
-    alignItems: "center",
-    paddingVertical: 32,
-    paddingHorizontal: 24,
-    gap: 8,
-  },
-  title: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: C.textPrimary,
-    marginTop: 8,
-    textAlign: "center",
-  },
-  sub: { fontSize: 14, color: C.textSecondary, textAlign: "center" },
-  button: {
-    marginTop: 8,
-    backgroundColor: C.accent,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  buttonText: { color: "#FFFFFF", fontWeight: "700", fontSize: 15 },
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Ring Leaderboard — weekly totals podium shown at top of pack screen
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ── Weekly max helpers ───────────────────────────────────────────────────────
-// The weekly max is the sum of each enabled goal's BASE daily point value
-// multiplied by the number of calendar days in the active run.
-// Streak bonuses are intentionally excluded from the denominator — rings
-// represent base-rate progress. A user with a long streak can exceed the
-// expected max (ring caps at 100%), which correctly signals exceptional effort.
-
-function maxRunPoints(pack: Pack, run: Run): number {
-  const msPerDay = 1000 * 60 * 60 * 24;
-  const total =
-    Math.round(
-      (new Date(run.end_date + "T12:00:00").getTime() -
-        new Date(run.start_date + "T12:00:00").getTime()) /
-        msPerDay,
-    ) + 1;
-  return maxPossiblePoints(pack) * Math.max(1, total);
-}
-
-// Returns 0–100: the user's actual weekly progress toward the real run ceiling.
-// Does NOT normalize relative to other players. Ring fills because the user
-// progresses, not because someone else falls behind.
-function weeklyRingAbsolutePct(
-  weeklyPoints: number,
-  pack: Pack,
-  run: Run,
-): number {
-  const max = maxRunPoints(pack, run);
-  if (max === 0) return 0; // no goals enabled — stable zero, not divide-by-zero
-  return Math.min(100, Math.round((weeklyPoints / max) * 100));
-}
-
-function RingLeaderboard({
-  entries,
-  pack,
-  activeRun,
-  currentUserId,
-}: {
-  entries: WeeklyEntry[];
-  pack: Pack;
-  activeRun: Run;
-  currentUserId: string | undefined;
-}) {
-  const { user: currentUser } = useCurrentUser();
-  const animRefs = React.useRef([
-    new Animated.Value(0),
-    new Animated.Value(0),
-    new Animated.Value(0),
-  ]);
-
-  // Sort for podium: pts desc, then alphabetical within same-pts groups for
-  // deterministic tie ordering. Used by both the animation effect and the render.
-  const sorted = [...entries].sort((a, b) =>
-    b.weekly_points !== a.weekly_points
-      ? b.weekly_points - a.weekly_points
-      : a.display_name.localeCompare(b.display_name),
-  );
-
-  // Animate rings whenever entries update (initial load or after any log/sync)
-  useEffect(() => {
-    const top3 = sorted.slice(0, 3);
-    if (top3.length === 0) return;
-
-    Animated.parallel(
-      top3.map((entry, i) =>
-        Animated.timing(animRefs.current[i], {
-          toValue: weeklyRingAbsolutePct(entry.weekly_points, pack, activeRun),
-          duration: 700,
-          delay: i * 80,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: false,
-        }),
-      ),
-    ).start();
-  }, [entries]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  if (sorted.length === 0) return null;
-
-  const SIZE_LEADER = 104;
-  const SIZE_FLANK = 74;
-  const SW_LEADER = 8;
-  const SW_FLANK = 5;
-
-  const leaderId = sorted[0].user_id;
-  const memberCount = entries.length;
-
-  // Tie-group detection based on weekly_points
-  const topPts = sorted[0].weekly_points;
-  const tiedAtTop = sorted.filter((e) => e.weekly_points === topPts);
-  const hasSoloLeader = tiedAtTop.length === 1;
-  const secondEntry = hasSoloLeader
-    ? (sorted.find((e) => e.weekly_points < topPts) ?? null)
-    : null;
-  const tiedAtSecond = secondEntry
-    ? sorted.filter((e) => e.weekly_points === secondEntry.weekly_points)
-    : [];
-
-  // Not a React component — no hooks. Returns JSX for one ring slot.
-  function ringSlot(
-    entry: WeeklyEntry,
-    rank: number,
-    animIdx: number,
-    size: number,
-    sw: number,
-    slotOpacity = 1,
-    elevated = false,
-  ) {
-    const isFirst = rank === 1;
-    const pct = weeklyRingAbsolutePct(entry.weekly_points, pack, activeRun);
-    const isMe = entry.user_id === currentUser?.id;
-    const nameDisplay = formatName(
-      isMe && currentUser ? currentUser.displayName : entry.display_name,
-      rank,
-    );
-    const avatarUrl =
-      isMe && currentUser ? currentUser.avatarUrl : entry.avatar_url;
-
-    return (
-      <View
-        key={entry.user_id}
-        style={[
-          rlS.podiumSlot,
-          { width: size + 12, opacity: slotOpacity },
-          elevated && rlS.podiumSlotElevated,
-        ]}
-      >
-        <PackMemberDisplay
-          userId={entry.user_id}
-          displayName={nameDisplay}
-          progressPct={pct}
-          rank={rank}
-          currentUserId={currentUserId}
-          leaderId={leaderId}
-          size={size}
-          strokeWidth={sw}
-          animValue={animRefs.current[animIdx]}
-          avatarUrl={avatarUrl}
-        />
-        <Text style={[rlS.ringPts, isFirst && rlS.ringPtsFirst]}>
-          {`${entry.weekly_points} pts`}
-        </Text>
-      </View>
-    );
-  }
-
-  // Tie-context prefix for the "Day N of N" line
-  const { day, total } = currentDayOfRun(activeRun, pack.timezone ?? "UTC");
-  const tiePrefix =
-    tiedAtTop.length >= 2
-      ? (tiedAtTop.length === 2 ? "TIED" : `${tiedAtTop.length} TIED`) + "  ·  "
-      : sorted[0].weekly_points > 0
-        ? `${sorted[0].weekly_points} pts lead  ·  `
-        : "";
-
-  return (
-    <View style={rlS.container}>
-      <Text style={rlS.sectionLabel}>THIS WEEK</Text>
-
-      {/* 1 active member: single centered ring */}
-      {memberCount === 1 && (
-        <View style={{ alignItems: "center" }}>
-          {ringSlot(sorted[0], 1, 0, SIZE_LEADER, SW_LEADER, 1, false)}
-        </View>
-      )}
-
-      {/* Top is tied: equal-size rings (up to 3), "+N more" if overflow */}
-      {memberCount > 1 &&
-        tiedAtTop.length >= 2 &&
-        (() => {
-          const display = tiedAtTop.slice(0, 3);
-          const overflow = tiedAtTop.length - display.length;
-          return (
-            <View>
-              <View style={rlS.podiumRow}>
-                {display.map((entry, i) =>
-                  ringSlot(entry, 1, i, SIZE_LEADER, SW_LEADER, 1, false),
-                )}
-              </View>
-              {overflow > 0 && (
-                <Text style={rlS.tiedOverflow}>+{overflow} more tied</Text>
-              )}
-            </View>
-          );
-        })()}
-
-      {/* 2 members, clear leader: [#2 left] [#1 elevated] */}
-      {memberCount === 2 && hasSoloLeader && (
-        <View style={rlS.podiumRow}>
-          {ringSlot(sorted[1], 2, 1, SIZE_FLANK, SW_FLANK, 0.88, false)}
-          {ringSlot(sorted[0], 1, 0, SIZE_LEADER, SW_LEADER, 1, true)}
-        </View>
-      )}
-
-      {/* 3+ members, clear #1 + tie at #2: [tied-#2 left] [#1 center] [tied-#2 right] */}
-      {memberCount >= 3 && hasSoloLeader && tiedAtSecond.length >= 2 && (
-        <View style={rlS.podiumRow}>
-          {ringSlot(tiedAtSecond[0], 2, 1, SIZE_FLANK, SW_FLANK, 0.88, false)}
-          {ringSlot(sorted[0], 1, 0, SIZE_LEADER, SW_LEADER, 1, true)}
-          {ringSlot(tiedAtSecond[1], 2, 2, SIZE_FLANK, SW_FLANK, 0.88, false)}
-        </View>
-      )}
-
-      {/* 3+ members, normal: [#2] [#1 elevated] [#3] */}
-      {memberCount >= 3 && hasSoloLeader && tiedAtSecond.length < 2 && (
-        <View style={rlS.podiumRow}>
-          {sorted[1] &&
-            ringSlot(sorted[1], 2, 1, SIZE_FLANK, SW_FLANK, 0.88, false)}
-          {ringSlot(sorted[0], 1, 0, SIZE_LEADER, SW_LEADER, 1, true)}
-          {sorted[2] &&
-            ringSlot(sorted[2], 3, 2, SIZE_FLANK, SW_FLANK, 0.76, false)}
-        </View>
-      )}
-
-      <Text style={rlS.dayContext}>
-        {tiePrefix}
-        {"Day "}
-        {day}
-        {" of "}
-        {total}
-      </Text>
-    </View>
-  );
-}
-
-const rlS = StyleSheet.create({
-  container: {
-    backgroundColor: C.bg,
-    paddingHorizontal: 20,
-    paddingTop: 24,
-    paddingBottom: 20,
-    borderBottomWidth: 0.5,
-    borderBottomColor: C.border,
-  },
-  sectionLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: C.textSecondary,
-    letterSpacing: 1.0,
-    marginBottom: 24,
-    textAlign: "center",
-  },
-  podiumRow: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "flex-end",
-    gap: 16,
-  },
-  podiumSlot: {
-    alignItems: "center",
-    gap: 7,
-  },
-  podiumSlotElevated: {
-    marginBottom: 22,
-  },
-  rankBadge: {
-    backgroundColor: C.surfaceRaised,
-    borderRadius: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderWidth: 0.5,
-    borderColor: C.border,
-  },
-  rankBadgeFirst: {
-    backgroundColor: colors.leaderBg,
-    borderColor: colors.leaderBorder,
-  },
-  rankBadgeText: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: C.textSecondary,
-  },
-  rankBadgeTextFirst: {
-    color: colors.leader,
-  },
-  ringInitial: {
-    fontWeight: "700",
-    color: C.textPrimary,
-  },
-  ringNameFirst: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: C.textPrimary,
-    maxWidth: 116,
-    textAlign: "center",
-  },
-  ringNameFlank: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: C.textSecondary,
-    maxWidth: 86,
-    textAlign: "center",
-  },
-  ringPts: {
-    fontSize: 11,
-    color: C.textTertiary,
-    fontWeight: "500",
-  },
-  ringPtsFirst: {
-    color: C.textSecondary,
-    fontWeight: "600",
-  },
-  tiedOverflow: {
-    fontSize: 11,
-    color: C.textTertiary,
-    fontWeight: "600",
-    textAlign: "center",
-    marginTop: 8,
-  },
-  dayContext: {
-    fontSize: 12,
-    color: C.textTertiary,
-    textAlign: "center",
-    marginTop: 14,
-    fontWeight: "500",
-  },
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Section 4 — Pack History
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1372,8 +267,10 @@ interface WeekDetailEntry {
   startedAt: string;
   endedAt: string;
   isActive: boolean;
-  // Active run: current rankings from the Compete tab
-  activeRanked?: WeeklyEntry[];
+  // Active run: current rankings from the Compete tab. Caller passes the
+  // output of rankWithTiebreakers, so each entry already carries its
+  // tie-aware competition rank — consume e.rank directly, don't re-number.
+  activeRanked?: (WeeklyEntry & { rank: number })[];
   // Completed run: final snapshot from usePackHistory
   winner?: { userId: string; displayName: string; totalPoints: number };
   completedStandings?: import("../../../src/hooks/usePackHistory").RunStanding[];
@@ -1393,22 +290,16 @@ const WEEK_DAY_SHORT = [
 
 // Returns ISO date strings for each day of the run up to today (for active runs)
 // or up to the end date (for completed runs).
-function generateRunDays(
-  startedAt: string,
-  endedAt: string,
-  isActive: boolean,
-): string[] {
+function generateRunDays(startedAt: string, endedAt: string): string[] {
   const startDate = startedAt.split("T")[0];
   const endDate = endedAt.split("T")[0];
 
   const days: string[] = [];
   const start = new Date(startDate + "T00:00:00");
-  const now = new Date();
   const runEnd = new Date(endDate + "T23:59:59");
-  const cap = isActive && now < runEnd ? now : runEnd;
 
   const cur = new Date(start);
-  while (cur <= cap) {
+  while (cur <= runEnd) {
     days.push(
       `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`,
     );
@@ -1451,13 +342,10 @@ function WeekDetailSheet({
   }, []);
 
   const days = React.useMemo(
-    () =>
-      entry
-        ? generateRunDays(entry.startedAt, entry.endedAt, entry.isActive)
-        : [],
+    () => (entry ? generateRunDays(entry.startedAt, entry.endedAt) : []),
     // entry.runId changing is the signal that a new week was opened
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [entry?.runId, entry?.isActive],
+    [entry?.runId],
   );
 
   // Reset and default to today (or last available day) when a week is opened
@@ -1467,7 +355,7 @@ function WeekDetailSheet({
       setDayScores([]);
       return;
     }
-    const d = generateRunDays(entry.startedAt, entry.endedAt, entry.isActive);
+    const d = generateRunDays(entry.startedAt, entry.endedAt);
     if (d.length === 0) return;
     const todayStr = packToday(pack.timezone ?? "UTC");
     setSelectedDay(d.includes(todayStr) ? todayStr : d[d.length - 1]);
@@ -1520,9 +408,11 @@ function WeekDetailSheet({
     };
   }, [selectedDay, entry?.runId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch which days in this run the current user had any activity
+  // Fetch which days in this run had ANY pack-member activity. The day
+  // picker's underline indicator reflects pack-wide activity so that quiet
+  // days read clearly even if the current user logged that day alone.
   useEffect(() => {
-    if (!entry?.runId || !currentUserId) return;
+    if (!entry?.runId) return;
     let cancelled = false;
 
     (async () => {
@@ -1530,7 +420,6 @@ function WeekDetailSheet({
         .from("daily_scores")
         .select("score_date")
         .eq("run_id", entry.runId)
-        .eq("user_id", currentUserId)
         .gt("total_points", 0);
 
       if (cancelled) return;
@@ -1540,15 +429,17 @@ function WeekDetailSheet({
     return () => {
       cancelled = true;
     };
-  }, [entry?.runId, currentUserId]);
+  }, [entry?.runId]);
 
-  // Build summary standings for the sheet header section
+  // Build summary standings for the sheet header section. activeRanked
+  // already carries tie-aware competition ranks from rankWithTiebreakers
+  // — pass e.rank through verbatim, don't re-number by index.
   const summaryStandings = entry?.isActive
-    ? (entry.activeRanked ?? []).map((e, i) => ({
+    ? (entry.activeRanked ?? []).map((e) => ({
         userId: e.user_id,
         displayName: e.display_name,
         totalPoints: e.weekly_points,
-        rank: i + 1,
+        rank: e.rank,
       }))
     : (entry?.completedStandings ?? []);
 
@@ -1559,10 +450,12 @@ function WeekDetailSheet({
     pack.water_enabled,
   ].filter(Boolean).length;
 
-  // Merge all pack members with fetched day scores.
-  // Members without a score row appear at the bottom with zeros.
+  // Merge all pack members with fetched day scores, then attach a dense
+  // competition rank — same totalPoints share the same rank, next rank
+  // skips appropriately. Members without a score row appear at the bottom
+  // with zeros and tie with any with-data member also at zero.
   const allMemberScores = React.useMemo<
-    (DayMemberScore & { hasNoData: boolean })[]
+    (DayMemberScore & { hasNoData: boolean; rank: number })[]
   >(() => {
     const scoredIds = new Set(dayScores.map((s) => s.userId));
     const withData = dayScores.map((s) => ({ ...s, hasNoData: false }));
@@ -1587,7 +480,17 @@ function WeekDetailSheet({
         });
       }
     });
-    return [...withData, ...noData];
+    // Walk the merged list (already sorted by totalPoints desc — dayScores
+    // sort + noData zeros at end) and attach rank. Index advances every row,
+    // but rank only increments when totalPoints changes from the previous.
+    let prevPts = -1;
+    let prevRank = 0;
+    return [...withData, ...noData].map((s, i) => {
+      const rank = s.totalPoints === prevPts ? prevRank : i + 1;
+      prevPts = s.totalPoints;
+      prevRank = rank;
+      return { ...s, rank };
+    });
   }, [dayScores, memberNameMap]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -1667,8 +570,11 @@ function WeekDetailSheet({
                 {days.map((day) => {
                   const { dayName, dateNum } = parseDayLabel(day);
                   const isSelected = day === selectedDay;
-                  const isToday = day === packToday(pack.timezone ?? "UTC");
+                  const today = packToday(pack.timezone ?? "UTC");
+                  const isToday = day === today;
                   const isBeforeRunStart = day < entry!.startedAt.split("T")[0];
+                  const isFuture = day > today;
+                  const isDisabled = isBeforeRunStart || isFuture;
                   const hasActivity = activeDates.has(day);
 
                   return (
@@ -1677,17 +583,17 @@ function WeekDetailSheet({
                       style={[
                         wdS.dayBtn,
                         isSelected && wdS.dayBtnActive,
-                        isBeforeRunStart && wdS.dayBtnDisabled,
+                        isDisabled && wdS.dayBtnDisabled,
                       ]}
-                      onPress={() => !isBeforeRunStart && setSelectedDay(day)}
-                      disabled={isBeforeRunStart}
-                      activeOpacity={isBeforeRunStart ? 1 : 0.2}
+                      onPress={() => !isDisabled && setSelectedDay(day)}
+                      disabled={isDisabled}
+                      activeOpacity={isDisabled ? 1 : 0.2}
                     >
                       <Text
                         style={[
                           wdS.dayBtnName,
                           isSelected && wdS.dayBtnNameActive,
-                          isBeforeRunStart && wdS.dayBtnTextDisabled,
+                          isDisabled && wdS.dayBtnTextDisabled,
                         ]}
                       >
                         {dayName}
@@ -1696,7 +602,7 @@ function WeekDetailSheet({
                         style={[
                           wdS.dayBtnDate,
                           isSelected && wdS.dayBtnDateActive,
-                          isBeforeRunStart && wdS.dayBtnTextDisabled,
+                          isDisabled && wdS.dayBtnTextDisabled,
                         ]}
                       >
                         {dateNum}
@@ -1709,7 +615,7 @@ function WeekDetailSheet({
                           ]}
                         />
                       )}
-                      {hasActivity && !isBeforeRunStart && (
+                      {hasActivity && !isDisabled && (
                         <View style={wdS.activityBar} />
                       )}
                     </TouchableOpacity>
@@ -1724,14 +630,10 @@ function WeekDetailSheet({
                     color={C.accent}
                     style={{ marginVertical: 16 }}
                   />
-                ) : allMemberScores.length === 0 ? (
-                  <Text style={wdS.emptyHint}>
-                    {den.history.weekDetail.emptyDays}
-                  </Text>
                 ) : (
-                  allMemberScores.map((score, idx) => {
+                  allMemberScores.map((score) => {
                     const isMe = score.userId === currentUserId;
-                    const isFirst = idx === 0 && !score.hasNoData;
+                    const isFirst = score.rank === 1 && !score.hasNoData;
                     const doneCount = [
                       pack.steps_enabled && score.stepsAchieved,
                       pack.workouts_enabled && score.workoutAchieved,
@@ -1743,16 +645,23 @@ function WeekDetailSheet({
                     return (
                       <TouchableOpacity
                         key={score.userId}
-                        style={[wdS.memberCard, isMe && wdS.memberCardMe]}
+                        style={[
+                          wdS.memberCard,
+                          isMe && wdS.memberCardMe,
+                          score.hasNoData && wdS.memberCardEmpty,
+                        ]}
                         onPress={() => toggleMember(score.userId)}
                         activeOpacity={0.75}
                       >
-                        {/* Header row: rank + name + pts + chevron */}
+                        {/* Header row: rank + name + pts + chevron.
+                            hasNoData rows render dimmed with no chevron and
+                            an em-dash in place of "+0 pts" so the row reads
+                            as "muted but present." */}
                         <View style={wdS.memberHeaderRow}>
                           <Text
                             style={[wdS.dayRank, isFirst && wdS.dayRankFirst]}
                           >
-                            #{idx + 1}
+                            #{score.rank}
                           </Text>
                           <Text
                             style={[wdS.dayName, isMe && wdS.dayNameMe]}
@@ -1762,19 +671,21 @@ function WeekDetailSheet({
                               isMe && currentUser
                                 ? currentUser.displayName
                                 : score.displayName,
-                              idx + 1,
+                              score.rank,
                             )}
                           </Text>
                           <Text
                             style={[wdS.dayPts, isFirst && wdS.dayPtsFirst]}
                           >
-                            +{score.totalPoints} pts
+                            {score.hasNoData ? "—" : `+${score.totalPoints} pts`}
                           </Text>
-                          <Ionicons
-                            name={isExpanded ? "chevron-up" : "chevron-down"}
-                            size={14}
-                            color={C.textSecondary}
-                          />
+                          {!score.hasNoData && (
+                            <Ionicons
+                              name={isExpanded ? "chevron-up" : "chevron-down"}
+                              size={14}
+                              color={C.textSecondary}
+                            />
+                          )}
                         </View>
 
                         {/* Expanded: goals summary + per-activity breakdown */}
@@ -2008,6 +919,12 @@ const wdS = StyleSheet.create({
     paddingHorizontal: 4,
     marginHorizontal: -4,
   },
+  // Dim treatment for hasNoData rows — reads as "muted but present"
+  // (member is in the pack, just didn't log this day) rather than
+  // "rendering broken." Pairs with em-dash + suppressed chevron.
+  memberCardEmpty: {
+    opacity: 0.6,
+  },
   memberHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2077,7 +994,7 @@ function PastRunsSection({
   packId: string;
   currentUserId: string | undefined;
   activeRun?: Run;
-  activeRanked?: WeeklyEntry[];
+  activeRanked?: (WeeklyEntry & { rank: number })[];
   pack: Pack;
   memberNameMap: Map<string, string>;
   isPro: boolean;
@@ -2148,9 +1065,11 @@ function PastRunsSection({
             </TouchableOpacity>
           )}
 
-          {/* Completed weeks — locked for free users */}
-          {completedRuns.map((run) =>
-            isPro ? (
+          {/* Completed weeks — free tier unlocks the FREE_HISTORY_WEEKS
+              most recent (completedRuns is sorted end_date DESC by the
+              server query); week N+1 onward render as locked Pro teasers. */}
+          {completedRuns.map((run, idx) =>
+            isPro || idx < FREE_HISTORY_WEEKS ? (
               <TouchableOpacity
                 key={run.runId}
                 style={pbS.card}
@@ -2466,11 +1385,9 @@ const INITIAL_SETTLE_MS = 1500;
 function ChatTab({
   packId,
   currentUserId,
-  currentUserName,
 }: {
   packId: string;
   currentUserId: string | undefined;
-  currentUserName: string;
 }) {
   // usePackTimeline owns sort order + chat_messages fetch + writes.
   // useActivityFeed remains the source of truth for activity-row reactions
@@ -3013,8 +1930,8 @@ export default function PackScreen() {
   const user = useAuthStore((s) => s.user);
   useRefreshCurrentUserOnFocus();
   const { isPro } = useIsPro();
-  const { data: packData, isLoading: packLoading } = usePack(id ?? null);
-  const { syncNow, isSyncing } = useHealthKit(user?.id ?? null);
+  const { data: packData, isLoading: packLoading, refetch: refetchPack } = usePack(id ?? null);
+  const { syncNow } = useHealthKit(user?.id ?? null);
 
   const { width: screenWidth } = useWindowDimensions();
   const { top: topInset } = useSafeAreaInsets();
@@ -3026,7 +1943,6 @@ export default function PackScreen() {
   const [scores, setScores] = useState<MemberScore[]>([]);
   const [weeklyTotals, setWeeklyTotals] = useState<Record<string, number>>({});
   const [scoresLoading, setScoresLoading] = useState(true);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("compete");
 
   // Pack lifecycle state
@@ -3046,6 +1962,15 @@ export default function PackScreen() {
       setActiveTab("compete");
       pageScrollRef.current?.scrollTo({ x: 0, animated: false });
     }, []),
+  );
+
+  // Refetch pack data when the screen regains focus, so name and goal-target
+  // edits made via the Edit Pack modal show immediately on dismissal.
+  // Mirrors the useRefreshCurrentUserOnFocus pattern.
+  useFocusEffect(
+    useCallback(() => {
+      refetchPack();
+    }, [refetchPack]),
   );
 
   // Belt-and-suspenders: also snap the pager to x=0 on mount. The
@@ -3200,22 +2125,6 @@ export default function PackScreen() {
     });
   };
 
-  const handleToggle = (userId: string) => {
-    LayoutAnimation.configureNext({
-      duration: 220,
-      create: {
-        type: LayoutAnimation.Types.easeInEaseOut,
-        property: LayoutAnimation.Properties.scaleXY,
-      },
-      update: { type: LayoutAnimation.Types.easeInEaseOut, duration: 220 },
-      delete: {
-        type: LayoutAnimation.Types.easeInEaseOut,
-        property: LayoutAnimation.Properties.scaleXY,
-      },
-    });
-    setExpandedId((prev) => (prev === userId ? null : userId));
-  };
-
   // ── Optimistic overlay from score store ──────────────────────────────
   // Populated by LogSheet immediately on each log tap (before DB roundtrip).
   // Realtime subscription reconciles after DB write completes.
@@ -3316,7 +2225,6 @@ export default function PackScreen() {
   }
 
   const ranked = rankWithTiebreakers(fullRoster);
-  const others = ranked.filter((r) => r.user_id !== user?.id);
 
   // ── Loading / error ───────────────────────────────────────────────────
 
@@ -3438,14 +2346,7 @@ export default function PackScreen() {
         {/* ChatTab manages its own internal scroll + KeyboardAvoidingView,
             so the page slot is a flex column rather than a ScrollView. */}
         <View style={{ width: screenWidth, flex: 1 }}>
-          <ChatTab
-            packId={pack.id}
-            currentUserId={user?.id}
-            currentUserName={
-              ranked.find((r) => r.user_id === user?.id)?.display_name ??
-              "Pack member"
-            }
-          />
+          <ChatTab packId={pack.id} currentUserId={user?.id} />
         </View>
 
         {/* ── PAGE 2: HISTORY ────────────────────────────────────────── */}
@@ -3478,6 +2379,21 @@ export default function PackScreen() {
           <View style={s.menuSheet}>
             {isCreator ? (
               <>
+                <TouchableOpacity
+                  style={s.menuRow}
+                  onPress={() => {
+                    setShowPackMenu(false);
+                    router.push(`/(app)/pack/edit/${pack.id}` as any);
+                  }}
+                >
+                  <Ionicons
+                    name="create-outline"
+                    size={18}
+                    color={C.textSecondary}
+                  />
+                  <Text style={s.menuRowText}>{packEdit.menu.label}</Text>
+                </TouchableOpacity>
+                <View style={s.menuDivider} />
                 <TouchableOpacity
                   style={s.menuRow}
                   onPress={() => {

@@ -45,7 +45,7 @@ function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
                   onPress={() => setLogSheetVisible(true)}
                   activeOpacity={0.85}
                 >
-                  <Text style={styles.centerButtonText}>+</Text>
+                  <Ionicons name="add" size={32} color="#FFFFFF" />
                 </TouchableOpacity>
               </View>
             );
@@ -180,26 +180,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  // Pass 16 — Primary-action treatment for the LogSheet trigger. Brand-blue
+  // (#2F81F7) solid fill against the dark bar reads as "this is the primary
+  // daily action" without the visual loudness of a lifted FAB. Icon is
+  // Ionicons add at 32pt white for max contrast. Shadow opacity bumped 0.20
+  // → 0.25 to compensate for the brighter fill against the dark bar.
   centerButton: {
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: "#1C2333",
-    borderWidth: 1,
-    borderColor: "#30363D",
+    backgroundColor: "#2F81F7",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: Platform.OS === "ios" ? 8 : 0,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.25,
     shadowRadius: 8,
     elevation: 6,
-  },
-  centerButtonText: {
-    fontSize: 35,
-    fontWeight: "300",
-    color: "#E6EDF3",
-    lineHeight: 32,
   },
 });

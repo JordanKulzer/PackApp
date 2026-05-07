@@ -27,7 +27,7 @@ import type { FeedItem } from "../hooks/useActivityFeed";
 import type { AnchorPosition } from "./MessageActionMenu";
 import { ReactionPills } from "./ReactionPills";
 import { useCurrentUser } from "../context/CurrentUserContext";
-import { formatName } from "../lib/displayName";
+import { formatName, getInitial } from "../lib/displayName";
 import type { ActivityCategory } from "../lib/activityCategoryMap";
 import {
   getSignedUrl,
@@ -121,7 +121,7 @@ export function FeedItemRow({
   const resolvedAvatar =
     isMe && currentUser ? currentUser.avatarUrl : item.avatarUrl;
   const name = formatName(resolvedName, 0);
-  const initial = (resolvedName.trim().charAt(0) || "?").toUpperCase();
+  const initial = getInitial(resolvedName);
 
   const smileyRef = React.useRef<View>(null);
 
@@ -170,7 +170,7 @@ export function FeedItemRow({
     (item.activityType === "steps" || item.activityType === "calories");
 
   return (
-    <View style={[s.row, isMe && s.rowSelf]}>
+    <View style={[s.row, s.rowActivity]}>
       <View style={s.avatar}>
         {resolvedAvatar ? (
           <Image
@@ -352,8 +352,13 @@ const s = StyleSheet.create({
     paddingVertical: 8,
     alignItems: "flex-start",
   },
-  rowSelf: {
-    backgroundColor: "rgba(10, 132, 255, 0.06)",
+  // Activity rows always carry a raised-surface tint so they read as
+  // system events distinct from chat messages (which stay transparent
+  // for non-self, blue-tinted for self). Replaces the prior self-tint
+  // override — identity in activity rows is conveyed by avatar + name,
+  // not by the row background.
+  rowActivity: {
+    backgroundColor: "#121821",
   },
   avatar: {
     width: 32,

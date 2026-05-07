@@ -48,6 +48,12 @@ const PREFS: PrefRow[] = [
     desc: "When someone joins your pack",
   },
   {
+    // TODO(voice review): placeholder label/desc for Pass 20d.
+    key: "pack_settings_changed",
+    label: "Pack Goal Changes",
+    desc: "When the owner updates pack goals",
+  },
+  {
     key: "streak_reminder",
     label: "Streak Reminder",
     desc: "Daily reminder if you haven't logged today",

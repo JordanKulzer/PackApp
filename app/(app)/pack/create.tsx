@@ -20,7 +20,7 @@ import { useIsPro } from "../../../src/hooks/useIsPro";
 import { analytics } from "../../../src/lib/analytics";
 import { colors } from "../../../src/theme/colors";
 import { POINTS } from "../../../src/lib/scoring";
-import { weekStartInPackTz, weekEndInPackTz, getDeviceTimezone } from "../../../src/lib/packDates";
+import { getDeviceTimezone } from "../../../src/lib/packDates";
 import { onboarding } from "../../../src/constants/strings";
 
 function generateInviteCode(): string {
@@ -111,23 +111,11 @@ export default function CreatePack() {
 
       const packTz = getDeviceTimezone();
 
-      // Compute run window dates in the pack's timezone
-      let runStartDate: string;
-      let runEndDate: string;
-
-      if (window === "monthly") {
-        const now = new Intl.DateTimeFormat("en-CA", { timeZone: packTz }).format(new Date());
-        const [year, month] = now.split("-").map(Number);
-        const lastDay = new Date(year, month, 0).getDate();
-        runStartDate = `${year}-${String(month).padStart(2, "0")}-01`;
-        runEndDate = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
-      } else {
-        runStartDate = weekStartInPackTz(packTz);
-        runEndDate = weekEndInPackTz(packTz);
-      }
-
       // Single atomic RPC: creates pack + pack_member + run in one transaction.
       // Uses SECURITY DEFINER so RLS on runs doesn't block the insert.
+      // Run window dates are computed server-side from pack_timezone — weekly
+      // = Mon→Sun (matches rollover_expired_runs), monthly = first→last of
+      // month. See supabase/migrations/20260504_fix_create_pack_with_run_week_convention.sql.
       const { data, error } = await supabase.rpc("create_pack_with_run", {
         pack_name: name.trim(),
         pack_invite_code: generateInviteCode(),
@@ -140,8 +128,6 @@ export default function CreatePack() {
         pack_step_target: parseInt(stepTarget, 10) || 10000,
         pack_calorie_target: parseInt(calorieTarget, 10) || 500,
         pack_water_target_oz: parseInt(waterTarget, 10) || 64,
-        run_start_date: runStartDate,
-        run_end_date: runEndDate,
       });
 
       if (error) throw error;

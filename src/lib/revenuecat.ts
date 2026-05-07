@@ -97,5 +97,6 @@ export const FREE_PACK_LIMIT = 3;
 export const FREE_MEMBER_LIMIT = 10;
 export const PRO_MEMBER_LIMIT = 25;
 export const LEGACY_PACK_LIMIT = 4; // extra slot for legacy one-time purchasers
+export const FREE_HISTORY_WEEKS = 4; // free tier sees 4 most-recent completed weeks unlocked
 export const PRO_MONTHLY_PRICE = "$2.99/mo";
 export const PRO_ANNUAL_PRICE = "$19.99/yr";

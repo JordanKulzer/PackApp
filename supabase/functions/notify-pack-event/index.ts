@@ -35,6 +35,8 @@ type NotificationEvent =
   | { kind: "all_goals"; totalPoints: number }
   | { kind: "took_lead" }
   | { kind: "new_member"; newMemberName: string; packName: string }
+  | { kind: "goals_updated"; nextRunStart: string }
+  | { kind: "pack_renamed"; newName: string }
   // Targeted (recipients[] required)
   | { kind: "passed_you"; rankAfter: number }
   | { kind: "tied_you"; rankAfter: number }
@@ -53,6 +55,8 @@ const BROADCAST_KINDS = new Set([
   "all_goals",
   "took_lead",
   "new_member",
+  "goals_updated",
+  "pack_renamed",
 ]);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -75,7 +79,28 @@ function prefKeyForEvent(kind: NotificationEvent["kind"]): string {
       return "new_member";
     case "new_comment":
       return "new_comment";
+    case "goals_updated":
+    case "pack_renamed":
+      return "pack_settings_changed";
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Date format — mirrors src/constants/strings.ts client-side formatting so
+// the push body matches the chat system message verbatim. Empty input
+// returns "" (defensive: old clients during the rollout window emit
+// goals_updated without nextRunStart; the body becomes "Goals updated ·
+// Applied " — ugly but non-crashing, self-heals as users update).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function formatRunDate(isoDate: string): string {
+  if (!isoDate) return "";
+  const d = new Date(isoDate + "T12:00:00");
+  return d.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -135,6 +160,16 @@ function buildCopy(
     // push.* for wolf-voice patterns when authoring replacement.
     case "ownership_transferred":
       return { title: "Pack ownership transferred", body: `${actorName} made ${event.newOwnerName} the new pack owner` };
+    // TODO(voice review): refined copy for Pass 20e. Date interpolated from
+    // event.nextRunStart so push body matches the chat system message verbatim.
+    // Defensive empty fallback for old clients during the rollout window.
+    case "goals_updated": {
+      const date = formatRunDate(event.nextRunStart ?? "");
+      return { title: "Pack goals updated", body: `Goals updated · Applied ${date}` };
+    }
+    // TODO(voice review): placeholder copy for Pass 20e.
+    case "pack_renamed":
+      return { title: "Pack renamed", body: `${actorName} renamed the pack to ${event.newName}` };
   }
 }
 

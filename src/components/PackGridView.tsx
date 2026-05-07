@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -7,6 +7,8 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
+  Animated,
+  Easing,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
@@ -26,6 +28,17 @@ if (
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
+// Color rule (mirrors src/theme/colors.ts — keep in sync):
+//   colors.leader (#E3A000 gold)  → leader-only signal: #1 rank, leader name,
+//                                   leader's points, leader's ring arc.
+//   colors.self / C.accent (blue) → self-identity + UI chrome: own row border,
+//                                   own name, day picker active button,
+//                                   tab indicator, progress bars.
+//   C.success (green)             → achievement signal: 100% bar fill, goal-hit.
+//   C.danger (red)                → destructive only: delete actions, errors.
+//
+// Future drift: keep gold strictly leader-only. Don't use gold for chrome.
+// Don't introduce a third blue. Token consolidation tracked in X1.
 const C = {
   bg: "#0B0F14",
   surface: "#121821",
@@ -35,6 +48,7 @@ const C = {
   textSecondary: "#8B949E",
   textTertiary: "#484F58",
   accent: colors.self,
+  success: "#3FB950",
   streak: "#FF9500",
 } as const;
 
@@ -322,6 +336,66 @@ function RankRow({
   );
 }
 
+// ── Goal row (animated bar + ratio + check) ────────────────────────────────
+// One source of truth for the achieved state, shared by the bar's fill color,
+// the ratio text color, and the ✓ icon. State flips at animation end (going
+// up to 100%) and immediately (going down below 100%) so all three elements
+// land the goal-hit moment together.
+function GoalRow({
+  label,
+  pct,
+  ratio,
+}: {
+  label: string;
+  pct: number;
+  ratio: string;
+}) {
+  const animValue = useRef(new Animated.Value(0)).current;
+  const [achieved, setAchieved] = useState(false);
+
+  useEffect(() => {
+    if (pct < 100) setAchieved(false);
+    Animated.timing(animValue, {
+      toValue: pct,
+      duration: 350,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false, // width% interpolation requires JS thread
+    }).start(({ finished }) => {
+      if (finished && pct >= 100) setAchieved(true);
+    });
+  }, [pct]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const width = animValue.interpolate({
+    inputRange: [0, 100],
+    outputRange: ["0%", "100%"],
+  });
+  const fillColor = achieved ? C.success : C.accent;
+
+  return (
+    <View style={s.goalRow}>
+      <Text style={s.goalLabel}>{label}</Text>
+      <View style={[s.goalBarTrack, s.goalBarTrackFilled]}>
+        <Animated.View
+          style={[s.goalBarFill, { width, backgroundColor: fillColor }]}
+        />
+      </View>
+      <View style={s.goalRatioBlock}>
+        <Text style={[s.goalRatio, achieved && s.goalRatioAchieved]}>
+          {ratio}
+        </Text>
+        {achieved && (
+          <Ionicons
+            name="checkmark"
+            size={14}
+            color={C.success}
+            style={{ marginLeft: 4 }}
+          />
+        )}
+      </View>
+    </View>
+  );
+}
+
 // ── Inline expansion (per-member goal breakdown) ───────────────────────────
 // Renders below the corresponding row when expanded. Shows streak header (if
 // any), then one row per goal the pack tracks. Self-row's accent bar extends
@@ -416,17 +490,7 @@ function RankRowExpanded({
         </Text>
       )}
       {goals.map((g) => (
-        <View key={g.label} style={s.goalRow}>
-          <Text style={s.goalLabel}>{g.label}</Text>
-          <View
-            style={[s.goalBarTrack, g.pct > 0 && s.goalBarTrackFilled]}
-          >
-            {g.pct > 0 && (
-              <View style={[s.goalBarFill, { width: `${g.pct}%` }]} />
-            )}
-          </View>
-          <Text style={s.goalRatio}>{g.ratio}</Text>
-        </View>
+        <GoalRow key={g.label} label={g.label} pct={g.pct} ratio={g.ratio} />
       ))}
       {totalEarned > 0 && (
         <Text style={s.totalEarned}>+{totalEarned} pts today</Text>
@@ -662,8 +726,9 @@ const s = StyleSheet.create({
     marginHorizontal: 12,
     overflow: "hidden",
   },
-  // Gray track only renders when there's progress to fill it. At 0% the
-  // space is preserved but the track is transparent.
+  // Gray track always renders so the row's bar slot stays visually stable
+  // at all completion levels. Fill width animates from 0% (invisible) to
+  // its target on expand.
   goalBarTrackFilled: {
     backgroundColor: "#2C2C2E",
   },
@@ -672,11 +737,22 @@ const s = StyleSheet.create({
     borderRadius: 3,
     backgroundColor: C.accent,
   },
-  goalRatio: {
+  // Right-aligned slot housing the ratio text + (optional) ✓ icon. minWidth
+  // preserves column alignment across rows; justifyContent keeps content
+  // pinned to the right edge regardless of icon presence.
+  goalRatioBlock: {
     minWidth: 80,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+  },
+  goalRatio: {
     fontSize: 12,
     color: C.textSecondary,
     textAlign: "right",
+  },
+  goalRatioAchieved: {
+    color: C.success,
   },
   totalEarned: {
     fontSize: 13,

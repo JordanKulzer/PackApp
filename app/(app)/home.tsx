@@ -669,6 +669,15 @@ export default function Home() {
     }, [packs]),
   );
 
+  // Refetch the user's pack list when home regains focus, so edits or
+  // pack creates/deletes from other screens show immediately on return.
+  // Mirrors the useRefreshCurrentUserOnFocus pattern.
+  useFocusEffect(
+    useCallback(() => {
+      refetch();
+    }, [refetch]),
+  );
+
   const handleNewPack = () => {
     if (!isPro && packs.length >= effectivePackLimit) {
       analytics.gateHit("pack_limit");

@@ -105,13 +105,22 @@ export function usePackHistory(packId: string) {
         totalsByRun[row.run_id] = runMap;
       }
 
-      // Step 4: Build the final result — ranked standings per run, winner is rank 1
+      // Step 4: Build the final result — ranked standings per run, winner is rank 1.
+      // Dense competition rank: same totalPoints share the same rank, next rank skips.
       const result: CompletedRun[] = runs.map((run) => {
         const runMap = totalsByRun[run.id] ?? new Map<string, UserTotal>();
 
-        const ranked = Array.from(runMap.values())
-          .sort((a, b) => b.totalPoints - a.totalPoints)
-          .map((entry, idx) => ({ ...entry, rank: idx + 1 }));
+        const sorted = Array.from(runMap.values()).sort(
+          (a, b) => b.totalPoints - a.totalPoints,
+        );
+        let prevPts = -1;
+        let prevRank = 0;
+        const ranked = sorted.map((entry, i) => {
+          const rank = entry.totalPoints === prevPts ? prevRank : i + 1;
+          prevPts = entry.totalPoints;
+          prevRank = rank;
+          return { ...entry, rank };
+        });
 
         const top = ranked[0];
 

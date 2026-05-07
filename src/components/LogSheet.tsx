@@ -634,31 +634,34 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
         text = "You took the lead";
         positive = true;
         if (packRun?.packId) {
-          // Idempotent upsert keyed on the partial unique index extended
-          // by 20260429_expand_activity_type_check (covers the new types
-          // alongside steps/calories/water): one took_lead row per
-          // (user, pack, day). Re-takes within the same day or concurrent
-          // races become silent no-ops; we notify only on actual insert.
+          // Plain INSERT (not upsert) — the dedup index
+          // idx_activity_feed_no_dup_goals is a PARTIAL unique index, and
+          // supabase-js's upsert + onConflict can't match partial indexes;
+          // Postgres throws 42P10. The same partial index still enforces
+          // uniqueness on INSERT, so a same-day re-take raises 23505,
+          // which we treat as the dedup no-op (matches the original intent
+          // of ignoreDuplicates: true). See Pass 9 / Pass 20d / Pass 20e
+          // for the same pattern across syncWater/logActivity/healthkit/
+          // edit-pack.
           const { data: insertedLead, error: leadError } = await supabase
             .from("activity_feed")
-            .upsert(
-              {
-                pack_id: packRun.packId,
-                user_id: uid,
-                activity_type: "took_lead",
-                value: 0,
-                points_earned: 0,
-                entry_method: "system",
-                score_date: today,
-              },
-              {
-                onConflict: "user_id,pack_id,activity_type,score_date",
-                ignoreDuplicates: true,
-              },
-            )
+            .insert({
+              pack_id: packRun.packId,
+              user_id: uid,
+              activity_type: "took_lead",
+              value: 0,
+              points_earned: 0,
+              entry_method: "system",
+              score_date: today,
+            })
             .select("id");
           if (leadError) {
-            console.error("[LogSheet] took_lead upsert error:", leadError);
+            // 23505 = unique violation on the partial index = same-day
+            // re-take. Silent no-op (matches the dedup intent). Other
+            // errors surface for diagnosis.
+            if (leadError.code !== "23505") {
+              console.error("[LogSheet] took_lead insert error:", leadError);
+            }
           } else if (insertedLead && insertedLead.length > 0) {
             notifyPackMembers(uid, packRun.packId, { kind: "took_lead" }).catch(() => {});
           }

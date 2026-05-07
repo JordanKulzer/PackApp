@@ -19,6 +19,8 @@ import type { AnchorPosition } from "./MessageActionMenu";
 const SYSTEM_ACTIVITY_TYPES = new Set<FeedItem["activityType"]>([
   "took_lead",
   "all_goals",
+  "goals_updated",
+  "pack_renamed",
 ]);
 
 interface Props {

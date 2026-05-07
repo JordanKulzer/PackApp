@@ -18,6 +18,16 @@ export type PackNotificationEvent =
   | { kind: "all_goals"; totalPoints: number }
   | { kind: "ownership_transferred"; newOwnerName: string }
   | { kind: "new_comment"; bodyPreview: string }
+  // Fired from the Edit Pack save flow when goal targets change (Pass 20d,
+  // payload extended in Pass 20e). Gated on actual activity_feed insert so
+  // per-day re-saves dedup naturally via idx_activity_feed_no_dup_goals.
+  // nextRunStart is a YYYY-MM-DD ISO date the edge function formats into
+  // the push body; client and edge function share the same formatter shape.
+  | { kind: "goals_updated"; nextRunStart: string }
+  // Fired from the Edit Pack save flow when the pack name changes (Pass
+  // 20e). newName carries the trimmed post-save name; the edge function
+  // uses it directly in the push body.
+  | { kind: "pack_renamed"; newName: string }
   // Scaffolded but disconnected (Pass 7a). Edge Function and prefs UI both
   // know about this kind, but no client-side caller fires it yet. When
   // join-ping wiring lands (likely at JoinPackModal:118 and join/[code].tsx:113),

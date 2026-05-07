@@ -26,6 +26,20 @@ function buildSystemText(item: FeedItem, isMe: boolean): string {
       return item.value > 0
         ? `${name} completed all ${item.value} goals today 🎉`
         : `${name} completed all goals today 🎉`;
+    // TODO(voice review): refined copy for Pass 20e. The {date} comes from
+    // item.caption set at insert time (e.g., "Monday, May 11"). Old rows
+    // (Pass 20d-shipped) have caption=null and use the fallback variant.
+    case "goals_updated":
+      return item.caption
+        ? `Goals updated · Applied ${item.caption}`
+        : `${name} updated the pack's goals`;
+    // TODO(voice review): placeholder copy for Pass 20e. {newName} comes
+    // from item.caption set at insert time — historical accuracy preserved
+    // (no live join means future renames don't mutate old messages).
+    case "pack_renamed":
+      return item.caption
+        ? `Pack renamed to ${item.caption}`
+        : `${name} renamed the pack`;
     default:
       // Fallback (shouldn't reach for system-message types we route here).
       return `${name} · ${item.activityType}`;

@@ -23,7 +23,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFeedComments, CommentWithUser } from "../hooks/useFeedComments";
 import type { ReactionType } from "../hooks/useActivityFeed";
 import { notifyUser } from "../lib/notifications";
-import { formatName } from "../lib/displayName";
+import { formatName, getInitial } from "../lib/displayName";
 import { useCurrentUser } from "../context/CurrentUserContext";
 
 const C = {
@@ -245,7 +245,7 @@ export function CommentsSheet({
     const isPickerOpen = reactionPickerCommentId === comment.id;
     const resolvedName = isMe && currentUser ? currentUser.displayName : comment.displayName;
     const resolvedAvatar = isMe && currentUser ? currentUser.avatarUrl : comment.avatarUrl;
-    const initial = (resolvedName.trim().charAt(0) || "?").toUpperCase();
+    const initial = getInitial(resolvedName);
     const avatarSize = isReply ? 26 : 34;
     const avatarRadius = avatarSize / 2;
 

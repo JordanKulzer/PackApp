@@ -8,6 +8,7 @@ export default function PackLayout() {
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="create" options={{ presentation: "modal" }} />
+      <Stack.Screen name="edit/[id]" options={{ presentation: "modal" }} />
     </Stack>
   );
 }

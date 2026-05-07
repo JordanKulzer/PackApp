@@ -30,7 +30,7 @@ import {
   WhoopIcon,
 } from "../../../src/components/IntegrationIcons";
 import { supabase } from "../../../src/lib/supabase";
-import { normalizeDisplayName } from "../../../src/lib/displayName";
+import { normalizeDisplayName, getInitial } from "../../../src/lib/displayName";
 import type { User } from "../../../src/types/database";
 import { useCurrentUser } from "../../../src/context/CurrentUserContext";
 import {
@@ -408,9 +408,9 @@ export default function Profile() {
         <View style={styles.avatarSection}>
           <EditableAvatar
             imageUri={currentUser?.avatarUrl ?? profile?.avatar_url ?? null}
-            fallbackInitial={(currentUser?.displayName ?? profile?.display_name ?? user?.email ?? "?")
-              .charAt(0)
-              .toUpperCase()}
+            fallbackInitial={getInitial(
+              currentUser?.displayName ?? profile?.display_name ?? user?.email,
+            )}
             size={80}
             uploading={avatarUploading}
             onPress={handleAvatarPress}
@@ -543,7 +543,7 @@ export default function Profile() {
                 <Text style={styles.rowLabel}>Notifications</Text>
                 <Text style={styles.rowDesc}>Manage what you hear about</Text>
               </View>
-              <Text style={styles.chevron}>›</Text>
+              <Ionicons name="chevron-forward" size={18} color={C.textTertiary} />
             </TouchableOpacity>
           </View>
         </View>
@@ -557,8 +557,11 @@ export default function Profile() {
               onPress={() => Linking.openURL("https://packapp.com/privacy")}
               activeOpacity={0.7}
             >
-              <Text style={styles.rowLabel}>Privacy Policy</Text>
-              <Text style={styles.chevron}>›</Text>
+              <Ionicons name="shield-checkmark-outline" size={22} color="#8B949E" />
+              <View style={styles.rowInfo}>
+                <Text style={styles.rowLabel}>Privacy Policy</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={C.textTertiary} />
             </TouchableOpacity>
             <View style={styles.rowDivider} />
             <TouchableOpacity
@@ -566,8 +569,11 @@ export default function Profile() {
               onPress={() => Linking.openURL("https://packapp.com/terms")}
               activeOpacity={0.7}
             >
-              <Text style={styles.rowLabel}>Terms of Service</Text>
-              <Text style={styles.chevron}>›</Text>
+              <Ionicons name="document-text-outline" size={22} color="#8B949E" />
+              <View style={styles.rowInfo}>
+                <Text style={styles.rowLabel}>Terms of Service</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={C.textTertiary} />
             </TouchableOpacity>
             <View style={styles.rowDivider} />
             <TouchableOpacity
@@ -575,8 +581,11 @@ export default function Profile() {
               onPress={() => Linking.openURL("mailto:support@packapp.com")}
               activeOpacity={0.7}
             >
-              <Text style={styles.rowLabel}>Support</Text>
-              <Text style={styles.chevron}>›</Text>
+              <Ionicons name="help-circle-outline" size={22} color="#8B949E" />
+              <View style={styles.rowInfo}>
+                <Text style={styles.rowLabel}>Support</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={C.textTertiary} />
             </TouchableOpacity>
           </View>
         </View>
@@ -595,18 +604,26 @@ export default function Profile() {
                 {signingOut ? "Signing out…" : "Sign Out"}
               </Text>
             </TouchableOpacity>
-            <View style={styles.rowDivider} />
-            <TouchableOpacity
-              style={styles.row}
-              onPress={handleDeleteAccount}
-              disabled={deletingAccount}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.rowLabel, styles.dangerText]}>
-                {deletingAccount ? "Deleting…" : "Delete Account"}
-              </Text>
-            </TouchableOpacity>
           </View>
+
+          {/* Delete Account — outside the rounded group, outlined-red CTA shape.
+              Visual severity matches the action (irreversible destruction);
+              row-with-Sign-Out below would equate it to a recoverable action.
+              The outlined treatment is the doorway; the destructive flow's
+              filled-red commit button is the actual point-of-no-return. */}
+          <TouchableOpacity
+            style={[
+              styles.deleteAccountBtn,
+              deletingAccount && styles.deleteAccountBtnDisabled,
+            ]}
+            onPress={handleDeleteAccount}
+            disabled={deletingAccount}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.deleteAccountBtnText}>
+              {deletingAccount ? "Deleting…" : "Delete Account"}
+            </Text>
+          </TouchableOpacity>
         </View>
 
         {/* ── Version footer ────────────────────────────────────────────── */}
@@ -745,8 +762,24 @@ const styles = StyleSheet.create({
   rowDesc: { fontSize: 13, color: C.textSecondary, marginTop: 1 },
   rowValue: { fontSize: 14, color: C.accent, fontWeight: "600" },
   rowValueSuccess: { color: C.success },
-  chevron: { fontSize: 20, color: C.textTertiary, fontWeight: "300" },
-  dangerText: { color: C.danger },
+  deleteAccountBtn: {
+    height: 52,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: C.danger,
+    backgroundColor: "transparent",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 20,
+  },
+  deleteAccountBtnText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: C.danger,
+  },
+  deleteAccountBtnDisabled: {
+    opacity: 0.6,
+  },
   version: {
     fontSize: 12,
     color: C.textTertiary,

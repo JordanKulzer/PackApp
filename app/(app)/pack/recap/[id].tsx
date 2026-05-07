@@ -10,7 +10,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { usePackHistory } from "../../../../src/hooks/usePackHistory";
 import { colors } from "../../../../src/theme/colors";
 import { recap, den, t } from "../../../../src/constants/strings";
-import { formatName } from "../../../../src/lib/displayName";
+import { formatName, getInitial } from "../../../../src/lib/displayName";
 
 interface RunForRecap {
   winner: { displayName: string; totalPoints: number };
@@ -79,7 +79,7 @@ function AvatarCircle({
   size: number;
   bg: string;
 }) {
-  const initial = name.trim().charAt(0).toUpperCase() || "?";
+  const initial = getInitial(name);
   return (
     <View
       style={{

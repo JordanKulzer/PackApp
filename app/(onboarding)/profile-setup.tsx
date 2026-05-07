@@ -23,7 +23,7 @@ import {
   uploadAvatar,
 } from "../../src/lib/photoUpload";
 import { completeOnboarding } from "../../src/lib/onboarding";
-import { normalizeDisplayName } from "../../src/lib/displayName";
+import { normalizeDisplayName, getInitial } from "../../src/lib/displayName";
 import { EditableAvatar } from "../../src/components/EditableAvatar";
 import { onboarding } from "../../src/constants/strings";
 
@@ -48,7 +48,7 @@ export default function ProfileSetup() {
   const [completing, setCompleting] = useState(false);
 
   const resolvedAvatar = currentUser?.avatarUrl;
-  const initial = (nameInput.trim().charAt(0) || "?").toUpperCase();
+  const initial = getInitial(nameInput);
 
   const handleSkip = () => {
     Alert.alert(

@@ -22,7 +22,7 @@ import type { ChatMessage } from "../types/database";
 import type { Reactor } from "../hooks/useActivityFeed";
 import type { AnchorPosition } from "./MessageActionMenu";
 import { ReactionPills } from "./ReactionPills";
-import { formatName } from "../lib/displayName";
+import { formatName, getInitial } from "../lib/displayName";
 
 interface Props {
   message: ChatMessage & {
@@ -50,7 +50,7 @@ export function ChatMessageRow({
 }: Props) {
   const isMe = message.user_id === currentUserId;
   const authorName = formatName(message.author.display_name);
-  const initial = (authorName.trim().charAt(0) || "?").toUpperCase();
+  const initial = getInitial(authorName);
   const showActions = !message.is_deleted;
 
   // Smiley wrapper — measureInWindow anchors the reaction picker.

@@ -30,64 +30,6 @@ export function packYesterday(packTimezone: string): string {
 }
 
 /**
- * Returns the Sunday of the current week in pack timezone as YYYY-MM-DD.
- * Weeks run Sunday → Saturday.
- * E.g., Wed Apr 22 2026 in America/Chicago → "2026-04-19".
- */
-export function weekStartInPackTz(packTimezone: string): string {
-  const todayStr = packToday(packTimezone);
-  const [yyyy, mm, dd] = todayStr.split("-").map(Number);
-  const utcDate = new Date(Date.UTC(yyyy, mm - 1, dd));
-  const dow = utcDate.getUTCDay(); // 0=Sun … 6=Sat
-  const daysSinceSunday = dow; // Sunday is already 0, no offset needed
-  utcDate.setUTCDate(utcDate.getUTCDate() - daysSinceSunday);
-  return utcDate.toISOString().split("T")[0];
-}
-
-/**
- * Returns the Saturday of the current week in pack timezone as YYYY-MM-DD.
- * Weeks run Sunday → Saturday.
- * E.g., Wed Apr 22 2026 in America/Chicago → "2026-04-25".
- */
-export function weekEndInPackTz(packTimezone: string): string {
-  const start = weekStartInPackTz(packTimezone);
-  const [yyyy, mm, dd] = start.split("-").map(Number);
-  const utcDate = new Date(Date.UTC(yyyy, mm - 1, dd));
-  utcDate.setUTCDate(utcDate.getUTCDate() + 6); // Sunday + 6 = Saturday
-  return utcDate.toISOString().split("T")[0];
-}
-
-/**
- * Returns true if end_date (YYYY-MM-DD) is strictly before today in the pack's timezone.
- * Used to decide whether a run needs to roll over.
- */
-export function isRunExpired(endDate: string, packTimezone: string): boolean {
-  return endDate < packToday(packTimezone);
-}
-
-/**
- * For a pack being created today, the first run ends on the Sunday of the current
- * week in the pack's timezone (partial first week).
- */
-export function firstRunEndDate(packTimezone: string): string {
-  return weekEndInPackTz(packTimezone);
-}
-
-/**
- * Returns the next full Sun-Sat week's start and end, given the previous run's end date.
- * The day after previousEndDate must be a Sunday (Saturday + 1 = Sunday).
- */
-export function nextRunDates(previousEndDate: string): { start: string; end: string } {
-  const [yyyy, mm, dd] = previousEndDate.split("-").map(Number);
-  const utcDate = new Date(Date.UTC(yyyy, mm - 1, dd));
-  utcDate.setUTCDate(utcDate.getUTCDate() + 1); // Sunday → Monday
-  const start = utcDate.toISOString().split("T")[0];
-  utcDate.setUTCDate(utcDate.getUTCDate() + 6); // Monday → Sunday
-  const end = utcDate.toISOString().split("T")[0];
-  return { start, end };
-}
-
-/**
  * Returns the UTC Date that corresponds to midnight of "today" in the pack's timezone.
  * Used for `gte("created_at", ...)` queries on activity_feed to scope feed events
  * to "today in pack timezone" rather than "today in UTC".
