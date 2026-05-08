@@ -11,6 +11,7 @@ import {
 } from "../src/lib/notifications";
 import { initAnalytics, identify, reset } from "../src/lib/analytics";
 import { CurrentUserProvider } from "../src/context/CurrentUserContext";
+import { ModalMutationProvider } from "../src/context/ModalMutationContext";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -257,17 +258,23 @@ function RootLayout() {
       <KeyboardProvider>
         <BottomSheetModalProvider>
           <CurrentUserProvider>
-            <Stack
-              screenOptions={{
-                headerShown: false,
-                contentStyle: { backgroundColor: BrandColors.background },
-              }}
-            >
-              <Stack.Screen
-                name="paywall"
-                options={{ presentation: "modal", gestureEnabled: true }}
-              />
-            </Stack>
+            <ModalMutationProvider>
+              <Stack
+                screenOptions={{
+                  headerShown: false,
+                  contentStyle: { backgroundColor: BrandColors.background },
+                }}
+              >
+                <Stack.Screen
+                  name="paywall"
+                  options={{ presentation: "modal", gestureEnabled: true }}
+                />
+                <Stack.Screen
+                  name="user/[id]"
+                  options={{ presentation: "modal", gestureEnabled: true }}
+                />
+              </Stack>
+            </ModalMutationProvider>
           </CurrentUserProvider>
         </BottomSheetModalProvider>
       </KeyboardProvider>

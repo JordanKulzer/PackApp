@@ -23,6 +23,7 @@ import {
   Modal,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import type { FeedItem } from "../hooks/useActivityFeed";
 import type { AnchorPosition } from "./MessageActionMenu";
 import { ReactionPills } from "./ReactionPills";
@@ -115,6 +116,7 @@ export function FeedItemRow({
   const [reportMenuOpen, setReportMenuOpen] = useState(false);
 
   const { user: currentUser } = useCurrentUser();
+  const router = useRouter();
   const isMe = item.userId === currentUserId;
   const resolvedName =
     isMe && currentUser ? currentUser.displayName : item.displayName;
@@ -171,7 +173,14 @@ export function FeedItemRow({
 
   return (
     <View style={[s.row, s.rowActivity]}>
-      <View style={s.avatar}>
+      <TouchableOpacity
+        style={s.avatar}
+        onPress={() => {
+          router.push(`/user/${item.userId}` as any);
+        }}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+      >
         {resolvedAvatar ? (
           <Image
             source={{ uri: resolvedAvatar }}
@@ -180,7 +189,7 @@ export function FeedItemRow({
         ) : (
           <Text style={s.avatarInitial}>{initial}</Text>
         )}
-      </View>
+      </TouchableOpacity>
       <View style={s.content}>
         <View style={s.headerRow}>
           <Text

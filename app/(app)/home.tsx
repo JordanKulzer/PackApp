@@ -4,12 +4,15 @@ import {
   Text,
   StyleSheet,
   FlatList,
+  ScrollView,
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useAuthStore } from "../../src/stores/authStore";
+import { packToday } from "../../src/lib/packDates";
+import { useConsumeSuppressFlag } from "../../src/context/ModalMutationContext";
 import { useScoreStore } from "../../src/stores/scoreStore";
 import { useUserPacks } from "../../src/hooks/usePack";
 import { useIsPro } from "../../src/hooks/useIsPro";
@@ -62,6 +65,7 @@ interface HomePackData {
   scores: HomeScore[]; // sorted by weekly_points desc
   runStart: string; // ISO date — for weekly max denominator
   runEnd: string;
+  myTodayPoints: number; // current user's points logged today only (not weekly)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -103,13 +107,64 @@ function packDailyMax(pack: Pack): number {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mini Rings Row — [#2][#1 elevated][#3] or solo/duo layouts
-// Uses PackMemberDisplay for consistent ring/badge/name rendering with Pack screen.
+// Mini Rings Row — horizontal-scrolling list of all pack members.
+// Replaced the prior layout cascade (top-3 + strip + overflow pill) with a
+// uniform horizontal scroller (Pass 21a). Uses PackMemberDisplay for
+// consistent ring/badge/name rendering with the Pack Detail screen.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const STRIP_SIZE_CARD = 30;
-const STRIP_SW_CARD = 3;
-const STRIP_MAX_CARD = 5; // max visible strip rings before "+N" pill
+const MEMBER_RING_SIZE = 60;
+const MEMBER_RING_STROKE = 5;
+
+// Per-member compact card. Tap navigates to the public user profile
+// screen (Pass 21b). The privacy gate inside get_user_public_profile
+// allows self-viewing, so a self-tap shows your own profile via the same
+// route.
+function MemberCard({
+  entry,
+  maxPoints,
+  currentUserId,
+  leaderId,
+  currentUser,
+}: {
+  entry: HomeScore;
+  maxPoints: number;
+  currentUserId: string | undefined;
+  leaderId: string | undefined;
+  currentUser: { id: string; displayName: string; avatarUrl: string | null } | null;
+}) {
+  const router = useRouter();
+  const pct = miniRingPct(entry.weekly_points, maxPoints);
+  const isMe = entry.user_id === currentUser?.id;
+  const displayName =
+    isMe && currentUser ? currentUser.displayName : entry.display_name;
+  const avatarUrl =
+    isMe && currentUser ? currentUser.avatarUrl : entry.avatar_url;
+  return (
+    <TouchableOpacity
+      style={miniRingS.memberCard}
+      onPress={() => {
+        router.push(`/user/${entry.user_id}` as any);
+      }}
+      activeOpacity={0.7}
+    >
+      <PackMemberDisplay
+        userId={entry.user_id}
+        displayName={displayName}
+        progressPct={pct}
+        rank={entry.rank}
+        currentUserId={currentUserId}
+        leaderId={leaderId}
+        size={MEMBER_RING_SIZE}
+        strokeWidth={MEMBER_RING_STROKE}
+        avatarUrl={avatarUrl}
+      />
+      <Text style={miniRingS.memberPts} numberOfLines={1}>
+        {entry.weekly_points} pts
+      </Text>
+    </TouchableOpacity>
+  );
+}
 
 function MiniRings({
   scores,
@@ -127,7 +182,10 @@ function MiniRings({
   const { user: currentUser } = useCurrentUser();
   const maxPoints = maxRunPointsForPeriod(pack, runStart, runEnd);
 
-  // Sort: pts desc, alpha within same-pts groups (deterministic tie order)
+  // Sort: pts desc, alpha within same-pts groups (deterministic tie order).
+  // The optimistic-update overlay in DarkPackCard recomputes ranks after
+  // re-sort; MemberCard reads entry.rank directly, so the gold-leader and
+  // top-3 badges stay correct after a self-log without a full refetch.
   const sorted = [...scores].sort((a, b) =>
     b.weekly_points !== a.weekly_points
       ? b.weekly_points - a.weekly_points
@@ -136,163 +194,71 @@ function MiniRings({
 
   if (sorted.length === 0) return null;
 
-  const SIZE_LEADER = 52;
-  const SIZE_FLANK = 38;
-  const SW_LEADER = 5;
-  const SW_FLANK = 4;
-
   const leaderId = sorted[0].user_id;
-  const memberCount = sorted.length;
 
-  const topPts = sorted[0].weekly_points;
-  const tiedAtTop = sorted.filter(e => e.weekly_points === topPts);
-  const hasSoloLeader = tiedAtTop.length === 1;
-  const secondEntry = hasSoloLeader ? sorted.find(e => e.weekly_points < topPts) ?? null : null;
-  const tiedAtSecond = secondEntry
-    ? sorted.filter(e => e.weekly_points === secondEntry.weekly_points)
-    : [];
-
-  function miniSlot(entry: HomeScore, rank: number, size: number, sw: number, elevated: boolean) {
-    const pct = miniRingPct(entry.weekly_points, maxPoints);
-    const isMe = entry.user_id === currentUser?.id;
-    const displayName = isMe && currentUser ? currentUser.displayName : entry.display_name;
-    const avatarUrl = isMe && currentUser ? currentUser.avatarUrl : entry.avatar_url;
+  // Solo-pack: center a single card. ScrollView with one child left-aligns
+  // and looks broken; the standalone <View> matches the prior solo layout
+  // visually (no scroll affordance, just the centered ring).
+  if (sorted.length === 1) {
     return (
-      <View
-        key={entry.user_id}
-        style={[{ width: size + 12, alignItems: "center" }, elevated && miniRingS.elevated]}
-      >
-        <PackMemberDisplay
-          userId={entry.user_id}
-          displayName={displayName}
-          progressPct={pct}
-          rank={rank}
-          currentUserId={currentUserId}
-          leaderId={leaderId}
-          size={size}
-          strokeWidth={sw}
-          avatarUrl={avatarUrl}
-        />
+      <View style={miniRingS.wrapper}>
+        <View style={miniRingS.solo}>
+          <MemberCard
+            entry={sorted[0]}
+            maxPoints={maxPoints}
+            currentUserId={currentUserId}
+            leaderId={leaderId}
+            currentUser={currentUser}
+          />
+        </View>
       </View>
     );
   }
 
-  // Ranks 4+ strip (only in the normal/non-tied path)
-  const showStrip = hasSoloLeader && tiedAtSecond.length < 2;
-  const stripEntries = showStrip ? sorted.slice(3) : [];
-  const stripVisible = stripEntries.slice(0, STRIP_MAX_CARD);
-  const stripMore = stripEntries.length - stripVisible.length;
-
   return (
     <View style={miniRingS.wrapper}>
-      {/* 1 scoring member: centered */}
-      {memberCount === 1 && (
-        <View style={miniRingS.row}>
-          {miniSlot(sorted[0], 1, SIZE_LEADER, SW_LEADER, false)}
-        </View>
-      )}
-
-      {/* Top is tied: equal rings (up to 3) */}
-      {memberCount > 1 && tiedAtTop.length >= 2 && (
-        <View style={miniRingS.row}>
-          {tiedAtTop.slice(0, 3).map((entry) =>
-            miniSlot(entry, 1, SIZE_LEADER, SW_LEADER, false),
-          )}
-        </View>
-      )}
-
-      {/* 2 members, clear leader: [#2 left] [#1] */}
-      {memberCount === 2 && hasSoloLeader && (
-        <View style={miniRingS.row}>
-          {miniSlot(sorted[1], 2, SIZE_FLANK, SW_FLANK, false)}
-          {miniSlot(sorted[0], 1, SIZE_LEADER, SW_LEADER, true)}
-        </View>
-      )}
-
-      {/* 3+ members, clear #1 + tie at #2: [tied-#2] [#1] [tied-#2] */}
-      {memberCount >= 3 && hasSoloLeader && tiedAtSecond.length >= 2 && (
-        <View style={miniRingS.row}>
-          {miniSlot(tiedAtSecond[0], 2, SIZE_FLANK, SW_FLANK, false)}
-          {miniSlot(sorted[0], 1, SIZE_LEADER, SW_LEADER, true)}
-          {miniSlot(tiedAtSecond[1], 2, SIZE_FLANK, SW_FLANK, false)}
-        </View>
-      )}
-
-      {/* 3+ members, normal: [#2] [#1 elevated] [#3] */}
-      {memberCount >= 3 && hasSoloLeader && tiedAtSecond.length < 2 && (
-        <View style={miniRingS.row}>
-          {sorted[1] && miniSlot(sorted[1], 2, SIZE_FLANK, SW_FLANK, false)}
-          {miniSlot(sorted[0], 1, SIZE_LEADER, SW_LEADER, true)}
-          {sorted[2] && miniSlot(sorted[2], 3, SIZE_FLANK, SW_FLANK, false)}
-        </View>
-      )}
-
-      {/* Strip: ranks 4+ in normal layout only */}
-      {stripVisible.length > 0 && (
-        <View style={miniRingS.strip}>
-          {stripVisible.map((entry, i) => {
-            const pct = miniRingPct(entry.weekly_points, maxPoints);
-            const isMe = entry.user_id === currentUser?.id;
-            const stripName = isMe && currentUser ? currentUser.displayName : entry.display_name;
-            const stripAvatar = isMe && currentUser ? currentUser.avatarUrl : entry.avatar_url;
-            return (
-              <PackMemberDisplay
-                key={entry.user_id}
-                userId={entry.user_id}
-                displayName={stripName}
-                progressPct={pct}
-                rank={i + 4}
-                currentUserId={currentUserId}
-                leaderId={leaderId}
-                size={STRIP_SIZE_CARD}
-                strokeWidth={STRIP_SW_CARD}
-                showName={false}
-                avatarUrl={stripAvatar}
-              />
-            );
-          })}
-          {stripMore > 0 && (
-            <View style={miniRingS.morePill}>
-              <Text style={miniRingS.morePillText}>+{stripMore}</Text>
-            </View>
-          )}
-        </View>
-      )}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={miniRingS.scrollContent}
+      >
+        {sorted.map((entry) => (
+          <MemberCard
+            key={entry.user_id}
+            entry={entry}
+            maxPoints={maxPoints}
+            currentUserId={currentUserId}
+            leaderId={leaderId}
+            currentUser={currentUser}
+          />
+        ))}
+      </ScrollView>
     </View>
   );
 }
 
 const miniRingS = StyleSheet.create({
   wrapper: { paddingVertical: 14 },
-  row: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "flex-end",
+  solo: {
+    alignItems: "center",
+    paddingVertical: 4,
+  },
+  scrollContent: {
+    paddingHorizontal: 4,
+    paddingVertical: 4,
     gap: 12,
-  },
-  elevated: { marginBottom: 10 },
-  strip: {
-    flexDirection: "row",
-    justifyContent: "center",
     alignItems: "center",
-    flexWrap: "nowrap",
-    gap: 10,
-    marginTop: 10,
   },
-  morePill: {
-    backgroundColor: C.surfaceRaised,
-    borderRadius: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderWidth: 0.5,
-    borderColor: C.border,
+  memberCard: {
     alignItems: "center",
-    justifyContent: "center",
+    width: 88,
+    gap: 4,
   },
-  morePillText: {
+  memberPts: {
     fontSize: 11,
-    fontWeight: "700",
     color: C.textSecondary,
+    fontWeight: "500",
+    textAlign: "center",
   },
 });
 
@@ -435,23 +401,29 @@ function DarkPackCard({
     });
   })();
 
-  const myIndex = scores.findIndex((s) => s.user_id === currentUserId);
-  const myScore = myIndex >= 0 ? scores[myIndex] : null;
-
-  // When the current user is leading and no one else has logged yet, show
-  // context-appropriate copy rather than the generic "Leading by N pts".
-  const onlyTopHasScored =
-    scores.length > 1 &&
-    (scores[0]?.weekly_points ?? 0) > 0 &&
-    scores.slice(1).every((s) => s.weekly_points === 0);
-  const statusLine =
-    onlyTopHasScored && scores[0]?.user_id === currentUserId
-      ? "You're leading · Others haven't logged yet"
-      : buildRankStatus(scores, currentUserId);
-  const urgency = data
+  const statusLine = buildRankStatus(scores, currentUserId);
+  const rawUrgency = data
     ? buildUrgencyHint(scores, currentUserId, packDailyMax(pack), data.runEnd)
     : null;
+  // Pass 21a-polish: keep only time-pressure hints, drop competitive filler
+  // ("can still catch up", "One strong day…"). End-of-day pressure has real
+  // utility; competitive filler doesn't carry weight at this surface.
+  // KEEP IN SYNC with src/lib/competitionCopy.ts buildUrgencyHint time outputs.
+  // Brittle string-match — see backlog: refactor buildUrgencyHint to return
+  // a typed result { kind: 'time_pressure' | 'competitive_filler', text }
+  // when that helper gets revisited for voice work.
+  const urgency =
+    rawUrgency &&
+    (rawUrgency.endsWith("h left") || rawUrgency === "Final day")
+      ? rawUrgency
+      : null;
   const hasActivity = scores.length > 0;
+
+  // Daily delta footer: prefer the optimistic store (updates immediately on
+  // log) over the DB-fetched value (cold-launch source of truth). Hide
+  // entirely when zero — empty state shouldn't read as a celebratory delta.
+  const todayPts = myOptimistic?.total_points ?? data?.myTodayPoints ?? 0;
+  const showDelta = todayPts > 0;
 
   return (
     <TouchableOpacity
@@ -505,14 +477,12 @@ function DarkPackCard({
           <Text style={card.status}>{statusLine}</Text>
           {urgency && <Text style={card.urgency}>{urgency}</Text>}
 
-          {/* Row 4 — Your weekly total (only when user has scored) */}
-          {myScore && (
+          {/* Row 4 — Today's points delta (hidden when 0) */}
+          {/* TODO(voice review): "+{N} today" placeholder copy. */}
+          {showDelta && (
             <>
               <View style={card.divider} />
-              <View style={card.myRow}>
-                <Text style={card.myName}>You</Text>
-                <Text style={card.myPts}>{myScore.weekly_points} pts</Text>
-              </View>
+              <Text style={card.todayDelta}>+{todayPts} today</Text>
             </>
           )}
         </>
@@ -590,20 +560,11 @@ const card = StyleSheet.create({
     backgroundColor: C.border,
     marginVertical: 10,
   },
-  myRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  myName: {
+  todayDelta: {
     fontSize: 13,
     fontWeight: "600",
     color: C.accent,
-  },
-  myPts: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: C.textPrimary,
+    textAlign: "left",
   },
   victoryBanner: {
     flexDirection: "row",
@@ -672,10 +633,16 @@ export default function Home() {
   // Refetch the user's pack list when home regains focus, so edits or
   // pack creates/deletes from other screens show immediately on return.
   // Mirrors the useRefreshCurrentUserOnFocus pattern.
+  //
+  // Pass 21c-followup: read-only modals (e.g., app/user/[id].tsx) signal
+  // via consumeSuppressFlag() that no parent mutation occurred — skip
+  // the refetch for one cycle. Default behavior (no signal) unchanged.
+  const consumeSuppressFlag = useConsumeSuppressFlag();
   useFocusEffect(
     useCallback(() => {
+      if (consumeSuppressFlag()) return;
       refetch();
-    }, [refetch]),
+    }, [refetch, consumeSuppressFlag]),
   );
 
   const handleNewPack = () => {
@@ -727,7 +694,7 @@ export default function Home() {
         const [scoresResult, usersResult] = await Promise.all([
           supabase
             .from("daily_scores")
-            .select("user_id, total_points")
+            .select("user_id, total_points, score_date")
             .eq("run_id", run.id),
           supabase
             .from("users")
@@ -735,10 +702,18 @@ export default function Home() {
             .in("id", memberIds),
         ]);
 
-        // Aggregate weekly totals per user across all run dates
+        // Aggregate weekly totals per user across all run dates, and extract
+        // the current user's today-only points for the "+N today" footer
+        // delta. Pack timezone resolves the right calendar day even if the
+        // device clock differs.
+        const today = packToday(pack.timezone ?? "UTC");
         const totals: Record<string, number> = {};
+        let myTodayPoints = 0;
         (scoresResult.data ?? []).forEach((row) => {
           totals[row.user_id] = (totals[row.user_id] ?? 0) + row.total_points;
+          if (row.user_id === user?.id && row.score_date === today) {
+            myTodayPoints = row.total_points;
+          }
         });
 
         // Build name/avatar maps
@@ -790,6 +765,7 @@ export default function Home() {
           scores: sorted,
           runStart: run.start_date,
           runEnd: run.end_date,
+          myTodayPoints,
         };
       }),
     );

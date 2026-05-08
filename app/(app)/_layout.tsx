@@ -16,8 +16,62 @@ import { Toast } from "../../src/components/Toast";
 import { rolloverExpiredRuns } from "../../src/lib/runRollover";
 import { useCurrentUser } from "../../src/context/CurrentUserContext";
 
+// Pass 24: routes that should suppress the tab bar entirely. Pack create is a
+// focused-task screen — converting from modal to pushed lost the modal's
+// natural tab-bar coverage, so we hide it here instead.
+//
+// Pass 26-followup: walked the matcher down to the leaf so it works
+// regardless of how deep expo-router nests the active screen under the
+// active tab. Single-level lookup missed pack/create (the screen lives
+// inside a Stack inside the pack tab; a single nested.routes[idx] read
+// resolves to the Stack route, not the leaf). The recursive findLeafName
+// descends until there's no further nested state.
+//
+// Future maintainers: leaf-name match doesn't disambiguate routes that
+// share a leaf basename (e.g., pack/[id] vs pack/edit/[id] — both leaf
+// "[id]"). For Pass 26-followup we only suppress "create" which has a
+// unique leaf; if the set grows to include shared basenames, switch to
+// a path-based match (collect names while descending and join).
+const TAB_BAR_HIDDEN_ROUTES = new Set<string>(["create"]);
+
+interface NestableState {
+  index: number;
+  routes: {
+    name: string;
+    state?: NestableState;
+    params?: Record<string, unknown>;
+  }[];
+}
+
+// When a tab's nested stack hasn't been hydrated yet (e.g., first-time
+// navigation to /pack/create from Home), route.state is absent and the
+// target screen is encoded as route.params.screen instead. Without that
+// fallback, this function returns the parent tab name ("pack") rather
+// than the actual target screen ("create"), which breaks tab bar
+// suppression for screens listed in TAB_BAR_HIDDEN_ROUTES.
+function findLeafName(state: NestableState | undefined): string | undefined {
+  if (!state) return undefined;
+  const route = state.routes[state.index];
+  if (!route) return undefined;
+  if (route.state) return findLeafName(route.state);
+  if (
+    route.params &&
+    typeof (route.params as { screen?: unknown }).screen === "string"
+  ) {
+    return (route.params as { screen: string }).screen;
+  }
+  return route.name;
+}
+
+function isTabBarHiddenRoute(state: BottomTabBarProps["state"]): boolean {
+  const leaf = findLeafName(state as unknown as NestableState);
+  return leaf ? TAB_BAR_HIDDEN_ROUTES.has(leaf) : false;
+}
+
 function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const [logSheetVisible, setLogSheetVisible] = useState(false);
+
+  if (isTabBarHiddenRoute(state)) return null;
 
   return (
     <>

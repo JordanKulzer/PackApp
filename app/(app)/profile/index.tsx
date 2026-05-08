@@ -17,13 +17,12 @@ import {
 import { ConfirmDialog } from "../../../src/components/ConfirmDialog";
 import { showToast } from "../../../src/lib/toast";
 import * as Application from "expo-application";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useAuthStore } from "../../../src/stores/authStore";
 import { useAuth } from "../../../src/hooks/useAuth";
 import { useHealthKit } from "../../../src/hooks/useHealthKit";
 import { colors } from "../../../src/theme/colors";
-import { PointsBadge } from "../../../src/components/PointsBadge";
 import {
   AppleHealthIcon,
   OuraIcon,
@@ -40,7 +39,13 @@ import {
   deleteAvatar,
 } from "../../../src/lib/photoUpload";
 import { EditableAvatar } from "../../../src/components/EditableAvatar";
-import { profile as profileCopy } from "../../../src/constants/strings";
+import {
+  profile as profileCopy,
+  userProfile,
+} from "../../../src/constants/strings";
+import { StreakLine } from "../../../src/components/profile/StreakLine";
+import { StatSheetRow } from "../../../src/components/profile/StatSheetRow";
+import { NavRow } from "../../../src/components/profile/NavRow";
 
 const C = {
   bg: "#0B0F14",
@@ -61,6 +66,17 @@ interface AllTimeStats {
   longestStreak: number;
   currentStreak: number;
   packsJoined: number;
+  totalSteps: number;
+  totalWorkouts: number;
+  totalCalories: number;
+  totalWaterOz: number;
+}
+
+// Pass 22 — comma-separated formatting for lifetime stat-sheet values.
+// Mirrors public profile's formatter (intentional duplication; one-line
+// helper, no shared util lift). Explicit en-US locale matches Pass 20e.
+function formatStatNumber(n: number): string {
+  return n.toLocaleString("en-US");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -203,7 +219,6 @@ export default function Profile() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [editNameVisible, setEditNameVisible] = useState(false);
-  const [deletingAccount, setDeletingAccount] = useState(false);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
 
@@ -274,6 +289,13 @@ export default function Profile() {
   const fetchProfile = useCallback(async () => {
     if (!user) return;
 
+    // Pass 22 — Self-profile shows true lifetime data across every pack
+    // the user has ever scored in. The public profile RPC scopes its
+    // totals through shared_packs (privacy boundary: viewers can only
+    // see what they could have witnessed). Numbers may diverge if this
+    // user has left packs that no longer overlap with a viewer's set.
+    // This divergence is intentional — the self surface is a personal
+    // record, the public surface is a privacy-gated relationship.
     const [profileResult, packsResult, scoresResult] = await Promise.all([
       supabase.from("users").select("*").eq("id", user.id).single(),
       supabase
@@ -284,7 +306,7 @@ export default function Profile() {
       supabase
         .from("daily_scores")
         .select(
-          "total_points, streak_days, score_date, steps_achieved, workout_achieved, calories_achieved, water_achieved",
+          "total_points, streak_days, score_date, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, workout_count, calories_count, water_oz_count",
         )
         .eq("user_id", user.id)
         .order("score_date", { ascending: true }),
@@ -298,6 +320,10 @@ export default function Profile() {
       (max, s) => Math.max(max, s.streak_days),
       0,
     );
+    const totalSteps = scores.reduce((sum, s) => sum + s.steps_count, 0);
+    const totalWorkouts = scores.reduce((sum, s) => sum + s.workout_count, 0);
+    const totalCalories = scores.reduce((sum, s) => sum + s.calories_count, 0);
+    const totalWaterOz = scores.reduce((sum, s) => sum + s.water_oz_count, 0);
 
     let currentStreak = 0;
     if (scores.length > 0) {
@@ -323,6 +349,10 @@ export default function Profile() {
       longestStreak,
       currentStreak,
       packsJoined: packsResult.count ?? 0,
+      totalSteps,
+      totalWorkouts,
+      totalCalories,
+      totalWaterOz,
     });
 
     setIsLoading(false);
@@ -446,184 +476,210 @@ export default function Profile() {
           )}
         </View>
 
-        {/* ── Stats ─────────────────────────────────────────────────────── */}
-        {/* Hide-until-earned: gate on totalDaysLogged > 0 so the moment a
-            user records anything (even before a streak builds), the grid
-            reveals. Four zeros on a fresh profile reads bleak; a single
-            instructional line is a kinder first impression. */}
+        {/* ── Streak line ──────────────────────────────────────────────────
+            Pass 22: same StreakLine primitive as public profile.
+            Reuses already-computed currentStreak + longestStreak from
+            AllTimeStats — no new queries, no recomputation.            */}
         {stats && stats.totalDaysLogged > 0 ? (
-          <View style={styles.statsGrid}>
-            <View style={styles.statCard}>
-              <PointsBadge points={stats.totalPoints} size="lg" highlight />
-              <Text style={styles.statLabel}>All-time Points</Text>
-            </View>
-            <View style={styles.statCard}>
-              <Text style={styles.statValue}>{stats.currentStreak}</Text>
-              <Text style={styles.statLabel}>Current Streak</Text>
-            </View>
-            <View style={styles.statCard}>
-              <Text style={styles.statValue}>{stats.longestStreak}</Text>
-              <Text style={styles.statLabel}>Best Streak</Text>
-            </View>
-            <View style={styles.statCard}>
-              <Text style={styles.statValue}>{stats.totalDaysLogged}</Text>
-              <Text style={styles.statLabel}>Days Logged</Text>
-            </View>
-          </View>
+          <StreakLine
+            currentStreak={stats.currentStreak}
+            bestStreak={stats.longestStreak}
+          />
         ) : stats ? (
           <Text style={styles.emptyStatsHint}>{profileCopy.emptyStatsHint}</Text>
         ) : null}
 
-        {/* ── Integrations ─────────────────────────────────────────────── */}
+        {/* ── Lifetime stat-sheet (Pass 22) ────────────────────────────────
+            Self-view adds Days Logged at the top — public-profile RPC
+            doesn't return that field. All four icons monochrome; color
+            reserved for competitive signal elsewhere.                 */}
+        {stats && stats.totalDaysLogged > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>{userProfile.section.lifetime}</Text>
+            <StatSheetRow
+              icon={
+                <Ionicons name="calendar-outline" size={18} color={C.textSecondary} />
+              }
+              label={userProfile.lifetime.daysLogged}
+              value={formatStatNumber(stats.totalDaysLogged)}
+            />
+            <StatSheetRow
+              icon={
+                <MaterialCommunityIcons
+                  name="shoe-print"
+                  size={18}
+                  color={C.textSecondary}
+                />
+              }
+              label={userProfile.lifetime.steps}
+              value={formatStatNumber(stats.totalSteps)}
+            />
+            <StatSheetRow
+              icon={
+                <MaterialCommunityIcons
+                  name="dumbbell"
+                  size={18}
+                  color={C.textSecondary}
+                />
+              }
+              label={userProfile.lifetime.workouts}
+              value={formatStatNumber(stats.totalWorkouts)}
+            />
+            <StatSheetRow
+              icon={
+                <MaterialCommunityIcons
+                  name="fire"
+                  size={18}
+                  color={C.textSecondary}
+                />
+              }
+              label={userProfile.lifetime.calories}
+              value={formatStatNumber(stats.totalCalories)}
+            />
+            <StatSheetRow
+              icon={<Ionicons name="water" size={18} color={C.textSecondary} />}
+              label={userProfile.lifetime.water}
+              value={formatStatNumber(stats.totalWaterOz)}
+              isLast
+            />
+          </View>
+        )}
+
+        {/* ── Integrations (Pass 22 — flattened to NavRow stat-sheet) ───── */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Integrations</Text>
-          <View style={styles.group}>
-            <TouchableOpacity
-              style={styles.row}
-              onPress={handleHealthKit}
-              activeOpacity={isAuthorized ? 1 : 0.7}
-              disabled={hkRequesting || hkSyncing}
-            >
-              <AppleHealthIcon />
-              <View style={styles.rowInfo}>
-                <Text style={styles.rowLabel}>Apple Health</Text>
-                <Text style={styles.rowDesc}>
-                  {hkSyncing
-                    ? "Syncing…"
-                    : isAuthorized
-                      ? "Connected"
-                      : "Connect to sync steps & workouts"}
-                </Text>
-              </View>
-              {hkRequesting || hkSyncing ? (
+          <NavRow
+            icon={<AppleHealthIcon />}
+            label="Apple Health"
+            subtitle={
+              hkSyncing
+                ? "Syncing…"
+                : isAuthorized
+                  ? "Connected"
+                  : "Connect to sync steps & workouts"
+            }
+            onPress={isAuthorized ? undefined : handleHealthKit}
+            disabled={hkRequesting || hkSyncing}
+            trailing={
+              hkRequesting || hkSyncing ? (
                 <ActivityIndicator size="small" color={C.textSecondary} />
               ) : (
                 <Text
                   style={[
-                    styles.rowValue,
-                    isAuthorized && styles.rowValueSuccess,
+                    styles.integrationStatus,
+                    isAuthorized && styles.integrationStatusSuccess,
                   ]}
                 >
                   {isAuthorized ? "✓" : "Connect"}
                 </Text>
-              )}
-            </TouchableOpacity>
-            <View style={styles.rowDivider} />
-            <View style={styles.row}>
-              <OuraIcon />
-              <View style={styles.rowInfo}>
-                <Text style={styles.rowLabel}>Oura Ring</Text>
-                <Text style={styles.rowDesc}>Coming soon</Text>
-              </View>
-              <Text style={styles.rowValue}>Soon</Text>
-            </View>
-            <View style={styles.rowDivider} />
-            <View style={styles.row}>
-              <WhoopIcon />
-              <View style={styles.rowInfo}>
-                <Text style={styles.rowLabel}>Whoop</Text>
-                <Text style={styles.rowDesc}>Coming soon</Text>
-              </View>
-              <Text style={styles.rowValue}>Soon</Text>
-            </View>
-          </View>
+              )
+            }
+          />
+          <NavRow
+            icon={<OuraIcon />}
+            label="Oura Ring"
+            subtitle="Coming soon"
+            trailing={<Text style={styles.integrationStatus}>Soon</Text>}
+          />
+          <NavRow
+            icon={<WhoopIcon />}
+            label="Whoop"
+            subtitle="Coming soon"
+            trailing={<Text style={styles.integrationStatus}>Soon</Text>}
+            isLast
+          />
         </View>
 
-        {/* ── Settings ─────────────────────────────────────────────────── */}
+        {/* ── Settings (Pass 22 — NavRow) ──────────────────────────────── */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Settings</Text>
-          <View style={styles.group}>
-            <TouchableOpacity
-              style={styles.row}
-              onPress={() => router.push("/profile/notifications")}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="notifications-outline" size={22} color="#8B949E" />
-              <View style={styles.rowInfo}>
-                <Text style={styles.rowLabel}>Notifications</Text>
-                <Text style={styles.rowDesc}>Manage what you hear about</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={C.textTertiary} />
-            </TouchableOpacity>
-          </View>
+          <NavRow
+            icon={
+              <Ionicons
+                name="notifications-outline"
+                size={22}
+                color={C.textSecondary}
+              />
+            }
+            label="Notifications"
+            subtitle="Manage what you hear about"
+            onPress={() => router.push("/profile/notifications")}
+            isLast
+          />
         </View>
 
-        {/* ── About / Legal ────────────────────────────────────────────── */}
+        {/* ── About / Legal (Pass 22 — NavRows) ────────────────────────── */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>About</Text>
-          <View style={styles.group}>
-            <TouchableOpacity
-              style={styles.row}
-              onPress={() => Linking.openURL("https://packapp.com/privacy")}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="shield-checkmark-outline" size={22} color="#8B949E" />
-              <View style={styles.rowInfo}>
-                <Text style={styles.rowLabel}>Privacy Policy</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={C.textTertiary} />
-            </TouchableOpacity>
-            <View style={styles.rowDivider} />
-            <TouchableOpacity
-              style={styles.row}
-              onPress={() => Linking.openURL("https://packapp.com/terms")}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="document-text-outline" size={22} color="#8B949E" />
-              <View style={styles.rowInfo}>
-                <Text style={styles.rowLabel}>Terms of Service</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={C.textTertiary} />
-            </TouchableOpacity>
-            <View style={styles.rowDivider} />
-            <TouchableOpacity
-              style={styles.row}
-              onPress={() => Linking.openURL("mailto:support@packapp.com")}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="help-circle-outline" size={22} color="#8B949E" />
-              <View style={styles.rowInfo}>
-                <Text style={styles.rowLabel}>Support</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={C.textTertiary} />
-            </TouchableOpacity>
-          </View>
+          <NavRow
+            icon={
+              <Ionicons
+                name="shield-checkmark-outline"
+                size={22}
+                color={C.textSecondary}
+              />
+            }
+            label="Privacy Policy"
+            onPress={() => Linking.openURL("https://packapp.com/privacy")}
+          />
+          <NavRow
+            icon={
+              <Ionicons
+                name="document-text-outline"
+                size={22}
+                color={C.textSecondary}
+              />
+            }
+            label="Terms of Service"
+            onPress={() => Linking.openURL("https://packapp.com/terms")}
+          />
+          <NavRow
+            icon={
+              <Ionicons
+                name="help-circle-outline"
+                size={22}
+                color={C.textSecondary}
+              />
+            }
+            label="Support"
+            onPress={() => Linking.openURL("mailto:support@packapp.com")}
+            isLast
+          />
         </View>
 
-        {/* ── Account ──────────────────────────────────────────────────── */}
+        {/* ── Account (Pass 22 → 22-polish: Sign Out + Delete Account
+                              both as NavRows; the outlined-red boxed
+                              Delete button has been retired) ─────── */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Account</Text>
-          <View style={styles.group}>
-            <TouchableOpacity
-              style={styles.row}
-              onPress={handleSignOut}
-              disabled={signingOut}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.rowLabel}>
-                {signingOut ? "Signing out…" : "Sign Out"}
-              </Text>
-            </TouchableOpacity>
-          </View>
+          <NavRow
+            icon={
+              <Ionicons
+                name="log-out-outline"
+                size={22}
+                color={C.textSecondary}
+              />
+            }
+            label={signingOut ? "Signing out…" : "Sign Out"}
+            onPress={handleSignOut}
+            disabled={signingOut}
+          />
 
-          {/* Delete Account — outside the rounded group, outlined-red CTA shape.
-              Visual severity matches the action (irreversible destruction);
-              row-with-Sign-Out below would equate it to a recoverable action.
-              The outlined treatment is the doorway; the destructive flow's
-              filled-red commit button is the actual point-of-no-return. */}
-          <TouchableOpacity
-            style={[
-              styles.deleteAccountBtn,
-              deletingAccount && styles.deleteAccountBtnDisabled,
-            ]}
+          {/* Delete Account — `dangerous` flips the label to danger red.
+              onPress navigates to /(app)/profile/delete-account, which is
+              a dedicated destructive-flow screen owning the actual
+              confirmation step + irreversible deletion. The visual
+              panic-box (red-bordered CTA) is gone; the destination
+              screen is the actual safeguard. */}
+          <NavRow
+            icon={
+              <Ionicons name="trash-outline" size={22} color={C.danger} />
+            }
+            label="Delete Account"
             onPress={handleDeleteAccount}
-            disabled={deletingAccount}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.deleteAccountBtnText}>
-              {deletingAccount ? "Deleting…" : "Delete Account"}
-            </Text>
-          </TouchableOpacity>
+            dangerous
+            isLast
+          />
         </View>
 
         {/* ── Version footer ────────────────────────────────────────────── */}
@@ -702,9 +758,7 @@ const styles = StyleSheet.create({
   },
   tierLineUpgrade: { color: C.accent, fontWeight: "600" },
 
-  // Stats
-  statsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
-  // Empty-state hint — replaces the four-zero stats grid when the user
+  // Empty-state hint — replaces the lifetime stat-sheet when the user
   // hasn't logged any activity yet. Single line, packmate voice.
   emptyStatsHint: {
     fontSize: 14,
@@ -714,21 +768,8 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     fontStyle: "italic",
   },
-  statCard: {
-    flex: 1,
-    minWidth: "45%",
-    backgroundColor: C.surface,
-    borderRadius: 14,
-    padding: 16,
-    alignItems: "center",
-    gap: 8,
-    borderWidth: 0.5,
-    borderColor: C.border,
-  },
-  statValue: { fontSize: 24, fontWeight: "700", color: C.textPrimary },
-  statLabel: { fontSize: 12, color: C.textSecondary, fontWeight: "500" },
 
-  // Sections
+  // Sections (Pass 22 — flat stat-sheet, no boxed groups)
   section: { gap: 8 },
   sectionTitle: {
     fontSize: 12,
@@ -738,48 +779,13 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginLeft: 4,
   },
-  group: {
-    backgroundColor: C.surface,
-    borderRadius: 16,
-    borderWidth: 0.5,
-    borderColor: C.border,
-    overflow: "hidden",
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    gap: 12,
-  },
-  rowDivider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: C.border,
-    marginLeft: 16,
-  },
-  rowInfo: { flex: 1 },
-  rowLabel: { fontSize: 15, fontWeight: "600", color: C.textPrimary },
-  rowDesc: { fontSize: 13, color: C.textSecondary, marginTop: 1 },
-  rowValue: { fontSize: 14, color: C.accent, fontWeight: "600" },
-  rowValueSuccess: { color: C.success },
-  deleteAccountBtn: {
-    height: 52,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: C.danger,
-    backgroundColor: "transparent",
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 20,
-  },
-  deleteAccountBtnText: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: C.danger,
-  },
-  deleteAccountBtnDisabled: {
-    opacity: 0.6,
-  },
+
+  // Integration trailing status text (used inside NavRow's `trailing` slot
+  // for "Connect" / "✓" / "Soon"). The connected `✓` flips to success green;
+  // the rest stay accent for affordance / secondary for "coming soon".
+  integrationStatus: { fontSize: 14, color: C.accent, fontWeight: "600" },
+  integrationStatusSuccess: { color: C.success },
+
   version: {
     fontSize: 12,
     color: C.textTertiary,

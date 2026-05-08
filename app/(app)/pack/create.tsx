@@ -6,13 +6,14 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
-  Switch,
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { useNavigation, CommonActions } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuthStore } from "../../../src/stores/authStore";
 import { supabase } from "../../../src/lib/supabase";
@@ -22,37 +23,26 @@ import { colors } from "../../../src/theme/colors";
 import { POINTS } from "../../../src/lib/scoring";
 import { getDeviceTimezone } from "../../../src/lib/packDates";
 import { onboarding } from "../../../src/constants/strings";
+import { ActivityToggleRow } from "../../../src/components/profile/ActivityToggleRow";
+import { ScoringInfoSheet } from "../../../src/components/ScoringInfoSheet";
+
+const C = {
+  bg: "#0B0F14",
+  surface: "#121821",
+  border: "#30363D",
+  textPrimary: "#E6EDF3",
+  textSecondary: "#8B949E",
+  textTertiary: "#484F58",
+  accent: colors.accent,
+} as const;
 
 function generateInviteCode(): string {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-interface ToggleRowProps {
-  label: string;
-  description: string;
-  value: boolean;
-  onValueChange: (v: boolean) => void;
-}
-
-function ToggleRow({ label, description, value, onValueChange }: ToggleRowProps) {
-  return (
-    <View style={styles.toggleRow}>
-      <View style={styles.toggleInfo}>
-        <Text style={styles.toggleLabel}>{label}</Text>
-        <Text style={styles.toggleDesc}>{description}</Text>
-      </View>
-      <Switch
-        value={value}
-        onValueChange={onValueChange}
-        trackColor={{ false: "#374151", true: colors.accent }}
-        thumbColor="#FFFFFF"
-      />
-    </View>
-  );
-}
-
 export default function CreatePack() {
   const router = useRouter();
+  const navigation = useNavigation();
   const user = useAuthStore((s) => s.user);
   const { isPro, effectivePackLimit } = useIsPro();
 
@@ -71,6 +61,7 @@ export default function CreatePack() {
   const [waterPoints, setWaterPoints] = useState(String(POINTS.water));
   const [editingPoints, setEditingPoints] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [showScoringInfo, setShowScoringInfo] = useState(false);
 
   const openPaywall = (trigger: string) => {
     analytics.gateHit(trigger);
@@ -83,6 +74,34 @@ export default function CreatePack() {
       return;
     }
     setWindow(opt);
+  };
+
+  // Pack tab is `href: null`; from inside it router.back() leaves the
+  // tab's nested state intact (Pass 24-followup-3 diagnosis). Apply the
+  // same fresh-key reset on Cancel as Pack Detail's Back / leave / delete
+  // handlers — see app/(app)/pack/[id].tsx for the full rationale.
+  const handleCancel = () => {
+    const parent = navigation.getParent();
+    if (!parent) {
+      router.replace("/(app)/home");
+      return;
+    }
+    const pre = parent.getState();
+    const homeIndex = pre.routes.findIndex((r) => r.name === "home");
+    parent.dispatch(
+      CommonActions.reset({
+        ...pre,
+        index: homeIndex >= 0 ? homeIndex : 0,
+        routes: pre.routes.map((r) =>
+          r.name === "pack"
+            ? {
+                name: "pack",
+                key: `pack-${Math.random().toString(36).slice(2)}`,
+              }
+            : r,
+        ),
+      }),
+    );
   };
 
   const handleCreate = async () => {
@@ -166,15 +185,63 @@ export default function CreatePack() {
     return String(Math.min(50, Math.max(1, n)));
   };
 
+  // Inline points-edit affordance for Pro users (steps/workouts/calories/water).
+  // Renders inside ActivityToggleRow's `expanded` slot below the optional
+  // target input. Editing state is managed by the parent (single
+  // editingPoints string keyed by activity name).
+  const renderPointsEditor = (
+    key: string,
+    value: string,
+    setValue: (v: string) => void,
+  ) => {
+    if (!isPro) return null;
+    if (editingPoints === key) {
+      return (
+        <View style={styles.pointsRow}>
+          <Text style={styles.pointsLabel}>Points:</Text>
+          <TextInput
+            style={styles.pointsInput}
+            keyboardType="number-pad"
+            value={value}
+            onChangeText={setValue}
+            onBlur={() => {
+              setValue(clampPoints(value));
+              setEditingPoints(null);
+            }}
+            autoFocus
+            maxLength={2}
+          />
+          <Text style={styles.pointsRange}>(1–50)</Text>
+        </View>
+      );
+    }
+    return (
+      <TouchableOpacity
+        style={styles.editPointsBtn}
+        onPress={() => setEditingPoints(key)}
+      >
+        <Text style={styles.editPointsText}>Edit points (+{value} pts)</Text>
+      </TouchableOpacity>
+    );
+  };
+
   return (
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
+      {/* 3-column header. Chevron + "Back" text invoke the Cancel handler;
+          "Create" stays right-aligned. Notifications-style chrome
+          (paddingTop: 60, title weight 700) within the 3-column structure. */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.dismiss()} style={styles.backBtn}>
-          <Text style={styles.backText}>Cancel</Text>
-        </TouchableOpacity>
+        <Pressable
+          onPress={handleCancel}
+          style={styles.backBtn}
+          hitSlop={{ top: 12, bottom: 12, left: 16, right: 12 }}
+        >
+          <Ionicons name="chevron-back" size={22} color={C.textPrimary} />
+          <Text style={styles.backText}>Back</Text>
+        </Pressable>
         <Text style={styles.headerTitle}>New Pack</Text>
         <TouchableOpacity
           onPress={handleCreate}
@@ -182,7 +249,7 @@ export default function CreatePack() {
           style={styles.saveBtn}
         >
           {isLoading ? (
-            <ActivityIndicator size="small" color={colors.accent} />
+            <ActivityIndicator size="small" color={C.accent} />
           ) : (
             <Text style={styles.saveBtnText}>Create</Text>
           )}
@@ -190,377 +257,367 @@ export default function CreatePack() {
       </View>
 
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
-        {/* Pack name */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Pack Name</Text>
-          <TextInput
-            style={styles.input}
-            placeholder={onboarding.firstPack.namePlaceholder}
-            placeholderTextColor="#9CA3AF"
-            value={name}
-            onChangeText={setName}
-            maxLength={40}
+        {/* Pass 28: single formStack for the whole form. All seven rows
+            (Pack Name, Competition Window, four activities, scoring teaser)
+            are direct children with uniform gap: 16 between them. In-row
+            stacking (label + subtitle + content) handled by fieldGroup
+            wrappers for the field rows; ActivityToggleRow handles its own
+            internal layout per the locked component contract. */}
+        <View style={styles.formStack}>
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>Pack Name</Text>
+            {/* TODO(voice review): subtitle copy provisional. */}
+            <Text style={styles.fieldSubtitle}>
+              Visible to everyone in the pack
+            </Text>
+            <TextInput
+              style={styles.nameInput}
+              placeholder={onboarding.firstPack.namePlaceholder}
+              placeholderTextColor={C.textTertiary}
+              value={name}
+              onChangeText={setName}
+              maxLength={40}
+            />
+          </View>
+
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>Competition Window</Text>
+            {/* TODO(voice review): subtitle copy provisional. */}
+            <Text style={styles.fieldSubtitle}>
+              How often the leaderboard resets
+            </Text>
+            <View style={styles.segmented}>
+              {(["weekly", "monthly"] as const).map((opt) => {
+                const locked = opt === "monthly" && !isPro;
+                const active = window === opt;
+                return (
+                  <TouchableOpacity
+                    key={opt}
+                    style={[styles.segment, active && styles.segmentActive]}
+                    onPress={() => handleWindowPress(opt)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.segmentInner}>
+                      <Text
+                        style={[
+                          styles.segmentText,
+                          active && styles.segmentTextActive,
+                        ]}
+                      >
+                        {opt === "weekly" ? "Weekly" : "Monthly"}
+                      </Text>
+                      {locked && (
+                        <Ionicons
+                          name="lock-closed"
+                          size={12}
+                          color={C.textTertiary}
+                          style={{ marginLeft: 4 }}
+                        />
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            {window === "monthly" && (
+              <Text style={styles.windowHint}>
+                Resets on the 1st of each month
+              </Text>
+            )}
+          </View>
+
+          <ActivityToggleRow
+            label="Steps"
+            description={`Target: ${stepTarget} steps (+${stepPoints} pts)`}
+            value={stepsEnabled}
+            onValueChange={setStepsEnabled}
+            expanded={
+              <>
+                <TextInput
+                  style={styles.inlineInput}
+                  placeholder="Step target"
+                  placeholderTextColor={C.textTertiary}
+                  keyboardType="number-pad"
+                  value={stepTarget}
+                  onChangeText={setStepTarget}
+                />
+                {renderPointsEditor("steps", stepPoints, setStepPoints)}
+              </>
+            }
           />
-        </View>
 
-        {/* Competition window */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Competition Window</Text>
-          <View style={styles.segmented}>
-            {(["weekly", "monthly"] as const).map((opt) => {
-              const locked = opt === "monthly" && !isPro;
-              return (
-                <TouchableOpacity
-                  key={opt}
-                  style={[styles.segment, window === opt && styles.segmentActive]}
-                  onPress={() => handleWindowPress(opt)}
-                >
-                  <View style={styles.segmentInner}>
-                    <Text style={[styles.segmentText, window === opt && styles.segmentTextActive]}>
-                      {opt === "weekly" ? "Weekly" : "Monthly"}
-                    </Text>
-                    {locked && (
-                      <Ionicons name="lock-closed" size={12} color="#6B7280" style={{ marginLeft: 4 }} />
-                    )}
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-          {window === "monthly" && (
-            <Text style={styles.windowHint}>Resets on the 1st of each month</Text>
-          )}
-        </View>
+          <ActivityToggleRow
+            label="Workouts"
+            description={`Any workout logged (+${workoutPoints} pts)`}
+            value={workoutsEnabled}
+            onValueChange={setWorkoutsEnabled}
+            expanded={
+              <>
+                <Text style={styles.workoutHint}>
+                  1 per day — any logged workout counts
+                </Text>
+                {renderPointsEditor(
+                  "workouts",
+                  workoutPoints,
+                  setWorkoutPoints,
+                )}
+              </>
+            }
+          />
 
-        {/* Activities */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Activities</Text>
-          <View style={styles.card}>
-            {/* Steps */}
-            <ToggleRow
-              label="Steps"
-              description={`Target: ${stepTarget} steps (+${stepPoints} pts)`}
-              value={stepsEnabled}
-              onValueChange={setStepsEnabled}
+          <ActivityToggleRow
+            label="Active Calories"
+            description={`Target: ${calorieTarget} cal (+${caloriePoints} pts)`}
+            value={caloriesEnabled}
+            onValueChange={setCaloriesEnabled}
+            expanded={
+              <>
+                <TextInput
+                  style={styles.inlineInput}
+                  placeholder="Calorie target"
+                  placeholderTextColor={C.textTertiary}
+                  keyboardType="number-pad"
+                  value={calorieTarget}
+                  onChangeText={setCalorieTarget}
+                />
+                {renderPointsEditor(
+                  "calories",
+                  caloriePoints,
+                  setCaloriePoints,
+                )}
+              </>
+            }
+          />
+
+          <ActivityToggleRow
+            label="Water"
+            description={`Target: ${waterTarget} oz (+${waterPoints} pts)`}
+            value={waterEnabled}
+            onValueChange={setWaterEnabled}
+            isLast
+            expanded={
+              <>
+                <TextInput
+                  style={styles.inlineInput}
+                  placeholder="Water target (oz)"
+                  placeholderTextColor={C.textTertiary}
+                  keyboardType="number-pad"
+                  value={waterTarget}
+                  onChangeText={setWaterTarget}
+                />
+                {renderPointsEditor("water", waterPoints, setWaterPoints)}
+              </>
+            }
+          />
+
+          {/* TODO(voice review): teaser line, provisional copy. */}
+          <Pressable
+            onPress={() => setShowScoringInfo(true)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={styles.scoringRow}
+          >
+            <Text style={styles.scoringText}>
+              Streaks multiply your points — keep showing up.
+            </Text>
+            <Ionicons
+              name="information-circle-outline"
+              size={16}
+              color={C.textTertiary}
             />
-            {stepsEnabled && (
-              <TextInput
-                style={styles.inlineInput}
-                placeholder="Step target"
-                placeholderTextColor="#9CA3AF"
-                keyboardType="number-pad"
-                value={stepTarget}
-                onChangeText={setStepTarget}
-              />
-            )}
-            {isPro && stepsEnabled && (
-              editingPoints === "steps" ? (
-                <View style={styles.pointsRow}>
-                  <Text style={styles.pointsLabel}>Points:</Text>
-                  <TextInput
-                    style={styles.pointsInput}
-                    keyboardType="number-pad"
-                    value={stepPoints}
-                    onChangeText={setStepPoints}
-                    onBlur={() => { setStepPoints(clampPoints(stepPoints)); setEditingPoints(null); }}
-                    autoFocus
-                    maxLength={2}
-                  />
-                  <Text style={styles.pointsRange}>(1–50)</Text>
-                </View>
-              ) : (
-                <TouchableOpacity style={styles.editPointsBtn} onPress={() => setEditingPoints("steps")}>
-                  <Text style={styles.editPointsText}>Edit points (+{stepPoints} pts)</Text>
-                </TouchableOpacity>
-              )
-            )}
-
-            <View style={styles.activityDivider} />
-
-            {/* Workouts */}
-            <ToggleRow
-              label="Workouts"
-              description={`Any workout logged (+${workoutPoints} pts)`}
-              value={workoutsEnabled}
-              onValueChange={setWorkoutsEnabled}
-            />
-            {workoutsEnabled && (
-              <View style={styles.workoutInfo}>
-                <Text style={styles.workoutInfoText}>1 per day — any logged workout counts</Text>
-              </View>
-            )}
-            {isPro && workoutsEnabled && (
-              editingPoints === "workouts" ? (
-                <View style={styles.pointsRow}>
-                  <Text style={styles.pointsLabel}>Points:</Text>
-                  <TextInput
-                    style={styles.pointsInput}
-                    keyboardType="number-pad"
-                    value={workoutPoints}
-                    onChangeText={setWorkoutPoints}
-                    onBlur={() => { setWorkoutPoints(clampPoints(workoutPoints)); setEditingPoints(null); }}
-                    autoFocus
-                    maxLength={2}
-                  />
-                  <Text style={styles.pointsRange}>(1–50)</Text>
-                </View>
-              ) : (
-                <TouchableOpacity style={styles.editPointsBtn} onPress={() => setEditingPoints("workouts")}>
-                  <Text style={styles.editPointsText}>Edit points (+{workoutPoints} pts)</Text>
-                </TouchableOpacity>
-              )
-            )}
-
-            <View style={styles.activityDivider} />
-
-            {/* Active Calories */}
-            <ToggleRow
-              label="Active Calories"
-              description={`Target: ${calorieTarget} cal (+${caloriePoints} pts)`}
-              value={caloriesEnabled}
-              onValueChange={setCaloriesEnabled}
-            />
-            {caloriesEnabled && (
-              <TextInput
-                style={styles.inlineInput}
-                placeholder="Calorie target"
-                placeholderTextColor="#9CA3AF"
-                keyboardType="number-pad"
-                value={calorieTarget}
-                onChangeText={setCalorieTarget}
-              />
-            )}
-            {isPro && caloriesEnabled && (
-              editingPoints === "calories" ? (
-                <View style={styles.pointsRow}>
-                  <Text style={styles.pointsLabel}>Points:</Text>
-                  <TextInput
-                    style={styles.pointsInput}
-                    keyboardType="number-pad"
-                    value={caloriePoints}
-                    onChangeText={setCaloriePoints}
-                    onBlur={() => { setCaloriePoints(clampPoints(caloriePoints)); setEditingPoints(null); }}
-                    autoFocus
-                    maxLength={2}
-                  />
-                  <Text style={styles.pointsRange}>(1–50)</Text>
-                </View>
-              ) : (
-                <TouchableOpacity style={styles.editPointsBtn} onPress={() => setEditingPoints("calories")}>
-                  <Text style={styles.editPointsText}>Edit points (+{caloriePoints} pts)</Text>
-                </TouchableOpacity>
-              )
-            )}
-
-            <View style={styles.activityDivider} />
-
-            {/* Water */}
-            <ToggleRow
-              label="Water"
-              description={`Target: ${waterTarget} oz (+${waterPoints} pts)`}
-              value={waterEnabled}
-              onValueChange={setWaterEnabled}
-            />
-            {waterEnabled && (
-              <TextInput
-                style={[styles.inlineInput, styles.lastInline]}
-                placeholder="Water target (oz)"
-                placeholderTextColor="#9CA3AF"
-                keyboardType="number-pad"
-                value={waterTarget}
-                onChangeText={setWaterTarget}
-              />
-            )}
-            {isPro && waterEnabled && (
-              editingPoints === "water" ? (
-                <View style={[styles.pointsRow, { marginBottom: 12 }]}>
-                  <Text style={styles.pointsLabel}>Points:</Text>
-                  <TextInput
-                    style={styles.pointsInput}
-                    keyboardType="number-pad"
-                    value={waterPoints}
-                    onChangeText={setWaterPoints}
-                    onBlur={() => { setWaterPoints(clampPoints(waterPoints)); setEditingPoints(null); }}
-                    autoFocus
-                    maxLength={2}
-                  />
-                  <Text style={styles.pointsRange}>(1–50)</Text>
-                </View>
-              ) : (
-                <TouchableOpacity style={[styles.editPointsBtn, { marginBottom: 12 }]} onPress={() => setEditingPoints("water")}>
-                  <Text style={styles.editPointsText}>Edit points (+{waterPoints} pts)</Text>
-                </TouchableOpacity>
-              )
-            )}
-          </View>
-
-        </View>
-
-        <View style={styles.scoreInfo}>
-          <Text style={styles.scoreInfoTitle}>Scoring</Text>
-          <Text style={styles.scoreInfoText}>
-            Days 1–2: 1x · Days 3–4: 1.25x · Days 5–6: 1.5x · Day 7+: 2x streak multiplier
-          </Text>
+          </Pressable>
         </View>
       </ScrollView>
+
+      <ScoringInfoSheet
+        visible={showScoringInfo}
+        onClose={() => setShowScoringInfo(false)}
+      />
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: "#0A0A0A" },
+  flex: { flex: 1, backgroundColor: C.bg },
+
+  // Header — 3-column. chevron+text on left, title centered, Create on right.
+  // Paddings/font sizing borrowed from Notifications header for chrome
+  // consistency across the profile-family of pushed pages.
   header: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     paddingHorizontal: 16,
     paddingTop: 60,
-    paddingBottom: 14,
-    backgroundColor: "#0A0A0A",
+    paddingBottom: 16,
+    backgroundColor: C.bg,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#1F2937",
+    borderBottomColor: C.border,
   },
-  backBtn: { minWidth: 60 },
-  backText: { fontSize: 16, color: "#9CA3AF" },
-  headerTitle: { fontSize: 17, fontWeight: "700", color: "#FFFFFF" },
-  saveBtn: { minWidth: 60, alignItems: "flex-end" },
-  saveBtnText: { fontSize: 16, fontWeight: "700", color: colors.accent },
-  scroll: { flex: 1 },
-  content: { padding: 16, gap: 24 },
-  section: { gap: 10 },
-  sectionHeader: {
+  backBtn: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    gap: 4,
+    minWidth: 80,
   },
-  sectionTitle: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#9CA3AF",
-    textTransform: "uppercase",
-    letterSpacing: 0.08 * 11,
-  },
-  proNote: { fontSize: 11, color: "#6B7280" },
-  input: {
-    height: 50,
-    borderWidth: 1,
-    borderColor: "#374151",
-    borderRadius: 12,
-    paddingHorizontal: 14,
+  backText: {
     fontSize: 16,
-    color: "#FFFFFF",
-    backgroundColor: "#1F2937",
+    color: C.textPrimary,
+    fontWeight: "400",
   },
+  headerTitle: {
+    flex: 1,
+    fontSize: 17,
+    fontWeight: "700",
+    color: C.textPrimary,
+    textAlign: "center",
+    letterSpacing: -0.3,
+  },
+  saveBtn: { minWidth: 80, alignItems: "flex-end" },
+  saveBtnText: { fontSize: 16, fontWeight: "700", color: C.accent },
+
+  scroll: { flex: 1 },
+  content: { padding: 16, paddingBottom: 40 },
+
+  // Pass 28: single parent stack for all rows on the form. Uniform gap: 16
+  // produces consistent row-boundary rhythm across Pack Name, Competition
+  // Window, the four activity toggle rows, and the scoring teaser.
+  // ActivityToggleRow keeps its internal paddingVertical (Pass 26 component
+  // contract); per-row content edges sit slightly further apart on activity
+  // rows than on field rows as a result, but the row-boundary rhythm is
+  // uniform.
+  formStack: { gap: 16 },
+
+  // Field-level label sitting above an input. Brightness matches
+  // ActivityToggleRow's label so the field labels and the activity row
+  // labels read at the same hierarchy level.
+  fieldLabel: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: C.textPrimary,
+    marginLeft: 4,
+  },
+  // Pass 28: secondary subtitle sitting under the field label. Matches
+  // ActivityToggleRow's `description` style exactly so field rows and
+  // activity rows read at the same brightness level for their helper copy.
+  fieldSubtitle: {
+    fontSize: 13,
+    color: C.textSecondary,
+    marginTop: 2,
+    marginLeft: 4,
+  },
+  // Wrapper around a single field-label + subtitle + content stack. Tight
+  // gap groups the trio visually as one row; the surrounding formStack's
+  // gap separates one fieldGroup from the next.
+  fieldGroup: {
+    gap: 6,
+  },
+
+  // Pack Name — Pass 26-followup-2 subtle-box treatment. Full-perimeter
+  // hairline + transparent background restores "this is editable"
+  // affordance without the heavy boxed treatment from pre-Pass-26.
+  // Matches the segmented control's outlined-container aesthetic family.
+  // Pass 28: marginBottom property dropped — formStack.gap: 16 now
+  // handles between-row spacing uniformly.
+  nameInput: {
+    fontSize: 16,
+    color: C.textPrimary,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: C.border,
+    borderRadius: 8,
+    backgroundColor: "transparent",
+  },
+
+  // Competition Window — segmented control preserved (recognizable iOS
+  // pattern for binary choice). Heavy boxed wrapper dropped; segments now
+  // sit in a transparent track with the active segment marking itself.
   segmented: {
     flexDirection: "row",
-    backgroundColor: "#1F2937",
-    borderRadius: 10,
-    padding: 3,
+    gap: 8,
   },
   segment: {
     flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
+    paddingVertical: 10,
+    borderRadius: 10,
     alignItems: "center",
-  },
-  segmentActive: { backgroundColor: "#374151" },
-  segmentInner: { flexDirection: "row", alignItems: "center" },
-  segmentText: { fontSize: 14, fontWeight: "600", color: "#9CA3AF" },
-  segmentTextActive: { color: "#FFFFFF" },
-  windowHint: { fontSize: 12, color: "#6B7280", marginTop: -4 },
-  card: {
-    backgroundColor: "#111827",
-    borderRadius: 14,
-    overflow: "hidden",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#1F2937",
+    borderColor: C.border,
+    backgroundColor: "transparent",
   },
-  toggleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#1F2937",
+  segmentActive: {
+    backgroundColor: C.surface,
+    borderColor: C.textSecondary,
   },
-  toggleInfo: { flex: 1, gap: 1 },
-  toggleLabel: { fontSize: 15, fontWeight: "600", color: "#FFFFFF" },
-  toggleDesc: { fontSize: 12, color: "#9CA3AF" },
+  segmentInner: { flexDirection: "row", alignItems: "center" },
+  segmentText: { fontSize: 14, fontWeight: "600", color: C.textSecondary },
+  segmentTextActive: { color: C.textPrimary },
+  windowHint: {
+    fontSize: 12,
+    color: C.textTertiary,
+    marginLeft: 4,
+    marginTop: 2,
+  },
+
+  // Activity expanded-slot styles. Pass 26-followup-2: target inputs use
+  // the same subtle-box treatment as nameInput. Mirrors Pack Name's
+  // affordance pattern; eliminates the bottom-hairline-only flatness that
+  // read as display values rather than editable inputs. Workouts hint
+  // (workoutHint below) stays plain text — no input affordance there.
   inlineInput: {
-    marginHorizontal: 16,
-    marginBottom: 8,
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: "#374151",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
     fontSize: 15,
-    color: "#FFFFFF",
-    backgroundColor: "#0A0A0A",
-  },
-  inputLocked: { color: "#6B7280", opacity: 0.6 },
-  lastInline: { marginBottom: 12 },
-  activityDivider: {
-    height: 0.5,
-    backgroundColor: "#374151",
-    marginVertical: 8,
-  },
-  workoutInfo: {
-    marginHorizontal: 16,
-    marginBottom: 8,
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: "#374151",
-    borderRadius: 8,
+    color: C.textPrimary,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    backgroundColor: "#0A0A0A",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: C.border,
+    borderRadius: 8,
+    backgroundColor: "transparent",
   },
-  workoutInfoText: { fontSize: 13, color: "#6B7280" },
+  workoutHint: {
+    fontSize: 13,
+    color: C.textTertiary,
+    marginTop: 4,
+    marginLeft: 4,
+  },
   editPointsBtn: {
-    marginHorizontal: 16,
-    marginBottom: 8,
     paddingVertical: 4,
   },
-  editPointsText: { fontSize: 12, color: colors.accent },
+  editPointsText: { fontSize: 12, color: C.accent },
   pointsRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginHorizontal: 16,
-    marginBottom: 8,
     marginTop: 4,
     gap: 8,
   },
-  pointsLabel: { fontSize: 13, color: "#9CA3AF" },
+  pointsLabel: { fontSize: 13, color: C.textSecondary },
   pointsInput: {
     width: 52,
     borderWidth: 1,
-    borderColor: colors.accent,
+    borderColor: C.accent,
     borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 5,
     fontSize: 14,
-    color: "#FFFFFF",
-    backgroundColor: "#0A0A0A",
+    color: C.textPrimary,
+    backgroundColor: "transparent",
     textAlign: "center",
   },
-  pointsRange: { fontSize: 11, color: "#6B7280" },
-  upgradeHint: {
+  pointsRange: { fontSize: 11, color: C.textTertiary },
+
+  // Scoring — Pass 26-followup-3-followup-2: whole-row Pressable wraps the
+  // teaser text + trailing info icon. flex: 1 on scoringText pushes the
+  // icon to the row's trailing edge regardless of text length and lets
+  // long copy wrap correctly inside the row.
+  scoringRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 4,
+    gap: 8,
   },
-  upgradeHintText: { fontSize: 12, color: "#6B7280" },
-  scoreInfo: {
-    backgroundColor: "#111827",
-    borderRadius: 12,
-    padding: 14,
-    gap: 4,
-    borderLeftWidth: 3,
-    borderLeftColor: colors.accent,
+  scoringText: {
+    flex: 1,
+    fontSize: 13,
+    color: C.textTertiary,
+    lineHeight: 20,
+    marginLeft: 4,
   },
-  scoreInfoTitle: { fontSize: 13, fontWeight: "700", color: "#9CA3AF" },
-  scoreInfoText: { fontSize: 13, color: "#9CA3AF", lineHeight: 18 },
 });

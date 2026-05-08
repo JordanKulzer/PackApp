@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  Switch,
   TouchableOpacity,
   ActivityIndicator,
 } from "react-native";
@@ -13,14 +12,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuthStore } from "../../../src/stores/authStore";
 import { supabase } from "../../../src/lib/supabase";
 import { colors } from "../../../src/theme/colors";
+import { ToggleRow } from "../../../src/components/profile/ToggleRow";
 
 const C = {
   bg: "#0B0F14",
-  surface: "#121821",
-  surfaceRaised: "#1C2333",
-  border: "#30363D",
   textPrimary: "#E6EDF3",
-  textSecondary: "#8B949E",
   textTertiary: "#484F58",
   accent: colors.self,
 } as const;
@@ -126,25 +122,16 @@ export default function NotificationsScreen() {
       ) : (
         <ScrollView contentContainerStyle={styles.content}>
           <Text style={styles.sectionTitle}>Activity</Text>
-          <View style={styles.group}>
-            {PREFS.map((pref, i) => (
-              <View
-                key={pref.key}
-                style={[styles.row, i < PREFS.length - 1 && styles.rowBorder]}
-              >
-                <View style={styles.rowText}>
-                  <Text style={styles.rowLabel}>{pref.label}</Text>
-                  <Text style={styles.rowDesc}>{pref.desc}</Text>
-                </View>
-                <Switch
-                  value={prefs[pref.key] ?? true}
-                  onValueChange={(v) => handleToggle(pref.key, v)}
-                  trackColor={{ false: C.surfaceRaised, true: C.accent }}
-                  thumbColor="#FFFFFF"
-                />
-              </View>
-            ))}
-          </View>
+          {PREFS.map((pref, i) => (
+            <ToggleRow
+              key={pref.key}
+              label={pref.label}
+              subtitle={pref.desc}
+              value={prefs[pref.key] ?? true}
+              onValueChange={(v) => handleToggle(pref.key, v)}
+              isLast={i === PREFS.length - 1}
+            />
+          ))}
 
           <Text style={styles.footer}>
             You'll only receive notifications for events in packs you belong to.
@@ -184,27 +171,6 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     marginLeft: 4,
   },
-  group: {
-    backgroundColor: C.surface,
-    borderRadius: 16,
-    borderWidth: 0.5,
-    borderColor: C.border,
-    overflow: "hidden",
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    gap: 12,
-  },
-  rowBorder: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: C.border,
-  },
-  rowText: { flex: 1 },
-  rowLabel: { fontSize: 15, fontWeight: "600", color: C.textPrimary },
-  rowDesc: { fontSize: 13, color: C.textSecondary, marginTop: 1 },
   footer: {
     fontSize: 12,
     color: C.textTertiary,

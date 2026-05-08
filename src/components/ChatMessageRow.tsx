@@ -18,6 +18,7 @@ import {
   Pressable,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import type { ChatMessage } from "../types/database";
 import type { Reactor } from "../hooks/useActivityFeed";
 import type { AnchorPosition } from "./MessageActionMenu";
@@ -49,6 +50,7 @@ export function ChatMessageRow({
   onToggleReaction,
 }: Props) {
   const isMe = message.user_id === currentUserId;
+  const router = useRouter();
   const authorName = formatName(message.author.display_name);
   const initial = getInitial(authorName);
   const showActions = !message.is_deleted;
@@ -119,7 +121,14 @@ export function ChatMessageRow({
       {isGrouped ? (
         <View style={s.avatarSpacer} />
       ) : (
-        <View style={s.avatar}>
+        <Pressable
+          style={s.avatar}
+          onPress={() => {
+            router.push(`/user/${message.user_id}` as any);
+          }}
+          hitSlop={4}
+          accessibilityRole="button"
+        >
           {message.author.avatar_url ? (
             <Image
               source={{ uri: message.author.avatar_url }}
@@ -128,7 +137,7 @@ export function ChatMessageRow({
           ) : (
             <Text style={s.avatarInitial}>{initial}</Text>
           )}
-        </View>
+        </Pressable>
       )}
       <View style={s.content}>
         {!isGrouped && (

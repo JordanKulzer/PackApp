@@ -52,7 +52,12 @@ export default function FirstPack() {
 
   const handleCreatePack = async () => {
     await finish();
-    router.replace("/(app)/pack/create");
+    // Pass 24: build the back-stack as Home → create so Cancel/back from
+    // create resolves to Home (not back into a completed-onboarding zombie
+    // state). Replace onboarding root with Home, then push create on top
+    // in the next frame so the replace commits before the push.
+    router.replace("/(app)/home");
+    requestAnimationFrame(() => router.push("/(app)/pack/create"));
   };
 
   // Pass 14 — Open the JoinPackModal in place rather than routing to Home

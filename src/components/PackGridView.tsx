@@ -11,6 +11,7 @@ import {
   Easing,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import { PackMemberDisplay } from "./PackMemberDisplay";
 import { POINTS, WORKOUT_MAX_DAILY } from "../lib/scoring";
@@ -291,6 +292,7 @@ function RankRow({
   const ringSize = isLeader ? 80 : 70;
   const ringStroke = isLeader ? 8 : 7;
   const pct = ringPct(entry.weekly_points, pack, activeRun);
+  const router = useRouter();
   return (
     <TouchableOpacity
       style={[
@@ -306,7 +308,18 @@ function RankRow({
       >
         #{entry.rank}
       </Text>
-      <View style={s.rowAvatar}>
+      {/* Avatar is its own tap target — opens the public user profile
+          (Pass 21b). Row body's onPress still expands the per-goal
+          breakdown (Pass 18-C.1). React Native routes the avatar tap to
+          this child handler; row body taps fall through to the parent. */}
+      <TouchableOpacity
+        style={s.rowAvatar}
+        onPress={() => {
+          router.push(`/user/${entry.user_id}` as any);
+        }}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+      >
         <PackMemberDisplay
           userId={entry.user_id}
           displayName={entry.display_name}
@@ -321,7 +334,7 @@ function RankRow({
           showName={false}
           avatarUrl={entry.avatar_url}
         />
-      </View>
+      </TouchableOpacity>
       <View style={s.rowCenter}>
         <Text style={[s.rowName, isMe && s.nameSelf]} numberOfLines={1}>
           {isLeader && "👑 "}

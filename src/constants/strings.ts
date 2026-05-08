@@ -415,6 +415,83 @@ export const packEdit = {
 } as const;
 
 /* ============================================================
+ * User Profile (Pass 21b) — placeholder copy, defer to voice review.
+ * Public profile of any user the caller shares an active pack with.
+ * Stats are scoped to shared packs only.
+ * ============================================================ */
+export const userProfile = {
+  screen: {
+    title: "Profile",
+    close: "Close",
+    memberSince: "Joined {date}",
+  },
+  stats: {
+    // Pass 21c — streaks row + 2x2 fitness totals.
+    currentStreakLabel: "Current Streak",
+    bestStreakLabel: "Best Streak",
+    stepsLabel: "steps",
+    workoutsLabel: "workouts",
+    caloriesLabel: "cal",
+    waterLabel: "oz water",
+    // Legacy — kept as orphans for old-client compat during rollout.
+    // Mirrors the queueHint orphan precedent from Pass 20e.
+    streakLabel: "Streak",
+    pointsLabel: "Points",
+    packsInCommonLabel: "Packs in common",
+    // Self-view variant — when the caller is viewing their own profile.
+    packsInCommonSelfLabel: "In packs",
+  },
+  // Footer text below the fitness grid (Pass 21c).
+  // Singular/plural handled per-variant; self vs other variant per
+  // D-FOOTER-COPY decision matrix.
+  // Legacy (Pass 21c orphans — kept per Pass 20e precedent).
+  footer: {
+    otherOne: "1 pack in common",
+    otherMany: "{count} packs in common",
+    selfOne: "1 pack",
+    selfMany: "{count} packs",
+  },
+  // Pass 21d additions — streak line + sectioned shared-packs/lifetime layout.
+  streakLine: {
+    dayStreak: "{count} day streak",
+    bestSuffix: "best {count}",
+  },
+  section: {
+    sharedPacks: "Shared packs",
+    sharedPack: "Shared pack",
+    yourPacks: "Your packs",
+    yourPack: "Your pack",
+    lifetime: "Lifetime",
+  },
+  headToHead: {
+    ahead: "You +{count}",
+    behind: "Behind {count}",
+    tied: "Tied",
+    noActiveRun: "No active run",
+    // Voice review queue: alternatives "#2 of 5", "Rank 2 of 5", "2nd / 5".
+    selfRank: "{rank}{ord} of {count}",
+  },
+  lifetime: {
+    // TODO(voice review): Pass 22 added daysLogged for self-profile
+    // 5-row stat-sheet. Public profile uses 4 rows (no daysLogged).
+    daysLogged: "Days Logged",
+    steps: "Steps",
+    workouts: "Workouts",
+    calories: "Calories burned",
+    water: "Water",
+  },
+  disclosure: {
+    moreFmt: "+ {count} more",
+  },
+  errors: {
+    notVisible: "You don't share a pack with this user.",
+    notFound: "Profile not found.",
+    network: "Couldn't load profile. Try again.",
+    retry: "Try again",
+  },
+} as const;
+
+/* ============================================================
  * Achievements — full catalog
  * ============================================================ */
 export interface Achievement {

@@ -20,6 +20,8 @@ import {
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
+import { useNavigation, CommonActions } from "@react-navigation/native";
+import { useConsumeSuppressFlag } from "../../../src/context/ModalMutationContext";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ConfirmDialog } from "../../../src/components/ConfirmDialog";
 import {
@@ -1927,6 +1929,8 @@ const chatTabS = StyleSheet.create({
 export default function PackScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  // Pass 24-followup-3 verification round — used by handleBack below.
+  const navigation = useNavigation();
   const user = useAuthStore((s) => s.user);
   useRefreshCurrentUserOnFocus();
   const { isPro } = useIsPro();
@@ -1956,21 +1960,33 @@ export default function PackScreen() {
     name: string;
   } | null>(null);
 
-  // Reset to Compete tab every time this screen is focused
+  // Pass 21c-followup: read-only modals (e.g., app/user/[id].tsx) signal
+  // via consumeSuppressFlag() that no parent mutation occurred — skip the
+  // tab-reset AND the refetch for one cycle. Default behavior on every
+  // OTHER focus event (initial pack navigation, return from a mutating
+  // modal like Pack Edit, swipe-back from another screen) is unchanged.
+  //
+  // The flag is consumed exactly ONCE per dismiss. We combine the two
+  // focus side effects (tab-reset + refetch) into a single useFocusEffect
+  // so a single consumeSuppressFlag() call gates both — splitting them
+  // would have the first call drain the flag and the second see false,
+  // breaking the suppression for whichever effect runs second.
+  //
+  // ⚠️ DO NOT simplify away the flag check here. The whole point is that
+  // dismissing a read-only modal (chat avatar → profile, leaderboard
+  // avatar → profile) should NOT reset the tab to Compete or refetch
+  // pack data. Removing the gate regresses Pass 21c-followup.
+  const consumeSuppressFlag = useConsumeSuppressFlag();
   useFocusEffect(
     useCallback(() => {
+      if (consumeSuppressFlag()) return;
+      // Reset to Compete tab + scroll pager to x=0
       setActiveTab("compete");
       pageScrollRef.current?.scrollTo({ x: 0, animated: false });
-    }, []),
-  );
-
-  // Refetch pack data when the screen regains focus, so name and goal-target
-  // edits made via the Edit Pack modal show immediately on dismissal.
-  // Mirrors the useRefreshCurrentUserOnFocus pattern.
-  useFocusEffect(
-    useCallback(() => {
+      // Refetch pack data so name/goal-target edits made via the Edit
+      // Pack modal show immediately on dismissal.
       refetchPack();
-    }, [refetchPack]),
+    }, [refetchPack, consumeSuppressFlag]),
   );
 
   // Belt-and-suspenders: also snap the pager to x=0 on mount. The
@@ -2251,8 +2267,38 @@ export default function PackScreen() {
       {/* Header */}
       <View style={[s.header, { paddingTop: topInset + 12 }]}>
         <View style={s.headerLeft}>
+          {/* Pack tab is `href: null` (hidden from tab bar). router.replace
+              from inside it switches active tab but leaves the tab's nested
+              state intact — so a later push reconstitutes the prior pack
+              underneath. Imperative dispatch on the parent (Tabs) navigator
+              with a FRESH key on the pack route forces React Navigation to
+              discard cached nested state. Same-key reset only clears params,
+              not the state restoration. Pattern is mirrored in the leave
+              and delete handlers below. */}
           <Pressable
-            onPress={() => router.back()}
+            onPress={() => {
+              const parent = navigation.getParent();
+              if (!parent) {
+                router.replace("/(app)/home");
+                return;
+              }
+              const pre = parent.getState();
+              const homeIndex = pre.routes.findIndex((r) => r.name === "home");
+              parent.dispatch(
+                CommonActions.reset({
+                  ...pre,
+                  index: homeIndex >= 0 ? homeIndex : 0,
+                  routes: pre.routes.map((r) =>
+                    r.name === "pack"
+                      ? {
+                          name: "pack",
+                          key: `pack-${Math.random().toString(36).slice(2)}`,
+                        }
+                      : r,
+                  ),
+                }),
+              );
+            }}
             hitSlop={{ top: 12, bottom: 12, left: 16, right: 24 }}
             style={s.backBtn}
           >
@@ -2497,7 +2543,28 @@ export default function PackScreen() {
 
             setShowLeaveConfirm(false);
             showToast({ message: "Left pack", kind: "success" });
-            router.replace("/home");
+            // See Back handler above for the why behind the fresh-key reset.
+            const parent = navigation.getParent();
+            if (!parent) {
+              router.replace("/(app)/home");
+              return;
+            }
+            const pre = parent.getState();
+            const homeIndex = pre.routes.findIndex((r) => r.name === "home");
+            parent.dispatch(
+              CommonActions.reset({
+                ...pre,
+                index: homeIndex >= 0 ? homeIndex : 0,
+                routes: pre.routes.map((r) =>
+                  r.name === "pack"
+                    ? {
+                        name: "pack",
+                        key: `pack-${Math.random().toString(36).slice(2)}`,
+                      }
+                    : r,
+                ),
+              }),
+            );
           } catch (err: unknown) {
             setShowLeaveConfirm(false);
             const msg =
@@ -2550,7 +2617,28 @@ export default function PackScreen() {
 
             setShowDeleteConfirm(false);
             showToast({ message: "Pack deleted", kind: "success" });
-            router.replace("/home");
+            // See Back handler above for the why behind the fresh-key reset.
+            const parent = navigation.getParent();
+            if (!parent) {
+              router.replace("/(app)/home");
+              return;
+            }
+            const pre = parent.getState();
+            const homeIndex = pre.routes.findIndex((r) => r.name === "home");
+            parent.dispatch(
+              CommonActions.reset({
+                ...pre,
+                index: homeIndex >= 0 ? homeIndex : 0,
+                routes: pre.routes.map((r) =>
+                  r.name === "pack"
+                    ? {
+                        name: "pack",
+                        key: `pack-${Math.random().toString(36).slice(2)}`,
+                      }
+                    : r,
+                ),
+              }),
+            );
           } catch (err: unknown) {
             setShowDeleteConfirm(false);
             const msg =
