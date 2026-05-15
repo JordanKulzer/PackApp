@@ -9,7 +9,7 @@
 //  - Self messages get a subtle blue background tint.
 //  - ReactionPills below body when reactions exist.
 
-import React, { useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -24,6 +24,7 @@ import type { Reactor } from "../hooks/useActivityFeed";
 import type { AnchorPosition } from "./MessageActionMenu";
 import { ReactionPills } from "./ReactionPills";
 import { formatName, getInitial } from "../lib/displayName";
+import { getSignedUrl } from "../lib/photoUpload";
 
 interface Props {
   message: ChatMessage & {
@@ -54,6 +55,34 @@ export function ChatMessageRow({
   const authorName = formatName(message.author.display_name);
   const initial = getInitial(authorName);
   const showActions = !message.is_deleted;
+
+  // Pass C-revised: resolve photo_url to a signed URL. Optimistic rows
+  // carry a local file:// URI in photo_url during upload — pass it
+  // through directly. Real rows store a Storage path that we sign.
+  const photoRaw = message.photo_url ?? null;
+  const isLocalPhoto = !!photoRaw && photoRaw.startsWith("file:");
+  const [signedPhotoUrl, setSignedPhotoUrl] = useState<string | null>(
+    isLocalPhoto ? photoRaw : null,
+  );
+  useEffect(() => {
+    if (!photoRaw) {
+      setSignedPhotoUrl(null);
+      return;
+    }
+    if (photoRaw.startsWith("file:")) {
+      setSignedPhotoUrl(photoRaw);
+      return;
+    }
+    let alive = true;
+    getSignedUrl(photoRaw)
+      .then((url) => {
+        if (alive) setSignedPhotoUrl(url);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [photoRaw]);
 
   // Smiley wrapper — measureInWindow anchors the reaction picker.
   const smileyRef = useRef<View>(null);
@@ -153,16 +182,31 @@ export function ChatMessageRow({
               <Text style={s.deletedBody}>[message deleted]</Text>
             ) : (
               <>
-                <Text style={s.body}>
-                  {message.body}
-                  {message.edited_at ? (
-                    <Text style={s.edited}> (edited)</Text>
-                  ) : null}
-                </Text>
+                {message.body.length > 0 ? (
+                  <Text style={s.body}>
+                    {message.body}
+                    {message.edited_at ? (
+                      <Text style={s.edited}> (edited)</Text>
+                    ) : null}
+                  </Text>
+                ) : null}
               </>
             )}
           </View>
         </View>
+        {/* Pass C-revised: chat-attached photo. Renders below the body so
+            text + photo combinations read top-down. Optimistic rows show
+            the local file URI immediately; the Storage-path signed URL
+            replaces it once the real row arrives. */}
+        {!message.is_deleted && signedPhotoUrl ? (
+          <View style={s.photoWrap}>
+            <Image
+              source={{ uri: signedPhotoUrl }}
+              style={s.photo}
+              resizeMode="contain"
+            />
+          </View>
+        ) : null}
         {!message.is_deleted && message.reactions.length > 0 && (
           <ReactionPills
             reactions={message.reactions}
@@ -275,5 +319,19 @@ const s = StyleSheet.create({
   edited: {
     fontSize: 11,
     color: "#8A8A8E",
+  },
+  // Chat photo attachment. Slightly narrower than full-bleed feed photos
+  // (which use s.victoryPhotoWrap aspectRatio: 4/5) — chat photos are
+  // conversational, not posed, so a wider max-width with native ratio
+  // reads more naturally.
+  photoWrap: {
+    marginTop: 6,
+    borderRadius: 12,
+    overflow: "hidden",
+    maxWidth: 240,
+  },
+  photo: {
+    width: 240,
+    aspectRatio: 1,
   },
 });

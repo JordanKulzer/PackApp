@@ -1,11 +1,14 @@
 import { supabase } from "./supabase";
 import { POINTS, WORKOUT_MAX_DAILY, getStreakMultiplier } from "./scoring";
 import { computeStreakForRun } from "./computeStreak";
-import { packToday } from "./packDates";
+import { packToday, deviceLocalToday } from "./packDates";
 import { notifyPackMembers } from "./notifications";
+import { detectAndSendThreatNotifications } from "./threatNotifications";
+import { detectAndRecordTookLead, type CrossingEvent } from "./competitiveDetection";
 import { analytics } from "./analytics";
 
-export async function syncWaterToDailyScores(userId: string): Promise<void> {
+export async function syncWaterToDailyScores(userId: string): Promise<CrossingEvent[]> {
+  const crossings: CrossingEvent[] = [];
   try {
     const { data: memberships, error: memberError } = await supabase
       .from("pack_members")
@@ -13,18 +16,23 @@ export async function syncWaterToDailyScores(userId: string): Promise<void> {
       .eq("user_id", userId)
       .eq("is_active", true);
 
-    if (memberError || !memberships || memberships.length === 0) return;
+    if (memberError || !memberships || memberships.length === 0) return crossings;
 
     for (const membership of memberships) {
       const { data: pack } = await supabase
         .from("packs")
-        .select("id, water_enabled, water_target_oz, timezone")
+        .select("id, name, water_enabled, water_target_oz, timezone")
         .eq("id", membership.pack_id)
         .single();
 
-      if (!pack || !pack.water_enabled) continue;
+      if (!pack) continue;
+      // F.2 Bug 3: water_oz_count tracks regardless of water_enabled.
+      // water_enabled gates the achievement / points credit only —
+      // water consumption is real and worth recording per-pack even
+      // when scoring doesn't credit it.
 
-      const today = packToday(pack.timezone ?? "UTC");
+      const packTz = pack.timezone ?? "UTC";
+      const today = packToday(packTz);
 
       const { data: run } = await supabase
         .from("runs")
@@ -35,7 +43,12 @@ export async function syncWaterToDailyScores(userId: string): Promise<void> {
 
       if (!run) continue;
 
-      const deviceToday = new Intl.DateTimeFormat("en-CA").format(new Date());
+      // F.2 Bug 3 fix: deviceLocalToday() matches the getDate()-based
+      // log_date string LogSheet writes to water_logs. Was an
+      // Intl.DateTimeFormat("en-CA") call without a timeZone option,
+      // which Hermes resolves inconsistently (UTC-leak observed at
+      // 01:48 UTC → next-day string → zero water_logs matched).
+      const deviceToday = deviceLocalToday();
       const { data: todayLogs } = await supabase
         .from("water_logs")
         .select("amount_oz")
@@ -47,7 +60,10 @@ export async function syncWaterToDailyScores(userId: string): Promise<void> {
         0,
       );
 
-      const water_achieved = trueTotalOz >= pack.water_target_oz;
+      // F.2: water_achieved requires both that the pack scores water
+      // AND that the user hit the target. Count writes regardless.
+      const water_achieved =
+        pack.water_enabled && trueTotalOz >= pack.water_target_oz;
 
       const { data: existing } = await supabase
         .from("daily_scores")
@@ -67,7 +83,7 @@ export async function syncWaterToDailyScores(userId: string): Promise<void> {
         (existing?.steps_achieved ?? false) ||
         (existing?.workout_achieved ?? false) ||
         (existing?.calories_achieved ?? false);
-      const streakDays = await computeStreakForRun(userId, run.id, today, anyAchieved, pack.timezone ?? "UTC");
+      const streakDays = await computeStreakForRun(userId, run.id, today, anyAchieved, packTz);
       const multiplier = getStreakMultiplier(streakDays);
 
       const wCount = existing?.workout_count ?? 0;
@@ -97,6 +113,16 @@ export async function syncWaterToDailyScores(userId: string): Promise<void> {
 
       if (upsertError) {
         console.error("[LogSheet] daily_scores upsert error:", upsertError);
+      }
+
+      // Pass 25-followup-E.1-fix-2: mirror logActivity.ts:159-162 so water
+      // logs trigger the same server-side push pipeline as steps/workout/
+      // calories. Covers took_lead + passed_you + tied_you + one_action_away
+      // for water-only crossings — previously silent because water flowed
+      // only through fetchFeedback's (now-removed) client-side push.
+      const todayDelta = newTotalPoints - oldTotalPoints;
+      if (todayDelta > 0) {
+        detectAndSendThreatNotifications(userId, pack.id, run.id, todayDelta).catch(() => {});
       }
 
       // ── Pass 9 funnel: activity_logged (water) + streak_milestone ──
@@ -205,6 +231,15 @@ export async function syncWaterToDailyScores(userId: string): Promise<void> {
             );
           }
         } else if (insertedRows && insertedRows.length > 0) {
+          crossings.push({
+            packId: pack.id,
+            packName: pack.name,
+            packTimezone: packTz,
+            feedItemId: insertedRows[0].id,
+            activityType: "water",
+            pointsEarned: wPoints,
+            scoreDate: today,
+          });
           notifyPackMembers(userId, pack.id, {
             kind: "goal",
             activityType: "water",
@@ -212,8 +247,14 @@ export async function syncWaterToDailyScores(userId: string): Promise<void> {
           }).catch(() => {});
         }
       }
+
+      // Pass 25-followup-E.2.a.ii: lib-side took_lead detection per pack.
+      // Mirrors logActivity.ts pattern; HK silence + prevRank-within-session
+      // resolved by 23505-based dedup.
+      detectAndRecordTookLead(userId, pack.id, run.id, packTz).catch(() => {});
     }
   } catch (err) {
     console.error("[LogSheet] syncWaterToDailyScores error:", err);
   }
+  return crossings;
 }

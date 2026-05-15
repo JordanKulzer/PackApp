@@ -2,6 +2,12 @@
 // shows above the input when editing an existing message. Lives at the
 // bottom of ChatTab; sits above the bottom tab navigator. Wrap the whole
 // thing in a KeyboardAvoidingView at the call site.
+//
+// Pass C-revised: adds an iMessage-style camera button to the left of the
+// TextInput. Tapping opens the photo library (via photoUpload.pickFromLibrary)
+// and the selected photo shows as a thumbnail above the input. Send then
+// uploads + INSERTs the chat_messages row with photo_url set. Caption is
+// optional when a photo is attached.
 
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -11,12 +17,21 @@ import {
   TextInput,
   TouchableOpacity,
   Pressable,
+  Image,
+  ActivityIndicator,
+  Alert,
+  Linking,
+  ActionSheetIOS,
+  Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import type { ChatMessage } from "../types/database";
+import { pickFromLibrary, takeWithCamera } from "../lib/photoUpload";
 
 interface Props {
-  onSend: (body: string) => Promise<void> | void;
+  // photoLocalUri is omitted on edits (editingMessage path doesn't carry it).
+  onSend: (body: string, photoLocalUri?: string | null) => Promise<void> | void;
   onEdit: (messageId: string, newBody: string) => Promise<void> | void;
   editingMessage: ChatMessage | null;
   onCancelEdit: () => void;
@@ -32,13 +47,16 @@ export function ChatInputBar({
 }: Props) {
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
   const inputRef = useRef<TextInput>(null);
 
-  // Prefill on edit transition; clear when leaving edit mode.
+  // Prefill on edit transition; clear when leaving edit mode. Photo is not
+  // editable — editing a message strips any attachment-affordance UI by
+  // clearing photoUri on entry.
   useEffect(() => {
     if (editingMessage) {
       setText(editingMessage.body);
-      // Defer focus so the banner has time to mount before keyboard rises.
+      setPhotoUri(null);
       const t = setTimeout(() => inputRef.current?.focus(), 50);
       return () => clearTimeout(t);
     } else {
@@ -47,8 +65,77 @@ export function ChatInputBar({
   }, [editingMessage]);
 
   const trimmed = text.trim();
+  const hasText = trimmed.length > 0 && trimmed.length <= MAX_BODY_LENGTH;
+  // Send is valid when there's text OR a photo attached (or both).
+  // Editing path requires text — photo affordance is hidden in edit mode.
   const canSend =
-    trimmed.length > 0 && trimmed.length <= MAX_BODY_LENGTH && !submitting;
+    !submitting &&
+    (editingMessage ? hasText : (hasText || !!photoUri));
+
+  // pickFromLibrary / takeWithCamera internally request their respective
+  // permissions and return null on either denial or cancel. When null comes
+  // back we probe the permission status to distinguish a hard denial (nudge
+  // to Settings) from a plain cancel (do nothing).
+  const handleLibraryPick = async () => {
+    const photo = await pickFromLibrary();
+    if (photo) {
+      setPhotoUri(photo.uri);
+      return;
+    }
+    const status = await ImagePicker.getMediaLibraryPermissionsAsync();
+    if (status.status === "denied" && !status.canAskAgain) {
+      Alert.alert(
+        "Photo access required",
+        "Enable photo library access in Settings to attach images.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Open Settings", onPress: () => Linking.openSettings() },
+        ],
+      );
+    }
+  };
+
+  const handleCameraPick = async () => {
+    const photo = await takeWithCamera();
+    if (photo) {
+      setPhotoUri(photo.uri);
+      return;
+    }
+    const status = await ImagePicker.getCameraPermissionsAsync();
+    if (status.status === "denied" && !status.canAskAgain) {
+      Alert.alert(
+        "Camera access required",
+        "Enable camera access in Settings to take photos.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Open Settings", onPress: () => Linking.openSettings() },
+        ],
+      );
+    }
+  };
+
+  // iOS-first app — native action sheet on iOS, Alert-based menu on Android.
+  // Mirrors VictoryPostSheet's photo-source picker pattern for consistency.
+  const handlePickPhoto = () => {
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ["Take Photo", "Choose from Library", "Cancel"],
+          cancelButtonIndex: 2,
+        },
+        (idx) => {
+          if (idx === 0) handleCameraPick();
+          else if (idx === 1) handleLibraryPick();
+        },
+      );
+    } else {
+      Alert.alert("Add photo", undefined, [
+        { text: "Take Photo", onPress: () => handleCameraPick() },
+        { text: "Choose from Library", onPress: () => handleLibraryPick() },
+        { text: "Cancel", style: "cancel" },
+      ]);
+    }
+  };
 
   const handleSubmit = async () => {
     if (!canSend) return;
@@ -59,13 +146,25 @@ export function ChatInputBar({
         // Caller clears editingMessage on success; the effect above clears
         // the input.
       } else {
-        await onSend(trimmed);
+        await onSend(trimmed, photoUri);
         setText("");
+        setPhotoUri(null);
       }
+    } catch (err) {
+      // Supabase PostgrestErrors are plain objects, not Error instances —
+      // String(err) on them yields "[object Object]". Read .message directly.
+      Alert.alert(
+        "Send failed",
+        (err as { message?: string })?.message ?? String(err),
+      );
     } finally {
       setSubmitting(false);
     }
   };
+
+  // Hide the camera button + thumbnail row when editing an existing message —
+  // photo attachment is creation-only, not an edit-time affordance.
+  const showAttachment = !editingMessage;
 
   return (
     <View>
@@ -80,7 +179,45 @@ export function ChatInputBar({
           </TouchableOpacity>
         </View>
       ) : null}
+
+      {showAttachment && photoUri ? (
+        <View style={s.thumbRow}>
+          <View style={s.thumbWrap}>
+            <Image source={{ uri: photoUri }} style={s.thumb} />
+            {submitting ? (
+              <View style={s.thumbOverlay}>
+                <ActivityIndicator color="#FFFFFF" />
+              </View>
+            ) : (
+              <Pressable
+                style={s.thumbRemove}
+                onPress={() => setPhotoUri(null)}
+                hitSlop={6}
+                disabled={submitting}
+              >
+                <Ionicons name="close-circle" size={22} color="#FFFFFF" />
+              </Pressable>
+            )}
+          </View>
+        </View>
+      ) : null}
+
       <View style={s.bar}>
+        {showAttachment ? (
+          <Pressable
+            style={({ pressed }) => [
+              s.cameraBtn,
+              pressed && { opacity: 0.6 },
+              submitting && { opacity: 0.4 },
+            ]}
+            onPress={handlePickPhoto}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 6 }}
+            disabled={submitting}
+            accessibilityLabel="Attach photo"
+          >
+            <Ionicons name="camera" size={22} color="#8A8A8E" />
+          </Pressable>
+        ) : null}
         <TextInput
           ref={inputRef}
           style={s.input}
@@ -93,6 +230,7 @@ export function ChatInputBar({
           multiline
           textAlignVertical="center"
           maxLength={MAX_BODY_LENGTH}
+          editable={!submitting}
         />
         <Pressable
           style={({ pressed }) => [
@@ -104,11 +242,15 @@ export function ChatInputBar({
           disabled={!canSend}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
-          <Ionicons
-            name="arrow-up"
-            size={20}
-            color={canSend ? "#FFFFFF" : "#8A8A8E"}
-          />
+          {submitting ? (
+            <ActivityIndicator color="#FFFFFF" size="small" />
+          ) : (
+            <Ionicons
+              name="arrow-up"
+              size={20}
+              color={canSend ? "#FFFFFF" : "#8A8A8E"}
+            />
+          )}
         </Pressable>
       </View>
     </View>
@@ -141,6 +283,40 @@ const s = StyleSheet.create({
     fontSize: 13,
     color: "#8A8A8E",
   },
+  // Thumbnail preview row above the input bar. alignSelf: flex-start so
+  // the row hugs the 72×72 thumbnail instead of spanning the full
+  // composer width — the full-width background/border was creating a
+  // large empty bar to the right of the thumbnail.
+  thumbRow: {
+    flexDirection: "row",
+    alignSelf: "flex-start",
+    paddingHorizontal: 12,
+    paddingTop: 8,
+  },
+  thumbWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 10,
+    overflow: "hidden",
+    backgroundColor: "#2C2C2E",
+  },
+  thumb: {
+    width: "100%",
+    height: "100%",
+  },
+  thumbOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.45)",
+  },
+  thumbRemove: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    borderRadius: 11,
+  },
   // Input bar. paddingBottom: 0 so the bar sits flush against whatever's
   // beneath it — keyboard's top edge when open (via KeyboardStickyView),
   // bottom tab navigator when closed (the tab nav handles its own
@@ -155,6 +331,13 @@ const s = StyleSheet.create({
     backgroundColor: "#1C1C1E",
     borderTopWidth: 1,
     borderTopColor: "#2C2C2E",
+  },
+  cameraBtn: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 4,
   },
   input: {
     flex: 1,

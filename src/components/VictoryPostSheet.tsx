@@ -36,27 +36,82 @@ const C = {
   gold: "#fbbf24",
 } as const;
 
-interface Props {
+// Pass 25-followup-E.2.b.ii: VictoryPostSheet generalized from daily_winner-
+// only to any achievement kind. The sheet's UI is identity-agnostic (photo
+// picker + caption + Post button); per-kind context is carried via the
+// `achievement` object discriminated by `kind`. Three kinds are live in
+// E.2.b scope (daily_winner, took_lead, all_goals). Four more (steps,
+// workout, calories, water) are forward-compat for E.3's manual-share path
+// — the sheet's submit logic already handles them, but the emit path that
+// creates the share-type activity_feed row lands later.
+export type AchievementKind =
+  | "daily_winner" | "took_lead" | "all_goals"
+  | "steps" | "workout" | "calories" | "water";
+
+export interface AchievementContext {
+  kind: AchievementKind;
   feedItemId: string;
   userId: string;
+  packId: string;
   packName: string;
-  winningPoints: number;
   scoreDate: string;
+  pointsEarned: number;
+  value?: number;        // steps count / cal count / oz — for kinds that surface a value
+  rank?: number;         // for took_lead variants ("#1 · {points} pts")
+  leadGap?: number;      // took_lead only: weekly points gap to #2 at INSERT time
+  opponentName?: string; // took_lead only: display_name of #2 at hydration time
+}
+
+interface Props {
   visible: boolean;
-  onClose: () => void;
+  onDismiss: () => void;
   onPosted: () => void;
+  achievement: AchievementContext;
+}
+
+// Header copy per achievement kind. Title appears at the top of the sheet;
+// subtitle renders inside the context pill below it. Subtitle templates are
+// interpolated at render time from the achievement object. Emoji deliberately
+// dropped — title prestige carried by the design language, not ceremony.
+const HEADER_COPY: Record<
+  AchievementKind,
+  { title: string; subtitleTemplate: string }
+> = {
+  daily_winner: { title: "You won the day",  subtitleTemplate: "{packName} · {points} pts · Yesterday" },
+  took_lead:    { title: "You took the lead", subtitleTemplate: "{packName} · +{leadGap} pts{opponentSuffix}" },
+  all_goals:    { title: "All goals hit",     subtitleTemplate: "{packName} · {date}" },
+  steps:        { title: "Steps goal hit",    subtitleTemplate: "{packName} · {value} steps" },
+  workout:      { title: "Workout logged",    subtitleTemplate: "{packName} · {points} pts" },
+  calories:     { title: "Calories goal hit", subtitleTemplate: "{packName} · {value} cal" },
+  water:        { title: "Water goal hit",    subtitleTemplate: "{packName} · {value} oz" },
+};
+
+function interpolateSubtitle(
+  template: string,
+  achievement: AchievementContext,
+): string {
+  const opponentSuffix = achievement.opponentName
+    ? ` over ${achievement.opponentName}`
+    : "";
+  return template
+    .replace("{packName}", achievement.packName)
+    .replace("{leadGap}", String(achievement.leadGap ?? 0))
+    .replace("{opponentSuffix}", opponentSuffix)
+    .replace("{points}", String(achievement.pointsEarned))
+    .replace("{value}", String(achievement.value ?? 0))
+    .replace("{rank}", String(achievement.rank ?? 0))
+    .replace("{date}", achievement.scoreDate);
 }
 
 export function VictoryPostSheet({
-  feedItemId,
-  userId,
-  packName,
-  winningPoints,
-  scoreDate,
   visible,
-  onClose,
+  onDismiss,
   onPosted,
+  achievement,
 }: Props) {
+  const { feedItemId, userId } = achievement;
+  const { title, subtitleTemplate } = HEADER_COPY[achievement.kind];
+  const subtitle = interpolateSubtitle(subtitleTemplate, achievement);
   const insets = useSafeAreaInsets();
   const [localUri, setLocalUri] = useState<string | null>(null);
   const [caption, setCaption] = useState("");
@@ -115,14 +170,14 @@ export function VictoryPostSheet({
     setLocalUri(null);
     setCaption("");
     onPosted();
-    onClose();
+    onDismiss();
   };
 
   const handleClose = () => {
     if (posting) return;
     setLocalUri(null);
     setCaption("");
-    onClose();
+    onDismiss();
   };
 
   return (
@@ -146,7 +201,7 @@ export function VictoryPostSheet({
 
           {/* Header */}
           <View style={s.header}>
-            <Text style={s.title}>Share your victory</Text>
+            <Text style={s.title}>{title}</Text>
             <TouchableOpacity style={s.closeBtn} onPress={handleClose} hitSlop={10}>
               <Ionicons name="close" size={24} color={C.textSecondary} />
             </TouchableOpacity>
@@ -158,11 +213,9 @@ export function VictoryPostSheet({
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            {/* Context pill */}
+            {/* Context pill — per-kind subtitle interpolated from HEADER_COPY */}
             <View style={s.contextPill}>
-              <Text style={s.contextPillText}>
-                🏆 {packName} · {winningPoints} pts · Yesterday
-              </Text>
+              <Text style={s.contextPillText}>{subtitle}</Text>
             </View>
 
             {/* Photo picker */}
@@ -193,7 +246,7 @@ export function VictoryPostSheet({
             {/* Caption */}
             <TextInput
               style={s.captionInput}
-              placeholder="What did it take?"
+              placeholder="Tell the pack about it"
               placeholderTextColor={C.textTertiary}
               value={caption}
               onChangeText={(t) => setCaption(t.slice(0, 140))}

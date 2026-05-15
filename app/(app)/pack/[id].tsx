@@ -66,6 +66,7 @@ import { PackGridView } from "../../../src/components/PackGridView";
 import { useCurrentUser } from "../../../src/context/CurrentUserContext";
 import { useRefreshCurrentUserOnFocus } from "../../../src/hooks/useRefreshCurrentUserOnFocus";
 import { den, packs as packsCopy, packEdit, t } from "../../../src/constants/strings";
+import { subscribeToRunScores } from "../../../src/lib/realtimeSubscriptions";
 
 if (
   Platform.OS === "android" &&
@@ -126,8 +127,10 @@ interface MemberScore {
   calories_count: number;
   water_oz_count: number;
   workout_count: number;
-  has_manual_steps: boolean;
-  has_manual_calories: boolean;
+  // F.2: M badge derives from manual_*_count > 0 (replaced the prior
+  // has_manual_* booleans dropped in migration 20260513b).
+  manual_steps_count: number;
+  manual_calories_count: number;
 }
 
 interface WeeklyEntry {
@@ -151,8 +154,8 @@ type ScoreRow = {
   calories_count: number;
   water_oz_count: number;
   workout_count: number;
-  has_manual_steps: boolean;
-  has_manual_calories: boolean;
+  manual_steps_count: number;
+  manual_calories_count: number;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -180,14 +183,17 @@ function mapRows(
     calories_count: row.calories_count ?? 0,
     water_oz_count: row.water_oz_count ?? 0,
     workout_count: row.workout_count ?? 0,
-    has_manual_steps: row.has_manual_steps ?? false,
-    has_manual_calories: row.has_manual_calories ?? false,
+    manual_steps_count: row.manual_steps_count ?? 0,
+    manual_calories_count: row.manual_calories_count ?? 0,
   }));
 }
 
 // No user join — display names are fetched in a separate explicit query
+// F.2: SELECT manual_*_count instead of dropped has_manual_* booleans.
+// steps_count/calories_count are DB-generated (manual + hk) and still
+// returned by Postgres; no client-side recompute needed.
 const SCORE_SELECT =
-  "user_id, total_points, streak_days, streak_multiplier, updated_at, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, calories_count, water_oz_count, workout_count, has_manual_steps, has_manual_calories";
+  "user_id, total_points, streak_days, streak_multiplier, updated_at, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, calories_count, water_oz_count, workout_count, manual_steps_count, manual_calories_count";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Manual badge
@@ -260,8 +266,8 @@ interface DayMemberScore {
   caloriesAchieved: boolean;
   waterAchieved: boolean;
   workoutAchieved: boolean;
-  hasManualSteps: boolean;
-  hasManualCalories: boolean;
+  manualStepsCount: number;
+  manualCaloriesCount: number;
 }
 
 interface WeekDetailEntry {
@@ -376,7 +382,7 @@ function WeekDetailSheet({
       const { data } = await supabase
         .from("daily_scores")
         .select(
-          "user_id, total_points, steps_count, calories_count, water_oz_count, workout_count, steps_achieved, calories_achieved, water_achieved, workout_achieved, has_manual_steps, has_manual_calories",
+          "user_id, total_points, steps_count, calories_count, water_oz_count, workout_count, steps_achieved, calories_achieved, water_achieved, workout_achieved, manual_steps_count, manual_calories_count",
         )
         .eq("run_id", entry.runId)
         .eq("score_date", selectedDay);
@@ -396,8 +402,8 @@ function WeekDetailSheet({
           caloriesAchieved: row.calories_achieved,
           waterAchieved: row.water_achieved,
           workoutAchieved: row.workout_achieved,
-          hasManualSteps: row.has_manual_steps ?? false,
-          hasManualCalories: row.has_manual_calories ?? false,
+          manualStepsCount: row.manual_steps_count ?? 0,
+          manualCaloriesCount: row.manual_calories_count ?? 0,
         }))
         .sort((a, b) => b.totalPoints - a.totalPoints);
 
@@ -476,8 +482,8 @@ function WeekDetailSheet({
           caloriesAchieved: false,
           waterAchieved: false,
           workoutAchieved: false,
-          hasManualSteps: false,
-          hasManualCalories: false,
+          manualStepsCount: 0,
+          manualCaloriesCount: 0,
           hasNoData: true,
         });
       }
@@ -708,7 +714,7 @@ function WeekDetailSheet({
                                 <View style={wdS.actRow}>
                                   <Text style={wdS.actLabel}>Steps</Text>
                                   <View style={wdS.actRight}>
-                                    {score.hasManualSteps && <ManualBadge />}
+                                    {score.manualStepsCount > 0 && <ManualBadge />}
                                     <Text
                                       style={[
                                         wdS.actValue,
@@ -749,7 +755,7 @@ function WeekDetailSheet({
                                 <View style={wdS.actRow}>
                                   <Text style={wdS.actLabel}>Calories</Text>
                                   <View style={wdS.actRight}>
-                                    {score.hasManualCalories && <ManualBadge />}
+                                    {score.manualCaloriesCount > 0 && <ManualBadge />}
                                     <Text
                                       style={[
                                         wdS.actValue,
@@ -1686,19 +1692,17 @@ function ChatTab({
         )
       : 8;
 
-  const handleSend = async (body: string) => {
-    try {
-      await sendMessage(body);
-      // Newest renders at the bottom; jump there so the just-sent message
-      // is visible. The useEffect above also catches this; calling here
-      // makes the response feel snappier.
-      scrollToEndProgrammatic(true);
-    } catch (err) {
-      Alert.alert(
-        "Send failed",
-        err instanceof Error ? err.message : String(err),
-      );
-    }
+  const handleSend = async (body: string, photoLocalUri?: string | null) => {
+    // Let send failures propagate to ChatInputBar's handleSubmit catch —
+    // that's what surfaces the error Alert AND preserves the composer's
+    // text + photo so the user can retry. Swallowing the error here
+    // (the prior shape) made `await onSend` always resolve, so the
+    // composer cleared even on failure. Success path only.
+    await sendMessage(body, photoLocalUri);
+    // Newest renders at the bottom; jump there so the just-sent message
+    // is visible. The useEffect above also catches this; calling here
+    // makes the response feel snappier.
+    scrollToEndProgrammatic(true);
   };
 
   const handleEdit = async (messageId: string, newBody: string) => {
@@ -2033,7 +2037,16 @@ export default function PackScreen() {
   // ── Fetch scores: today's details + weekly totals (parallel) ─────────
 
   const fetchWeekly = useCallback(async (runId: string) => {
-    const today = packToday(packData?.pack.timezone ?? "UTC");
+    // Pass F.1.b: wait for the pack's timezone to hydrate before issuing
+    // the today-scoped query. Without this guard, the very first render's
+    // closure captures packData=undefined → today defaults to UTC's date,
+    // which mismatches the score_date written by sync functions using the
+    // pack's actual timezone. Symptom: scoreById misses today's row,
+    // PackGridView's expanded progress bars all render 0 while pts pill
+    // (which reads weekly_points from a separate non-date-filtered query)
+    // shows the correct value.
+    if (!packData?.pack.timezone) return;
+    const today = packToday(packData.pack.timezone);
 
     // Fetch today's daily detail rows (goal flags, counts, streak) and the
     // full run's totals (for ranking and primary point display) in parallel.
@@ -2069,7 +2082,7 @@ export default function PackScreen() {
         : [],
     );
     setScoresLoading(false);
-  }, []);
+  }, [packData?.pack.timezone]);
 
   // ── Load scores when pack loads ───────────────────────────────────────
 
@@ -2098,24 +2111,7 @@ export default function PackScreen() {
   useEffect(() => {
     if (!packData?.activeRun) return;
     const runId = packData.activeRun.id;
-
-    const channel = supabase
-      .channel(`scores-${runId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "daily_scores",
-          filter: `run_id=eq.${runId}`,
-        },
-        () => fetchWeekly(runId),
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return subscribeToRunScores(runId, () => fetchWeekly(runId), "pack");
   }, [packData?.activeRun?.id, fetchWeekly]);
 
   // ── Refetch after any activity log (belt-and-suspenders alongside realtime) ──
@@ -2190,8 +2186,8 @@ export default function PackScreen() {
     calories_count: 0,
     water_oz_count: 0,
     workout_count: 0,
-    has_manual_steps: false,
-    has_manual_calories: false,
+    manual_steps_count: 0,
+    manual_calories_count: 0,
   });
 
   const fullRoster: MemberScore[] = (packData?.members ?? []).map((m) => {
@@ -2216,8 +2212,8 @@ export default function PackScreen() {
       calories_count: 0,
       water_oz_count: 0,
       workout_count: 0,
-      has_manual_steps: false,
-      has_manual_calories: false,
+      manual_steps_count: 0,
+      manual_calories_count: 0,
     };
   });
 

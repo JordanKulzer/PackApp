@@ -96,9 +96,14 @@ function actionPhrase(item: FeedItem): string {
         : `logged ${item.value} oz of water`;
     case "daily_winner":
       return "🏆 won yesterday";
+    case "took_lead":
+      // Pass 25-followup-E.2.b.iii-fix-2: photo-bearing took_lead rows
+      // route here (TimelineRow conditional routing); the matching phrase
+      // mirrors SystemMessageRow's tone for cross-surface consistency.
+      return "took the lead 👑";
     default:
-      // took_lead and all_goals route to SystemMessageRow; this fallback
-      // covers any unknown future type.
+      // all_goals etc. route to SystemMessageRow; this fallback covers any
+      // unknown future type.
       return `completed ${item.activityType}`;
   }
 }
@@ -166,7 +171,9 @@ export function FeedItemRow({
 
   const phrase = actionPhrase(item);
   const showPts =
-    item.pointsEarned > 0 && item.activityType !== "daily_winner";
+    item.pointsEarned > 0
+    && item.activityType !== "daily_winner"
+    && item.activityType !== "took_lead";
   const isManualNumeric =
     item.entryMethod === "manual" &&
     (item.activityType === "steps" || item.activityType === "calories");
@@ -213,11 +220,14 @@ export function FeedItemRow({
           </Text>
         </View>
 
-        {/* Photo (daily_winner only in practice) */}
+        {/* Photo — daily_winner + took_lead use the larger victory-style
+            wrap (Pass 25-followup-E.2.b.iii-fix-2 extends took_lead to
+            match daily_winner's share-worthy framing). */}
         {signedPhotoUrl && (
           <TouchableOpacity
             style={
-              item.activityType === "daily_winner"
+              item.activityType === "daily_winner" ||
+              item.activityType === "took_lead"
                 ? s.victoryPhotoWrap
                 : s.photoWrap
             }
@@ -235,8 +245,12 @@ export function FeedItemRow({
           </TouchableOpacity>
         )}
 
-        {/* Caption (daily_winner enriched post only) */}
-        {item.activityType === "daily_winner" && item.caption ? (
+        {/* Caption — daily_winner + took_lead enriched posts. Pass
+            25-followup-E.2.b.iii-fix-2 extended the condition so
+            user-authored took_lead captions render. */}
+        {(item.activityType === "daily_winner" ||
+          item.activityType === "took_lead") &&
+        item.caption ? (
           <Text style={s.caption}>{item.caption}</Text>
         ) : null}
 

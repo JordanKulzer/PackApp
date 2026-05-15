@@ -1,10 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
-  Alert,
   Animated,
   Easing,
-  LayoutAnimation,
+  Keyboard,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -16,6 +16,8 @@ import {
   Vibration,
   StyleSheet,
   UIManager,
+  AccessibilityInfo,
+  Dimensions,
 } from "react-native";
 import type { StyleProp, TextStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -24,8 +26,7 @@ import { useScoreStore } from "../stores/scoreStore";
 import { supabase } from "../lib/supabase";
 import { POINTS, WORKOUT_MAX_DAILY } from "../lib/scoring";
 import { syncManualActivityToDailyScores } from "../lib/logActivity";
-import { packToday } from "../lib/packDates";
-import { notifyPackMembers } from "../lib/notifications";
+import { packToday, deviceLocalToday } from "../lib/packDates";
 import {
   getTodaySteps,
   getTodayActiveCalories,
@@ -36,14 +37,17 @@ import {
   useLogActivitySheetData,
   invalidateLogActivitySheetCache,
 } from "../hooks/useLogActivitySheetData";
-import type { LogEntry, WorkoutLogEntry } from "../hooks/useLogActivitySheetData";
+import type {
+  LogEntry,
+  WorkoutLogEntry,
+} from "../hooks/useLogActivitySheetData";
 import { colors } from "../theme/colors";
-import { PhotoPicker } from "./PhotoPicker";
-import { uploadPhoto, attachPhotoToLatestFeedEntry, type PickedPhoto } from "../lib/photoUpload";
-import { analytics } from "../lib/analytics";
 import { syncWaterToDailyScores } from "../lib/syncWater";
 import { CategoryChip, EmptyChipSlot } from "./CategoryChip";
-import { SeeMoreCategoriesSheet, type SeeMoreEntryPoint } from "./SeeMoreCategoriesSheet";
+import {
+  SeeMoreCategoriesSheet,
+  type SeeMoreEntryPoint,
+} from "./SeeMoreCategoriesSheet";
 import {
   CATEGORY_DISPLAY_NAMES,
   type ActivityCategory,
@@ -51,8 +55,14 @@ import {
 import { useCurrentUser } from "../context/CurrentUserContext";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { activity as activityCopy } from "../constants/strings";
+import { SkeletonBox } from "./SkeletonBox";
 
-const QUICK_SELECT_MAX = 6;
+// Pass 25-followup-C-fix-2: single source of truth for data cap = display
+// cap = swap-mode threshold. Was 6 (with a -1 offset on render to keep the
+// Add tile visible) — that split caused the 6th pinned to render in the
+// picker but not the chip grid. Now: data and display agree at 5, and
+// every cap expression reads as `MAX` (no `MAX - 1` offsets anywhere).
+const QUICK_SELECT_MAX = 5;
 const QUICK_SELECT_HINT_KEY = "pack:logsheet:hint:quickselect";
 
 if (
@@ -79,6 +89,61 @@ const C = {
 } as const;
 
 const QUICK_AMOUNTS = [8, 16, 32] as const;
+
+// Pass 25-followup-E.2.a.i-fix: maps banner state → color token. Kept
+// at module scope (not inside component) so the function identity is
+// stable and doesn't churn render. `colors.leader` is reused from the
+// canonical design token (theme/colors.ts:18); no new tokens introduced.
+function bannerColorForState(
+  state:
+    | "leading"
+    | "tied_top"
+    | "took_lead"
+    | "behind"
+    | "tied_lower"
+    | "solo"
+    | "no_logs",
+): string {
+  switch (state) {
+    case "leading":
+      return C.success;
+    case "tied_top":
+      return colors.leader;
+    case "took_lead":
+      return colors.leader;
+    case "behind":
+      return C.textPrimary;
+    case "tied_lower":
+      return C.textPrimary;
+    case "solo":
+      return C.textSecondary;
+    case "no_logs":
+      return C.textTertiary;
+  }
+}
+
+// Pass 25-followup-B-final Section A: shared empty-shape baseline for
+// optimistic localScore patching. Pre-fix, every handler used
+// `setLocalScore((prev) => prev ? {...prev, ...patch} : null)` — which
+// silently dropped the patch when prev was null (first-of-day open before
+// any daily_scores row exists). Now handlers spread off this constant when
+// prev is null: `({ ...(prev ?? EMPTY_LOCAL_SCORE), ...patch })`. Server-
+// side scoring still writes the canonical daily_scores row per pack.
+const EMPTY_LOCAL_SCORE = {
+  total_points: 0,
+  steps_achieved: false,
+  workout_achieved: false,
+  calories_achieved: false,
+  water_achieved: false,
+  water_oz_count: 0,
+  steps_count: 0,
+  calories_count: 0,
+  workout_count: 0,
+  streak_days: 0,
+  streak_multiplier: 1,
+  manual_steps_count: 0,
+  manual_calories_count: 0,
+};
 
 type ActivityId = "steps" | "workout" | "calories" | "water";
 
@@ -113,7 +178,12 @@ const mb = StyleSheet.create({
     borderColor: C.border,
     alignSelf: "center",
   },
-  text: { fontSize: 10, fontWeight: "700", color: C.textSecondary, letterSpacing: 0.3 },
+  text: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: C.textSecondary,
+    letterSpacing: 0.3,
+  },
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,8 +200,8 @@ function HealthSourceBadge({ style }: { style?: StyleProp<TextStyle> }) {
 }
 
 const hsbS = StyleSheet.create({
-  row:   { flexDirection: "row", alignItems: "center", gap: 4 },
-  icon:  { fontSize: 11, color: "#FA2C4F" },
+  row: { flexDirection: "row", alignItems: "center", gap: 4 },
+  icon: { fontSize: 11, color: "#FA2C4F" },
   label: { fontSize: 11, color: C.textTertiary, fontWeight: "500" },
 });
 
@@ -156,17 +226,13 @@ function ActivityRow({
 }) {
   return (
     <View>
-      <TouchableOpacity
-        style={ar.header}
-        onPress={onPress}
-        activeOpacity={0.7}
-      >
+      <TouchableOpacity style={ar.header} onPress={onPress} activeOpacity={0.7}>
         <Text style={ar.label}>{label}</Text>
         <View style={ar.right}>
           {rightContent}
           {showChevron && (
             <Ionicons
-              name={isExpanded ? "chevron-up" : "chevron-down"}
+              name="chevron-forward"
               size={16}
               color={C.textTertiary}
               style={{ marginLeft: 6 }}
@@ -187,12 +253,12 @@ const ar = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 16,
-    paddingVertical: 16,
-    minHeight: 56,
+    paddingVertical: 20,
+    minHeight: 72,
   },
   label: {
     fontSize: 15,
-    fontWeight: "600",
+    fontWeight: "400",
     color: C.textPrimary,
   },
   right: {
@@ -207,14 +273,9 @@ const ar = StyleSheet.create({
     paddingBottom: 16,
     gap: 12,
   },
-  // Progress bar (used in HK expanded sections)
-  barTrack: {
-    height: 4,
-    backgroundColor: C.border,
-    borderRadius: 2,
-    overflow: "hidden",
-  },
-  barFill: { height: 4, borderRadius: 2 },
+  // Pass 25-followup-B: HK expanded-section progress bar removed (no
+  // target = no goal-progress denominator). Caption (HealthSourceBadge
+  // sub-text) stays.
   caption: { fontSize: 12, color: C.textTertiary },
   // Manual entry row
   inputRow: {
@@ -222,16 +283,19 @@ const ar = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
+  // Pass 25: subtle-box treatment matching New Pack's nameInput. Transparent
+  // background avoids the recessed-well look once the boxed card wrapper is
+  // gone; hairline border + radius 8 match the rest of the design language.
   input: {
     flex: 1,
-    backgroundColor: C.bg,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
     fontSize: 15,
     color: C.textPrimary,
-    borderWidth: 0.5,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: C.border,
+    borderRadius: 8,
+    backgroundColor: "transparent",
   },
   addBtn: {
     backgroundColor: C.accent,
@@ -253,7 +317,6 @@ const ar = StyleSheet.create({
   },
   workoutBtnDisabled: { opacity: 0.5 },
   workoutBtnText: { fontSize: 15, fontWeight: "600", color: C.textPrimary },
-  workoutDoneText: { fontSize: 15, fontWeight: "600", color: C.success, textAlign: "center", paddingVertical: 6 },
   // Water chips
   chipRow: {
     flexDirection: "row",
@@ -270,7 +333,6 @@ const ar = StyleSheet.create({
   },
   chipDisabled: { opacity: 0.6 },
   chipText: { fontSize: 15, fontWeight: "600", color: C.textPrimary },
-  goalText: { fontSize: 14, fontWeight: "600", color: C.success, textAlign: "center" },
   // Water entries
   entriesLabel: {
     fontSize: 11,
@@ -299,36 +361,28 @@ const ar = StyleSheet.create({
 
 function RowSkeleton() {
   return (
-    <View style={sk.card}>
+    <>
       {[0, 1, 2, 3].map((i) => (
         <View key={i}>
           <View style={sk.row}>
-            <View style={sk.labelLine} />
-            <View style={sk.valueLine} />
+            <SkeletonBox width={80} height={14} borderRadius={4} />
+            <SkeletonBox width={110} height={13} borderRadius={4} />
           </View>
           {i < 3 && <View style={sk.divider} />}
         </View>
       ))}
-    </View>
+    </>
   );
 }
 
 const sk = StyleSheet.create({
-  card: {
-    marginHorizontal: 16,
-    backgroundColor: C.surfaceRaised,
-    borderRadius: 16,
-    borderWidth: 0.5,
-    borderColor: C.border,
-    overflow: "hidden",
-  },
   row: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 16,
     paddingVertical: 16,
-    minHeight: 56,
+    minHeight: 64,
   },
   labelLine: {
     height: 14,
@@ -359,8 +413,31 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
 
   const [modalVisible, setModalVisible] = useState(false);
   const slideAnim = useRef(new Animated.Value(600)).current;
-  const goalFadeAnim = useRef(new Animated.Value(0)).current;
-  const prevGoalReached = useRef(false);
+  // Pass 26 CHANGE 4: drag-down to dismiss. PanResponder attached to the
+  // drag handle (sibling of the page track, so always gesture-active on
+  // any page). Trigger onClose when the user drags past ~80px or releases
+  // with downward velocity. The existing slide-out animation runs via the
+  // visible→false effect — no custom drag-follow animation introduced.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const dismissPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_, g) =>
+        Math.abs(g.dy) > 4 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderRelease: (_, g) => {
+        if (g.dy > 80 || g.vy > 0.5) {
+          onCloseRef.current();
+        }
+      },
+      onPanResponderTerminate: () => {},
+    }),
+  ).current;
+  // Pass 25-followup-B-final-2 Section C: keyboard offset composed with the
+  // sheet's slide animation via Animated.add so the sheet translates up
+  // when the keyboard opens. Both translateY values run on the native
+  // driver — no JS-thread layout work, no driver mixing.
+  const keyboardOffsetAnim = useRef(new Animated.Value(0)).current;
 
   const scaleAnims = useRef(
     QUICK_AMOUNTS.reduce<Record<number, Animated.Value>>((acc, amt) => {
@@ -369,13 +446,13 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     }, {}),
   ).current;
 
-  // ── Row expansion ──────────────────────────────────────────────────────────
-  const [expandedId, setExpandedId] = useState<ActivityId | null>(null);
-
-  const toggleRow = (id: ActivityId) => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setExpandedId((prev) => (prev === id ? null : id));
-  };
+  // ── Page navigation ───────────────────────────────────────────────────────────
+  const [currentPage, setCurrentPage] = useState<"overview" | ActivityId>(
+    "overview",
+  );
+  const pageAnim = useRef(new Animated.Value(0)).current;
+  const [reduceMotion, setReduceMotion] = useState(false);
+  const dataOpacityAnim = useRef(new Animated.Value(0)).current;
 
   // ── Manual entry inputs ────────────────────────────────────────────────────
   const [rawSteps, setRawSteps] = useState("");
@@ -385,7 +462,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [workoutLogs, setWorkoutLogs] = useState<WorkoutLogEntry[]>([]);
   const [totalOz, setTotalOz] = useState(0);
-  const [waterTarget, setWaterTarget] = useState(64);
   const [saving, setSaving] = useState(false);
 
   // ── HealthKit state ────────────────────────────────────────────────────────
@@ -393,8 +469,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
   const [hkAuthorized, setHkAuthorized] = useState(false);
   const [stepsToday, setStepsToday] = useState<number | null>(null);
   const [caloriesToday, setCaloriesToday] = useState<number | null>(null);
-  const [stepTarget, setStepTarget] = useState(10000);
-  const [calorieTarget, setCalorieTarget] = useState(500);
 
   // ── Manual entry state ─────────────────────────────────────────────────────
   const [hasManualSteps, setHasManualSteps] = useState(false);
@@ -406,7 +480,11 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
   const patchMyScore = useScoreStore((s) => s.patchMyScore);
   const bumpLogVersion = useScoreStore((s) => s.bumpLogVersion);
 
-  const [packRun, setPackRun] = useState<{ runId: string; packId: string; packTimezone: string } | null>(null);
+  const [packRun, setPackRun] = useState<{
+    runId: string;
+    packId: string;
+    packTimezone: string;
+  } | null>(null);
   const [localWeeklyPoints, setLocalWeeklyPoints] = useState(0);
   const [localScore, setLocalScore] = useState<{
     total_points: number;
@@ -420,24 +498,78 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     workout_count: number;
     streak_days: number;
     streak_multiplier: number;
+    manual_steps_count: number;
+    manual_calories_count: number;
   } | null>(null);
 
   const [workoutSaving, setWorkoutSaving] = useState(false);
-  const [photos, setPhotos] = useState<Partial<Record<ActivityId, PickedPhoto>>>({});
-  const [feedback, setFeedback] = useState<{ text: string; positive: boolean } | null>(null);
+
+  // Pass C-revised-followup-B: the LogSheet photo affordance was removed.
+  // Photo capture now lives only in the chat composer (ChatInputBar).
+  // Existing activity_feed rows with photo_url from the old LogSheet
+  // pathway still render in the feed; only the capture UI is gone.
+
+  // Pass 25-followup-B-fix Section A: per-row log-success flash. On every
+  // successful log, the corresponding row's value text briefly tints
+  // C.success and fades back to C.textPrimary over 600ms. useNativeDriver:
+  // false because color interpolation runs on the JS thread. Independent
+  // refs per row so rapid sequential logs don't race.
+  const stepsFlashAnim = useRef(new Animated.Value(0)).current;
+  const caloriesFlashAnim = useRef(new Animated.Value(0)).current;
+  const workoutFlashAnim = useRef(new Animated.Value(0)).current;
+  const waterFlashAnim = useRef(new Animated.Value(0)).current;
+
+  // Pass 25-followup-E.2.a.i-fix: banner state enum drives state-aware
+  // color treatment. Replaces the prior {text, positive: boolean} shape
+  // which only encoded a binary success/neutral split. Color mapping
+  // lives at the banner JSX site below; states map to:
+  //   leading    → C.success         (#1, strict lead)
+  //   tied_top   → colors.leader     (#1, tied)
+  //   took_lead  → colors.leader     (just took #1; settles to leading on next fetch)
+  //   behind     → C.textPrimary     (rank >1, strict gap)
+  //   tied_lower → C.textPrimary     (rank >1, tied with ahead)
+  //   solo       → C.textSecondary   ("+N pts today" — sole logger this run)
+  //   no_logs    → C.textTertiary    ("Start your day" — nothing yet)
+  type BannerState =
+    | "leading"
+    | "tied_top"
+    | "took_lead"
+    | "behind"
+    | "tied_lower"
+    | "solo"
+    | "no_logs";
+  const [feedback, setFeedback] = useState<{
+    text: string;
+    state: BannerState;
+  } | null>(null);
   const feedbackAnim = useRef(new Animated.Value(0)).current;
+  const feedbackOpacity = useRef(new Animated.Value(0)).current;
   const prevRankRef = useRef<number | null>(null);
 
   // ── Quick Select (workout category chips inside the Workout row) ─────────
   const { user: currentUser, applyLocal } = useCurrentUser();
+  // Pass 25-followup-C-fix-2: display-only slice at consumption. Existing
+  // dev-state rows with 6+ pinned categories silently render the first 5;
+  // the next save (pin/unpin/swap) cleans storage via saveQuickSelect's
+  // slice(0, QUICK_SELECT_MAX). No login-time write-back.
   const quickSelectCategories: ActivityCategory[] =
-    currentUser?.quickSelectCategories ?? [];
+    currentUser?.quickSelectCategories?.slice(0, QUICK_SELECT_MAX) ?? [];
 
   const [seeMoreState, setSeeMoreState] = useState<{
     open: boolean;
     entryPoint: SeeMoreEntryPoint;
     replaceTargetIndex?: number;
   }>({ open: false, entryPoint: "add" });
+
+  // Pass 25-followup-C-fix: when Quick Select is full and the user picks a
+  // new category from the See More sheet, we don't pin immediately — we
+  // flip the sheet into swap mode so the user can choose which existing
+  // pin to replace. Stored as state on LogSheet (not the sheet itself) so
+  // the swap target survives the sheet closing/reopening transitions and
+  // so handleSwapModeReplace can reuse the existing handleReplaceCategory
+  // primitive without prop-drilling the pending category through.
+  const [pendingSwapCategory, setPendingSwapCategory] =
+    useState<ActivityCategory | null>(null);
 
   const [chipMenuIndex, setChipMenuIndex] = useState<number | null>(null);
 
@@ -467,6 +599,13 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
 
   const handlePinCategory = async (cat: ActivityCategory) => {
     if (quickSelectCategories.includes(cat)) return;
+    // Pass 25-followup-C-fix: if Quick Select is full, flip the SeeMore
+    // sheet into swap mode and stop here. The user picks which pinned
+    // chip to replace via handleSwapModeReplace.
+    if (quickSelectCategories.length >= QUICK_SELECT_MAX) {
+      setPendingSwapCategory(cat);
+      return;
+    }
     const next = [...quickSelectCategories, cat].slice(0, QUICK_SELECT_MAX);
     await saveQuickSelect(next);
   };
@@ -481,6 +620,18 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     }
     next[idx] = cat;
     await saveQuickSelect(next);
+  };
+
+  const handleSwapModeReplace = async (idx: number) => {
+    if (!pendingSwapCategory) return;
+    const cat = pendingSwapCategory;
+    setPendingSwapCategory(null);
+    closeSeeMore();
+    await handleReplaceCategory(idx, cat);
+  };
+
+  const handleSwapCancel = () => {
+    setPendingSwapCategory(null);
   };
 
   const handleRemoveCategory = async (idx: number) => {
@@ -508,17 +659,16 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     setEntries(hookData.entries);
     setWorkoutLogs(hookData.workoutLogs);
     setTotalOz(hookData.totalOz);
-    setWaterTarget(hookData.waterTarget);
-    setStepTarget(hookData.stepTarget);
-    setCalorieTarget(hookData.calorieTarget);
     setHkAuthorized(hookData.hkAuthorized);
     setStepsToday(hookData.stepsToday);
     setCaloriesToday(hookData.caloriesToday);
     setPackRun(hookData.packRun);
     setLocalWeeklyPoints(hookData.localWeeklyPoints);
     setLocalScore(hookData.localScore);
-    setHasManualSteps(hookData.localScore?.has_manual_steps ?? false);
-    setHasManualCalories(hookData.localScore?.has_manual_calories ?? false);
+    // F.2: M-badge derives from manual_*_count > 0 (replaced the prior
+    // has_manual_* booleans dropped in migration 20260513b).
+    setHasManualSteps((hookData.localScore?.manual_steps_count ?? 0) > 0);
+    setHasManualCalories((hookData.localScore?.manual_calories_count ?? 0) > 0);
     if (hookData.packRun && hookData.localScore) {
       patchMyScore(hookData.packRun.packId, {
         ...hookData.localScore,
@@ -541,11 +691,11 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
       }).start();
     } else {
       setFeedback(null);
-      setExpandedId(null);
+      setCurrentPage("overview");
+      pageAnim.setValue(0);
       setRawSteps("");
       setRawCal("");
       setWorkoutLogs([]);
-      setPhotos({});
       prevRankRef.current = null;
       feedbackAnim.setValue(0);
       Animated.timing(slideAnim, {
@@ -559,22 +709,87 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     }
   }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Goal reached fade ──────────────────────────────────────────────────────
-
+  // Pass 25-followup-E.2.a.i-fix: fetch rank context on sheet open so the
+  // banner shows immediately, not just after the first log. Fires whenever
+  // (visible flips to true) AND (packRun is loaded). For the typical
+  // cold-open path, packRun is null at the visible→true transition and
+  // populates a tick later via useLogActivitySheetData — this effect
+  // catches that case by depending on packRun?.runId.
   useEffect(() => {
-    const goalReached = waterTarget > 0 && totalOz >= waterTarget;
-    if (goalReached && !prevGoalReached.current) {
-      goalFadeAnim.setValue(0);
-      Animated.timing(goalFadeAnim, {
-        toValue: 1,
-        duration: 400,
+    if (visible && userId && packRun) {
+      fetchFeedback(userId, packRun.runId).catch((e) =>
+        console.warn("[LogSheet] fetchFeedback mount:", e),
+      );
+    }
+  }, [visible, userId, packRun?.runId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Keyboard offset (Pass 25-followup-B-final-2 Section C) ────────────────
+  //
+  // Translate the sheet upward by keyboard height when the keyboard opens
+  // so the row header + expanded body sit above the keyboard. Composed
+  // with slideAnim via Animated.add at the sheet's transform — both
+  // values run on the native driver, no driver mixing.
+  //
+  // Match `event.duration` from the keyboard event for native-feel sync.
+  // Fallback 250ms if duration is missing (older iOS sometimes reports 0).
+  useEffect(() => {
+    const showSub = Keyboard.addListener("keyboardWillShow", (e) => {
+      Animated.timing(keyboardOffsetAnim, {
+        toValue: -e.endCoordinates.height,
+        duration: e.duration || 250,
         useNativeDriver: true,
       }).start();
-    } else if (!goalReached) {
-      goalFadeAnim.setValue(0);
+    });
+    const hideSub = Keyboard.addListener("keyboardWillHide", (e) => {
+      Animated.timing(keyboardOffsetAnim, {
+        toValue: 0,
+        duration: e.duration || 250,
+        useNativeDriver: true,
+      }).start();
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [keyboardOffsetAnim]);
+
+  // ── Reduce motion preference ───────────────────────────────────────────────
+  useEffect(() => {
+    AccessibilityInfo.isReduceMotionEnabled().then(setReduceMotion);
+    const sub = AccessibilityInfo.addEventListener?.(
+      "reduceMotionChanged",
+      setReduceMotion,
+    );
+    return () => {
+      if (sub?.remove) sub.remove();
+    };
+  }, []);
+
+  // ── Data opacity animation ─────────────────────────────────────────────────
+  useEffect(() => {
+    if (hookData) {
+      Animated.timing(dataOpacityAnim, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      dataOpacityAnim.setValue(0);
     }
-    prevGoalReached.current = goalReached;
-  }, [totalOz, waterTarget, goalFadeAnim]);
+  }, [hookData, dataOpacityAnim]);
+
+  // ── Feedback banner opacity animation ──────────────────────────────────────
+  useEffect(() => {
+    if (feedback) {
+      Animated.timing(feedbackOpacity, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      feedbackOpacity.setValue(0);
+    }
+  }, [feedback, feedbackOpacity]);
 
   // ── Connect Apple Health ───────────────────────────────────────────────────
 
@@ -601,153 +816,183 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
   };
 
   // ── Competitive feedback ───────────────────────────────────────────────────
+  // Scope post-Pass-25-followup-E.2.a.iii: query weekly rank, drive banner
+  // text/state via setFeedback, update prevRankRef. NO activity_feed writes
+  // or push fires — those are owned by detectAndRecordTookLead in
+  // src/lib/competitiveDetection.ts, fired from inside each sync function's
+  // per-pack loop. Name retained because the function still fetches feedback
+  // (rank context → banner copy); E.2.b may absorb it into a broader
+  // competitive-feedback primitive.
 
   const fetchFeedback = async (uid: string, runId: string) => {
     const today = packToday(packRun?.packTimezone ?? "UTC");
 
-    const { data: scores } = await supabase
+    // Pass 25-followup-E.1-fix: query the full run (not today only) and
+    // aggregate weekly_points client-side. Rank branches read weekly_points
+    // to match pack screen / home cards / threatNotifications;
+    // the "+N pts today" / "Start your day" copy still reads today's
+    // points via a parallel todayMap side-channel. Before this fix, rank
+    // was computed off today-only daily_scores rows, which produced false
+    // took_lead notifications when a user logged today while still behind
+    // on the weekly leaderboard.
+    const { data: rows } = await supabase
       .from("daily_scores")
-      .select("user_id, total_points")
-      .eq("run_id", runId)
-      .eq("score_date", today)
-      .order("total_points", { ascending: false });
+      .select("user_id, total_points, score_date")
+      .eq("run_id", runId);
 
-    if (!scores || scores.length === 0) return;
+    if (!rows || rows.length === 0) return;
+
+    const weekly: Record<string, number> = {};
+    const todayMap: Record<string, number> = {};
+    for (const r of rows) {
+      weekly[r.user_id] = (weekly[r.user_id] ?? 0) + r.total_points;
+      if (r.score_date === today) todayMap[r.user_id] = r.total_points;
+    }
+
+    const scores = Object.entries(weekly)
+      .map(([user_id, weekly_points]) => ({
+        user_id,
+        weekly_points,
+        today_points: todayMap[user_id] ?? 0,
+      }))
+      .sort((a, b) => b.weekly_points - a.weekly_points);
 
     const myIndex = scores.findIndex((s) => s.user_id === uid);
     if (myIndex === -1) return;
 
-    const myPts = scores[myIndex].total_points;
+    const myWeekly = scores[myIndex].weekly_points;
+    const myToday = scores[myIndex].today_points;
     const myRank = myIndex + 1;
     const prevRank = prevRankRef.current;
     prevRankRef.current = myRank;
 
     let text: string;
-    let positive: boolean;
+    let state: BannerState;
 
-    if (scores.length === 1) {
-      text = myPts > 0 ? `+${myPts} pts today` : "Start your day";
-      positive = true;
-    } else if (myRank === 1) {
-      const lead = myPts - scores[1].total_points;
-      if (prevRank !== null && prevRank > 1) {
-        text = "You took the lead";
-        positive = true;
-        if (packRun?.packId) {
-          // Plain INSERT (not upsert) — the dedup index
-          // idx_activity_feed_no_dup_goals is a PARTIAL unique index, and
-          // supabase-js's upsert + onConflict can't match partial indexes;
-          // Postgres throws 42P10. The same partial index still enforces
-          // uniqueness on INSERT, so a same-day re-take raises 23505,
-          // which we treat as the dedup no-op (matches the original intent
-          // of ignoreDuplicates: true). See Pass 9 / Pass 20d / Pass 20e
-          // for the same pattern across syncWater/logActivity/healthkit/
-          // edit-pack.
-          const { data: insertedLead, error: leadError } = await supabase
-            .from("activity_feed")
-            .insert({
-              pack_id: packRun.packId,
-              user_id: uid,
-              activity_type: "took_lead",
-              value: 0,
-              points_earned: 0,
-              entry_method: "system",
-              score_date: today,
-            })
-            .select("id");
-          if (leadError) {
-            // 23505 = unique violation on the partial index = same-day
-            // re-take. Silent no-op (matches the dedup intent). Other
-            // errors surface for diagnosis.
-            if (leadError.code !== "23505") {
-              console.error("[LogSheet] took_lead insert error:", leadError);
-            }
-          } else if (insertedLead && insertedLead.length > 0) {
-            notifyPackMembers(uid, packRun.packId, { kind: "took_lead" }).catch(() => {});
-          }
-        }
-      } else if (lead === 0) {
-        text = "Tied for #1";
-        positive = true;
-      } else {
-        text = `Leading by ${lead} pts`;
-        positive = true;
-      }
-    } else {
-      const aheadRow = scores[myIndex - 1];
-      const gap = aheadRow.total_points - myPts;
+    // if (scores.length === 1) {
+    //   if (myToday > 0) {
+    //     text = `+${myToday} pts today`;
+    //     state = "solo";
+    //   } else {
+    //     text = "Start your day";
+    //     state = "no_logs";
+    //   }
+    // } else if (myRank === 1) {
+    //   const lead = myWeekly - scores[1].weekly_points;
+    //   // Tie suppression: took_lead requires strictly ahead (lead > 0).
+    //   // A tie isn't a lead — falls through to the "Tied for #1" branch
+    //   // below. Matches threatNotifications' actorIsNowStrictlyAhead gate
+    //   // so both took_lead emitters agree on semantics.
+    //   if (prevRank !== null && prevRank > 1 && lead > 0) {
+    //     text = "You took the lead";
+    //     state = "took_lead";
+    //     // took_lead INSERT + push moved to detectAndRecordTookLead in
+    //     // src/lib/competitiveDetection.ts, fired from inside each sync
+    //     // function's per-pack loop (Pass 25-followup-E.2.a.iii). This
+    //     // branch retains only the banner text/state update.
+    //   } else if (lead === 0) {
+    //     text = "Tied for #1";
+    //     state = "tied_top";
+    //   } else {
+    //     text = `#1 · Leading by ${lead} pts`;
+    //     state = "leading";
+    //   }
+    // } else {
+    //   const aheadRow = scores[myIndex - 1];
+    //   const gap = aheadRow.weekly_points - myWeekly;
 
-      const { data: userData } = await supabase
-        .from("users")
-        .select("display_name")
-        .eq("id", aheadRow.user_id)
-        .maybeSingle();
+    //   const { data: userData } = await supabase
+    //     .from("users")
+    //     .select("display_name")
+    //     .eq("id", aheadRow.user_id)
+    //     .maybeSingle();
 
-      const aheadName = userData?.display_name ?? `#${myRank - 1}`;
+    //   const aheadName = userData?.display_name ?? `#${myRank - 1}`;
 
-      if (gap === 0) {
-        text = `Tied with ${aheadName}`;
-        positive = true;
-      } else {
-        text = `${gap} pts behind ${aheadName}`;
-        positive = false;
-      }
-    }
+    //   if (gap === 0) {
+    //     text = `#${myRank} · Tied with ${aheadName}`;
+    //     state = "tied_lower";
+    //   } else {
+    //     text = `#${myRank} · ${gap} pts behind ${aheadName}`;
+    //     state = "behind";
+    //   }
+    // }
 
-    feedbackAnim.setValue(0);
-    setFeedback({ text, positive });
-    requestAnimationFrame(() => {
-      Animated.timing(feedbackAnim, {
-        toValue: 1,
-        duration: 350,
-        useNativeDriver: true,
-      }).start();
-    });
+    // feedbackAnim.setValue(0);
+    // setFeedback({ text, state });
+    // requestAnimationFrame(() => {
+    //   Animated.timing(feedbackAnim, {
+    //     toValue: 1,
+    //     duration: 350,
+    //     useNativeDriver: true,
+    //   }).start();
+    // });
   };
 
-  // ── Photo upload ──────────────────────────────────────────────────────────
+  // ── Page navigation ────────────────────────────────────────────────────────
+  const goToDetail = (id: ActivityId) => {
+    setCurrentPage(id);
+    if (reduceMotion) {
+      pageAnim.setValue(1);
+    } else {
+      Animated.timing(pageAnim, {
+        toValue: 1,
+        duration: 250,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    }
+  };
 
-  const uploadPhotoInBackground = useCallback(
-    (activityType: ActivityId, photo: PickedPhoto) => {
-      console.log("[uploadPhotoInBackground] called", { activityType, hasPhoto: !!photo });
-      if (!userId || !packRun) return;
-      const { packId } = packRun;
-      setPhotos((prev) => {
-        const next = { ...prev };
-        delete next[activityType];
-        return next;
+  const goToOverview = () => {
+    if (reduceMotion) {
+      pageAnim.setValue(0);
+      setCurrentPage("overview");
+    } else {
+      Animated.timing(pageAnim, {
+        toValue: 0,
+        duration: 250,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }).start(() => {
+        setCurrentPage("overview");
       });
-      console.log("[uploadPhotoInBackground] starting uploadPhoto");
-      uploadPhoto(userId, photo)
-        .then((storagePath) => {
-          console.log("[uploadPhotoInBackground] uploadPhoto done", { storagePath });
-          analytics.photoAdded(activityType, packId);
-          console.log("[uploadPhotoInBackground] calling attach", {
-            userId,
-            packId,
-            activityType,
-            storagePath,
-          });
-          return attachPhotoToLatestFeedEntry(userId, packId, activityType, storagePath).then(() => {
-            console.log("[uploadPhotoInBackground] attach returned");
-          });
-        })
-        .catch((err: unknown) => {
-          console.error("[LogSheet] photo upload failed:", err);
-          analytics.photoUploadFailed(err instanceof Error ? err.message : "unknown");
-          Alert.alert("Upload failed", "Your activity was saved but the photo couldn't be uploaded.");
-        });
-    },
-    [userId, packRun],
-  );
+    }
+  };
+
+  // ── Log-success flash ────────────────────────────────────────────────────
+
+  // Pass 25-followup-B-fix Section A: brief tint-fade on the row's value
+  // text after a successful log. Decoupled from any target/achievement —
+  // fires on every successful log as plain "we got it" acknowledgment.
+  // Pass 25-followup-B-polish Section A: hold-then-fade timing curve.
+  // Instant peak (0ms timing) + 200ms hold at full green + 600ms fade.
+  // The held peak gives the eye time to register before the fade — the
+  // pre-polish 600ms color-only fade was too subtle to perceive.
+  function flashRow(anim: Animated.Value) {
+    Animated.sequence([
+      Animated.timing(anim, {
+        toValue: 1,
+        duration: 0,
+        useNativeDriver: false,
+      }),
+      Animated.delay(200),
+      Animated.timing(anim, {
+        toValue: 0,
+        duration: 600,
+        useNativeDriver: false,
+      }),
+    ]).start();
+  }
 
   // ── Log workout ────────────────────────────────────────────────────────────
 
   const handleLogWorkout = async (category: ActivityCategory) => {
     if (!userId || workoutSaving) return;
 
+    // Pass 25-followup-C: cap-gate removed. Users can log activity that
+    // happened; scoring caps points server-side via workoutPoints helper.
     const currentCount = localScore?.workout_count ?? 0;
-    if (currentCount >= WORKOUT_MAX_DAILY) return; // silently guard; UI already disables
 
     setWorkoutSaving(true);
     dismissHint();
@@ -755,41 +1000,44 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
 
     const newWorkoutCount = currentCount + 1;
 
-    if (packRun) {
-      const base = localScore ?? {
-        steps_achieved: false,
-        workout_achieved: false,
-        calories_achieved: false,
-        water_achieved: false,
-        streak_multiplier: 1,
-      };
-      const newTotalPoints = Math.round(
-        ((base.steps_achieved ? POINTS.steps : 0) +
-          Math.min(newWorkoutCount, WORKOUT_MAX_DAILY) * POINTS.workout +
-          (base.calories_achieved ? POINTS.calories : 0) +
-          (base.water_achieved ? POINTS.water : 0)) *
-          (base.streak_multiplier ?? 1),
-      );
-      const pointsDelta = newTotalPoints - (localScore?.total_points ?? 0);
-      const newWeeklyPoints = localWeeklyPoints + pointsDelta;
-      setLocalWeeklyPoints(newWeeklyPoints);
+    // Pass 25-followup-B-final-2 Section A checkpoint 2: optimistic local
+    // UI patch lifted out of the `if (packRun)` gate. setLocalScore +
+    // points computation + setLocalWeeklyPoints all run unconditionally so
+    // fresh-day-start (when packRun resolves null until run is fetched)
+    // doesn't lose the optimistic UI update. patchMyScore alone stays
+    // gated since it requires packRun.packId.
+    const base = localScore ?? EMPTY_LOCAL_SCORE;
+    const newTotalPoints = Math.round(
+      ((base.steps_achieved ? POINTS.steps : 0) +
+        Math.min(newWorkoutCount, WORKOUT_MAX_DAILY) * POINTS.workout +
+        (base.calories_achieved ? POINTS.calories : 0) +
+        (base.water_achieved ? POINTS.water : 0)) *
+        (base.streak_multiplier ?? 1),
+    );
+    const pointsDelta = newTotalPoints - (localScore?.total_points ?? 0);
+    const newWeeklyPoints = localWeeklyPoints + pointsDelta;
+    setLocalWeeklyPoints(newWeeklyPoints);
 
-      const patch = {
-        weekly_points: newWeeklyPoints,
-        workout_achieved: true,
-        workout_count: newWorkoutCount,
-        total_points: newTotalPoints,
-      };
+    const patch = {
+      weekly_points: newWeeklyPoints,
+      workout_achieved: true,
+      workout_count: newWorkoutCount,
+      total_points: newTotalPoints,
+    };
+    setLocalScore((prev) => ({ ...(prev ?? EMPTY_LOCAL_SCORE), ...patch }));
+    if (packRun) {
       patchMyScore(packRun.packId, patch);
-      setLocalScore((prev) => (prev ? { ...prev, ...patch } : null));
     }
 
     // Optimistically add a log entry for the expanded history
-    setWorkoutLogs((prev) => [...prev, { logged_at: new Date().toISOString(), entry_method: "manual" }]);
+    setWorkoutLogs((prev) => [
+      ...prev,
+      { logged_at: new Date().toISOString(), entry_method: "manual" },
+    ]);
+    flashRow(workoutFlashAnim);
 
     try {
       await syncManualActivityToDailyScores(userId, "workout", 1, category);
-      if (photos.workout) uploadPhotoInBackground("workout", photos.workout);
       invalidateLogActivitySheetCache();
       bumpLogVersion();
       if (packRun) {
@@ -801,6 +1049,10 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
       // Rollback optimistic update on error
       setWorkoutLogs((prev) => prev.slice(0, -1));
       console.error("[LogSheet] handleLogWorkout error:", err);
+      setLocalScore((prev) => ({
+        ...(prev ?? EMPTY_LOCAL_SCORE),
+        workout_count: currentCount,
+      }));
       if (packRun && localScore) {
         patchMyScore(packRun.packId, {
           weekly_points: localWeeklyPoints,
@@ -808,7 +1060,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
           workout_count: localScore.workout_count,
           total_points: localScore.total_points,
         });
-        setLocalScore((prev) => prev ? { ...prev, workout_count: currentCount } : null);
       }
     } finally {
       setWorkoutSaving(false);
@@ -822,35 +1073,31 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     setManualStepsSaving(true);
     Vibration.vibrate(40);
 
+    // Pass 25-followup-B: count-only optimistic patching. Achievement +
+    // total_points re-derive server-side per-pack and refetch after
+    // syncManualActivityToDailyScores. fetchFeedback was target-tied; gone.
     const prevCount = localScore?.steps_count ?? 0;
     const newCount = prevCount + delta;
-    const wasAchieved = localScore?.steps_achieved ?? false;
-    const nowAchieved = newCount >= stepTarget;
 
+    // Pass 25-followup-B-final-2 Section A checkpoint 2: setLocalScore
+    // lifted out of the packRun gate so optimistic count UI updates fire
+    // even on fresh-day-start when packRun is null.
+    const patch = { steps_count: newCount };
+    setLocalScore((prev) => ({ ...(prev ?? EMPTY_LOCAL_SCORE), ...patch }));
     if (packRun) {
-      const base = localScore ?? { steps_achieved: false, workout_achieved: false, calories_achieved: false, water_achieved: false, streak_multiplier: 1 };
-      const newTotalPoints = Math.round(
-        ((nowAchieved ? POINTS.steps : 0) +
-          (base.workout_achieved ? POINTS.workout : 0) +
-          (base.calories_achieved ? POINTS.calories : 0) +
-          (base.water_achieved ? POINTS.water : 0)) * (base.streak_multiplier ?? 1),
-      );
-      const pointsDelta = newTotalPoints - (localScore?.total_points ?? 0);
-      const newWeeklyPoints = localWeeklyPoints + pointsDelta;
-      setLocalWeeklyPoints(newWeeklyPoints);
-      const patch = { weekly_points: newWeeklyPoints, steps_count: newCount, steps_achieved: nowAchieved, total_points: newTotalPoints };
       patchMyScore(packRun.packId, patch);
-      setLocalScore((prev) => prev ? { ...prev, ...patch } : null);
     }
     setHasManualSteps(true);
+    flashRow(stepsFlashAnim);
 
     try {
       await syncManualActivityToDailyScores(userId, "steps", delta);
-      if (photos.steps) uploadPhotoInBackground("steps", photos.steps);
       invalidateLogActivitySheetCache();
       bumpLogVersion();
-      if (packRun && !wasAchieved && nowAchieved) {
-        fetchFeedback(userId, packRun.runId).catch(() => {});
+      if (packRun) {
+        fetchFeedback(userId, packRun.runId).catch((e) =>
+          console.warn("[LogSheet] fetchFeedback:", e),
+        );
       }
     } catch (err) {
       console.error("[LogSheet] handleManualSteps error:", err);
@@ -864,35 +1111,27 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     setManualCalSaving(true);
     Vibration.vibrate(40);
 
+    // Pass 25-followup-B: count-only optimistic patching (see handleManualSteps).
     const prevCount = localScore?.calories_count ?? 0;
     const newCount = prevCount + delta;
-    const wasAchieved = localScore?.calories_achieved ?? false;
-    const nowAchieved = newCount >= calorieTarget;
 
+    // Pass 25-followup-B-final-2 Section A checkpoint 2: setLocalScore lifted (see handleManualSteps).
+    const patch = { calories_count: newCount };
+    setLocalScore((prev) => ({ ...(prev ?? EMPTY_LOCAL_SCORE), ...patch }));
     if (packRun) {
-      const base = localScore ?? { steps_achieved: false, workout_achieved: false, calories_achieved: false, water_achieved: false, streak_multiplier: 1 };
-      const newTotalPoints = Math.round(
-        ((base.steps_achieved ? POINTS.steps : 0) +
-          (base.workout_achieved ? POINTS.workout : 0) +
-          (nowAchieved ? POINTS.calories : 0) +
-          (base.water_achieved ? POINTS.water : 0)) * (base.streak_multiplier ?? 1),
-      );
-      const pointsDelta = newTotalPoints - (localScore?.total_points ?? 0);
-      const newWeeklyPoints = localWeeklyPoints + pointsDelta;
-      setLocalWeeklyPoints(newWeeklyPoints);
-      const patch = { weekly_points: newWeeklyPoints, calories_count: newCount, calories_achieved: nowAchieved, total_points: newTotalPoints };
       patchMyScore(packRun.packId, patch);
-      setLocalScore((prev) => prev ? { ...prev, ...patch } : null);
     }
     setHasManualCalories(true);
+    flashRow(caloriesFlashAnim);
 
     try {
       await syncManualActivityToDailyScores(userId, "calories", delta);
-      if (photos.calories) uploadPhotoInBackground("calories", photos.calories);
       invalidateLogActivitySheetCache();
       bumpLogVersion();
-      if (packRun && !wasAchieved && nowAchieved) {
-        fetchFeedback(userId, packRun.runId).catch(() => {});
+      if (packRun) {
+        fetchFeedback(userId, packRun.runId).catch((e) =>
+          console.warn("[LogSheet] fetchFeedback:", e),
+        );
       }
     } catch (err) {
       console.error("[LogSheet] handleManualCalories error:", err);
@@ -926,49 +1165,50 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     Vibration.vibrate(40);
 
     const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    // F.2: deviceLocalToday() is the single source of truth for the
+    // YYYY-MM-DD string written to water_logs.log_date. syncWater and
+    // useLogActivitySheetData read the table with the same helper, so
+    // all three surfaces resolve identical date strings (was an
+    // inline getFullYear/Month/Date construction here + an
+    // Intl.DateTimeFormat call on the read side that leaked UTC in
+    // Hermes — F.2 Bug 3).
+    const today = deviceLocalToday();
     const newTotalOz = totalOz + amount;
-    const newEntry: LogEntry = { amount_oz: amount, logged_at: now.toISOString() };
+    const newEntry: LogEntry = {
+      amount_oz: amount,
+      logged_at: now.toISOString(),
+    };
 
     const anim = scaleAnims[amount];
     if (anim) {
       Animated.sequence([
-        Animated.spring(anim, { toValue: 0.94, useNativeDriver: true, speed: 50, bounciness: 0 }),
-        Animated.spring(anim, { toValue: 1, useNativeDriver: true, speed: 20, bounciness: 4 }),
+        Animated.spring(anim, {
+          toValue: 0.94,
+          useNativeDriver: true,
+          speed: 50,
+          bounciness: 0,
+        }),
+        Animated.spring(anim, {
+          toValue: 1,
+          useNativeDriver: true,
+          speed: 20,
+          bounciness: 4,
+        }),
       ]).start();
     }
 
     setEntries((prev) => [newEntry, ...prev]);
     setTotalOz(newTotalOz);
 
+    // Pass 25-followup-B: count-only optimistic patching (see handleManualSteps).
+    // Pass 25-followup-B-final-2 Section A checkpoint 2: setLocalScore lifted out
+    // of packRun gate so optimistic count UI updates on fresh-day-start.
+    const patch = { water_oz_count: Math.round(newTotalOz) };
+    setLocalScore((prev) => ({ ...(prev ?? EMPTY_LOCAL_SCORE), ...patch }));
     if (packRun) {
-      const base = localScore ?? {
-        steps_achieved: false,
-        workout_achieved: false,
-        calories_achieved: false,
-        streak_multiplier: 1,
-      };
-      const water_achieved = newTotalOz >= waterTarget;
-      const basePoints =
-        (base.steps_achieved ? POINTS.steps : 0) +
-        (base.workout_achieved ? POINTS.workout : 0) +
-        (base.calories_achieved ? POINTS.calories : 0) +
-        (water_achieved ? POINTS.water : 0);
-      const newTotalPoints = Math.round(basePoints * (base.streak_multiplier ?? 1));
-
-      const pointsDelta = newTotalPoints - (localScore?.total_points ?? 0);
-      const newWeeklyPoints = localWeeklyPoints + pointsDelta;
-      setLocalWeeklyPoints(newWeeklyPoints);
-
-      const patch = {
-        weekly_points: newWeeklyPoints,
-        water_oz_count: Math.round(newTotalOz),
-        water_achieved,
-        total_points: newTotalPoints,
-      };
       patchMyScore(packRun.packId, patch);
-      setLocalScore((prev) => (prev ? { ...prev, ...patch } : null));
     }
+    flashRow(waterFlashAnim);
 
     try {
       const { error: insertError } = await supabase.from("water_logs").insert({
@@ -980,10 +1220,8 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
       if (insertError) throw insertError;
 
       await syncWaterToDailyScores(userId);
-      if (photos.water) uploadPhotoInBackground("water", photos.water);
       invalidateLogActivitySheetCache();
       bumpLogVersion();
-
       if (packRun) {
         fetchFeedback(userId, packRun.runId).catch((e) =>
           console.warn("[LogSheet] fetchFeedback:", e),
@@ -1001,33 +1239,41 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
   // ── Derived values ─────────────────────────────────────────────────────────
 
   const formatTime = (iso: string) =>
-    new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    new Date(iso).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 
-  const goalReached = waterTarget > 0 && totalOz >= waterTarget;
   const displayedEntries = entries.slice(0, 5);
   const moreCount = entries.length - 5;
 
-  const stepsAchieved = localScore?.steps_achieved ?? false;
-  const calAchieved = localScore?.calories_achieved ?? false;
   // Prefer the DB-backed localScore count (includes manual entries) over the raw
   // HealthKit value, which never reflects manual additions.
   const stepsDisplay: number | null = localScore?.steps_count ?? stepsToday;
   const calDisplay: number | null = localScore?.calories_count ?? caloriesToday;
-  const stepsBarPct = hkAuthorized && stepTarget > 0 && stepsDisplay !== null
-    ? (`${Math.round(Math.min(1, stepsDisplay / stepTarget) * 100)}%` as `${number}%`)
-    : "0%";
-  const calBarPct = hkAuthorized && calorieTarget > 0 && calDisplay !== null
-    ? (`${Math.round(Math.min(1, calDisplay / calorieTarget) * 100)}%` as `${number}%`)
-    : "0%";
+
+  // ── Quick Select and page variables ────────────────────────────────────────
+  const screenWidth = Dimensions.get("window").width;
+  const translateX = pageAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -screenWidth],
+  });
+  const wCount = localScore?.workout_count ?? 0;
+  const visibleChips = quickSelectCategories.slice(0, QUICK_SELECT_MAX);
+  const canAddMore = quickSelectCategories.length < QUICK_SELECT_MAX;
+  const showHint = !hintDismissed && canAddMore;
 
   // ── Row right-side content helpers ────────────────────────────────────────
 
+  // Pass 25-followup-B: targets and achievement check removed. Renders the
+  // user's "today" count without a goal denominator. LogSheet is now a
+  // personal logger; per-pack achievement evaluation lives server-side.
+  // Pass 25-followup-B-fix: value text now Animated.Text driven by the row's
+  // flashAnim — interpolates color C.textPrimary → C.success on log success.
   function hkRowRight(
     value: number | null,
-    target: number,
-    unit: string,
-    achieved: boolean,
     hasManual: boolean,
+    flashAnim: Animated.Value,
   ) {
     if (!hkAvailable) {
       return <Text style={s.valueDim}>—</Text>;
@@ -1038,11 +1284,22 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     return (
       <View style={{ alignItems: "flex-end", gap: 2 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Text style={s.rowValue}>
-            {value !== null ? value.toLocaleString() : "—"} / {target.toLocaleString()} {unit}
-          </Text>
+          <Animated.Text
+            style={[
+              s.rowValue,
+              {
+                color: flashAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [C.textPrimary, C.success],
+                }),
+              },
+            ]}
+          >
+            {value !== null ? value.toLocaleString() : "—"}
+          </Animated.Text>
+          {/* TODO(voice review): "today" suffix copy provisional. */}
+          <Text style={s.rowToday}>today</Text>
           {hasManual && <ManualBadge />}
-          {achieved && <Text style={s.rowCheck}>✓</Text>}
         </View>
         <HealthSourceBadge style={s.rowCaption} />
       </View>
@@ -1065,239 +1322,368 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
         </TouchableWithoutFeedback>
 
         <Animated.View
-          style={[s.sheet, { transform: [{ translateY: slideAnim }] }]}
+          style={[
+            s.sheet,
+            {
+              transform: [
+                {
+                  translateY: Animated.add(slideAnim, keyboardOffsetAnim),
+                },
+              ],
+            },
+          ]}
         >
-          {/* Handle */}
-          <View style={s.handleWrap}>
+          {/* Handle — sibling of the page track so the swipe-down gesture
+              is active on every page (CHANGE 4). */}
+          <View style={s.handleWrap} {...dismissPanResponder.panHandlers}>
             <View style={s.handle} />
           </View>
 
-          {/* Header */}
-          <Text style={s.header}>{activityCopy.logSheet.title}</Text>
+          {/* Header — Page 1 and Page 2 share the same row layout so the
+              centered title aligns visually across pages (CHANGE 1). Page 1
+              uses a 24px left spacer in place of the back chevron. */}
+          {currentPage === "overview" ? (
+            <View style={s.headerDetail}>
+              <View style={{ width: 24 }} />
+              <View style={s.headerCenter}>
+                <Text style={s.header}>{activityCopy.logSheet.title}</Text>
+              </View>
+              <View style={{ width: 24 }} />
+            </View>
+          ) : (
+            <View style={s.headerDetail}>
+              <TouchableOpacity onPress={goToOverview}>
+                <Ionicons name="chevron-back" size={24} color={C.textPrimary} />
+              </TouchableOpacity>
+              <Text style={s.header}>
+                {currentPage === "steps" && activityCopy.logSheet.types.steps}
+                {currentPage === "workout" &&
+                  activityCopy.logSheet.types.workout}
+                {currentPage === "calories" && "Calories"}
+                {currentPage === "water" && activityCopy.logSheet.types.water}
+              </Text>
+              <View style={{ width: 24 }} />
+            </View>
+          )}
 
-          <ScrollView
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={s.scrollContent}
+          {/* Rank-context banner (Pass 25-followup-E.2.a.i-fix).
+              Pinned to sheet chrome — sits between the header and the
+              scrollable activity rows so the user's rank position +
+              gap-to-next is the first thing visible on open. Color
+              tracks `feedback.state`: success for leading, leader gold
+              for tied_top/took_lead, textPrimary for behind/tied_lower,
+              textSecondary/Tertiary for solo/no_logs. */}
+          <Animated.View style={[s.feedbackRow, { opacity: feedbackOpacity }]}>
+            {feedback && (
+              <Text
+                style={[
+                  s.feedbackText,
+                  { color: bannerColorForState(feedback.state) },
+                ]}
+              >
+                {feedback.text}
+              </Text>
+            )}
+          </Animated.View>
+          <Animated.View style={[s.rowDivider, { opacity: feedbackOpacity }]} />
+
+          <Animated.View
+            style={[
+              s.pagesTrack,
+              {
+                transform: [{ translateX }],
+              },
+            ]}
           >
-            {!hookData ? (
-              <RowSkeleton />
-            ) : (
-              <View style={s.card}>
-                {/* ── STEPS ───────────────────────────────────────────── */}
-                <ActivityRow
-                  label={activityCopy.logSheet.types.steps}
-                  rightContent={hkRowRight(stepsDisplay, stepTarget, "steps", stepsAchieved, hasManualSteps)}
-                  showChevron={hkAvailable && hkAuthorized}
-                  isExpanded={expandedId === "steps"}
-                  onPress={() => {
-                    if (!hkAvailable) return;
-                    if (!hkAuthorized) { handleConnectHealthKit(); return; }
-                    toggleRow("steps");
-                  }}
-                >
-                  {/* Progress bar */}
-                  <View style={ar.barTrack}>
-                    <View style={[ar.barFill, { width: stepsBarPct, backgroundColor: stepsAchieved ? C.success : C.accent }]} />
+            {/* PAGE 1: Overview */}
+            <ScrollView
+              style={s.page}
+              scrollEnabled={false}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="interactive"
+              contentContainerStyle={s.scrollContent}
+            >
+              {!hookData ? (
+                <RowSkeleton />
+              ) : (
+                <>
+                  {/* Steps Row */}
+                  <ActivityRow
+                    label={activityCopy.logSheet.types.steps}
+                    rightContent={
+                      <Animated.Text
+                        style={[s.rowValue, { opacity: dataOpacityAnim }]}
+                      >
+                        {stepsDisplay !== null
+                          ? `${stepsDisplay.toLocaleString()} steps`
+                          : "—"}
+                      </Animated.Text>
+                    }
+                    showChevron={hkAvailable && hkAuthorized}
+                    isExpanded={false}
+                    onPress={() => {
+                      if (!hkAvailable) return;
+                      if (!hkAuthorized) {
+                        handleConnectHealthKit();
+                        return;
+                      }
+                      goToDetail("steps");
+                    }}
+                  />
+
+                  <View style={s.rowDivider} />
+
+                  {/* Workout Row */}
+                  <ActivityRow
+                    label={activityCopy.logSheet.types.workout}
+                    rightContent={
+                      <Animated.Text
+                        style={[s.valueDim, { opacity: dataOpacityAnim }]}
+                      >
+                        {wCount === 0 ? "None today" : `${wCount} logged today`}
+                      </Animated.Text>
+                    }
+                    showChevron
+                    isExpanded={false}
+                    onPress={() => goToDetail("workout")}
+                  />
+
+                  <View style={s.rowDivider} />
+
+                  {/* Calories Row */}
+                  <ActivityRow
+                    label="Calories"
+                    rightContent={
+                      <Animated.Text
+                        style={[s.rowValue, { opacity: dataOpacityAnim }]}
+                      >
+                        {calDisplay !== null
+                          ? `${calDisplay.toLocaleString()} cal`
+                          : "—"}
+                      </Animated.Text>
+                    }
+                    showChevron={hkAvailable && hkAuthorized}
+                    isExpanded={false}
+                    onPress={() => {
+                      if (!hkAvailable) return;
+                      if (!hkAuthorized) {
+                        handleConnectHealthKit();
+                        return;
+                      }
+                      goToDetail("calories");
+                    }}
+                  />
+
+                  <View style={s.rowDivider} />
+
+                  {/* Water Row */}
+                  <ActivityRow
+                    label={activityCopy.logSheet.types.water}
+                    rightContent={
+                      <Animated.Text
+                        style={[s.rowValue, { opacity: dataOpacityAnim }]}
+                      >
+                        {totalOz} oz
+                      </Animated.Text>
+                    }
+                    showChevron
+                    isExpanded={false}
+                    onPress={() => goToDetail("water")}
+                  />
+                </>
+              )}
+            </ScrollView>
+
+            {/* PAGE 2: Detail */}
+            <ScrollView
+              style={s.page}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="interactive"
+              contentContainerStyle={s.scrollContentDetail}
+            >
+              {/* Steps Detail */}
+              {currentPage === "steps" && (
+                <>
+                  <View style={s.captionBlock}>
+                    <HealthSourceBadge style={ar.caption} />
+                    <Text style={ar.manualCaption}>
+                      M = manual entry, visible to your pack
+                    </Text>
                   </View>
-                  <HealthSourceBadge style={ar.caption} />
-                  {/* Manual entry */}
                   <View style={ar.inputRow}>
                     <TextInput
                       style={ar.input}
                       value={rawSteps}
                       onChangeText={setRawSteps}
-                      placeholder="0 steps"
+                      placeholder="Enter steps"
                       placeholderTextColor={C.textTertiary}
                       keyboardType="number-pad"
                       maxLength={8}
                     />
                     <TouchableOpacity
-                      style={[ar.addBtn, (manualStepsSaving || rawSteps.length === 0) && ar.addBtnDisabled]}
-                      onPress={handleSaveManualSteps}
+                      style={[
+                        ar.addBtn,
+                        (manualStepsSaving || rawSteps.length === 0) &&
+                          ar.addBtnDisabled,
+                      ]}
+                      onPress={() => {
+                        handleSaveManualSteps();
+                        goToOverview();
+                      }}
                       disabled={manualStepsSaving || rawSteps.length === 0}
                       activeOpacity={0.8}
                     >
-                      <Text style={ar.addBtnText}>{manualStepsSaving ? "…" : "Add"}</Text>
+                      <Text style={ar.addBtnText}>
+                        {manualStepsSaving ? "…" : "Add"}
+                      </Text>
                     </TouchableOpacity>
                   </View>
-                  <Text style={ar.manualCaption}>Manual entries are flagged with M to your pack.</Text>
-                  <PhotoPicker
-                    photo={photos.steps ?? null}
-                    onPhotoSelected={(p) => setPhotos((prev) => ({ ...prev, steps: p }))}
-                    onPhotoRemoved={() => setPhotos((prev) => { const n = { ...prev }; delete n.steps; return n; })}
-                    disabled={manualStepsSaving}
-                  />
-                </ActivityRow>
 
-                <View style={s.rowDivider} />
-
-                {/* ── WORKOUT ─────────────────────────────────────────── */}
-                {(() => {
-                  const wCount = localScore?.workout_count ?? 0;
-                  const atCap = wCount >= WORKOUT_MAX_DAILY;
-                  const emptySlots = Math.max(
-                    0,
-                    QUICK_SELECT_MAX - quickSelectCategories.length,
-                  );
-                  const showHint = !hintDismissed && emptySlots > 0;
-                  return (
-                    <ActivityRow
-                      label={activityCopy.logSheet.types.workout}
-                      rightContent={
-                        atCap
-                          ? <Text style={s.valueSuccess}>{wCount}/{WORKOUT_MAX_DAILY} ✓</Text>
-                          : wCount === 1
-                            ? <Text style={s.valueDim}>1/{WORKOUT_MAX_DAILY} logged</Text>
-                            : <Text style={s.valueDim}>Not logged</Text>
-                      }
-                      showChevron
-                      isExpanded={expandedId === "workout"}
-                      onPress={() => toggleRow("workout")}
-                    >
-                      {atCap ? (
-                        <Text style={ar.workoutDoneText}>
-                          {WORKOUT_MAX_DAILY}/{WORKOUT_MAX_DAILY} workouts today — max reached
+                  {(localScore?.manual_steps_count ?? 0) > 0 && (
+                    <View>
+                      <Text style={ar.entriesLabel}>TODAY</Text>
+                      <View style={ar.entryRow}>
+                        <Text style={ar.entryAmount}>
+                          Manual:{" "}
+                          {(
+                            localScore?.manual_steps_count ?? 0
+                          ).toLocaleString()}{" "}
+                          steps
                         </Text>
-                      ) : (
-                        <>
-                          {/* Quick Select grid: 2 rows × 3 cols. Filled chips
-                              come from quickSelectCategories in pinned order;
-                              remaining slots up to QUICK_SELECT_MAX render as
-                              dashed + slots that open See More. */}
-                          <View style={qs.grid}>
-                            {quickSelectCategories.map((cat, idx) => (
-                              <View key={`chip-${idx}`} style={qs.cell}>
-                                <CategoryChip
-                                  label={CATEGORY_DISPLAY_NAMES[cat]}
-                                  onPress={() => {
-                                    dismissHint();
-                                    handleLogWorkout(cat);
-                                  }}
-                                  onLongPress={() => setChipMenuIndex(idx)}
-                                  disabled={workoutSaving}
-                                />
-                              </View>
-                            ))}
-                            {Array.from({ length: emptySlots }).map((_, i) => (
-                              <View key={`empty-${i}`} style={qs.cell}>
-                                <EmptyChipSlot
-                                  onPress={() => openSeeMore("add")}
-                                />
-                              </View>
-                            ))}
-                          </View>
+                      </View>
+                    </View>
+                  )}
+                </>
+              )}
 
-                          {showHint && (
-                            <Text style={qs.hint}>Tap + to add more.</Text>
-                          )}
-
-                          <TouchableOpacity
-                            onPress={() => openSeeMore("browse")}
-                            activeOpacity={0.7}
-                          >
-                            <Text style={qs.seeMoreLink}>
-                              See more categories →
-                            </Text>
-                          </TouchableOpacity>
-
-                          <PhotoPicker
-                            photo={photos.workout ?? null}
-                            onPhotoSelected={(p) => setPhotos((prev) => ({ ...prev, workout: p }))}
-                            onPhotoRemoved={() => setPhotos((prev) => { const n = { ...prev }; delete n.workout; return n; })}
-                            disabled={workoutSaving}
-                          />
-                        </>
-                      )}
-
-                      {/* History of today's workouts */}
-                      {workoutLogs.length > 0 && (
-                        <View>
-                          <Text style={ar.entriesLabel}>TODAY</Text>
-                          {workoutLogs.map((w, i) => (
-                            <View
-                              key={`${w.logged_at}-${i}`}
-                              style={[ar.entryRow, i < workoutLogs.length - 1 && ar.entryBorder]}
-                            >
-                              <Text style={ar.entryAmount}>
-                                {w.entry_method === "healthkit" ? "Apple Health" : "Manual"}
-                              </Text>
-                              <Text style={ar.entryTime}>{formatTime(w.logged_at)}</Text>
-                            </View>
-                          ))}
-                        </View>
-                      )}
-                    </ActivityRow>
-                  );
-                })()}
-
-                <View style={s.rowDivider} />
-
-                {/* ── ACTIVE CALORIES ─────────────────────────────────── */}
-                <ActivityRow
-                  label="Active Calories"
-                  rightContent={hkRowRight(calDisplay, calorieTarget, "cal", calAchieved, hasManualCalories)}
-                  showChevron={hkAvailable && hkAuthorized}
-                  isExpanded={expandedId === "calories"}
-                  onPress={() => {
-                    if (!hkAvailable) return;
-                    if (!hkAuthorized) { handleConnectHealthKit(); return; }
-                    toggleRow("calories");
-                  }}
-                >
-                  <View style={ar.barTrack}>
-                    <View style={[ar.barFill, { width: calBarPct, backgroundColor: calAchieved ? C.success : C.accent }]} />
+              {/* Workout Detail */}
+              {currentPage === "workout" && (
+                <>
+                  <View style={qs.grid}>
+                    {visibleChips.map((cat, idx) => (
+                      <View key={`chip-${idx}`} style={qs.cell}>
+                        <CategoryChip
+                          label={CATEGORY_DISPLAY_NAMES[cat]}
+                          containerStyle={qs.chipFill}
+                          onPress={() => {
+                            dismissHint();
+                            handleLogWorkout(cat);
+                            goToOverview();
+                          }}
+                          onLongPress={() => setChipMenuIndex(idx)}
+                          disabled={workoutSaving}
+                        />
+                      </View>
+                    ))}
+                    <View style={qs.cell}>
+                      <EmptyChipSlot
+                        onPress={() => openSeeMore("add")}
+                        containerStyle={qs.chipFill}
+                      />
+                    </View>
                   </View>
-                  <HealthSourceBadge style={ar.caption} />
+
+                  {showHint && <Text style={qs.hint}>Tap + to add more.</Text>}
+
+                  <TouchableOpacity
+                    onPress={() => openSeeMore("browse")}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={qs.seeMoreLink}>See more categories →</Text>
+                  </TouchableOpacity>
+
+                  {workoutLogs.length > 0 && (
+                    <View>
+                      <Text style={ar.entriesLabel}>TODAY</Text>
+                      {workoutLogs.map((w, i) => (
+                        <View
+                          key={`${w.logged_at}-${i}`}
+                          style={[
+                            ar.entryRow,
+                            i < workoutLogs.length - 1 && ar.entryBorder,
+                          ]}
+                        >
+                          <Text style={ar.entryAmount}>
+                            {w.entry_method === "healthkit"
+                              ? "Apple Health"
+                              : "Manual"}
+                          </Text>
+                          <Text style={ar.entryTime}>
+                            {formatTime(w.logged_at)}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </>
+              )}
+
+              {/* Calories Detail */}
+              {currentPage === "calories" && (
+                <>
+                  <View style={s.captionBlock}>
+                    <HealthSourceBadge style={ar.caption} />
+                    <Text style={ar.manualCaption}>
+                      M = manual entry, visible to your pack
+                    </Text>
+                  </View>
                   <View style={ar.inputRow}>
                     <TextInput
                       style={ar.input}
                       value={rawCal}
                       onChangeText={setRawCal}
-                      placeholder="0 cal"
+                      placeholder="Enter calories"
                       placeholderTextColor={C.textTertiary}
                       keyboardType="number-pad"
                       maxLength={8}
                     />
                     <TouchableOpacity
-                      style={[ar.addBtn, (manualCalSaving || rawCal.length === 0) && ar.addBtnDisabled]}
-                      onPress={handleSaveManualCal}
+                      style={[
+                        ar.addBtn,
+                        (manualCalSaving || rawCal.length === 0) &&
+                          ar.addBtnDisabled,
+                      ]}
+                      onPress={() => {
+                        handleSaveManualCal();
+                        goToOverview();
+                      }}
                       disabled={manualCalSaving || rawCal.length === 0}
                       activeOpacity={0.8}
                     >
-                      <Text style={ar.addBtnText}>{manualCalSaving ? "…" : "Add"}</Text>
+                      <Text style={ar.addBtnText}>
+                        {manualCalSaving ? "…" : "Add"}
+                      </Text>
                     </TouchableOpacity>
                   </View>
-                  <Text style={ar.manualCaption}>Manual entries are flagged with M to your pack.</Text>
-                  <PhotoPicker
-                    photo={photos.calories ?? null}
-                    onPhotoSelected={(p) => setPhotos((prev) => ({ ...prev, calories: p }))}
-                    onPhotoRemoved={() => setPhotos((prev) => { const n = { ...prev }; delete n.calories; return n; })}
-                    disabled={manualCalSaving}
-                  />
-                </ActivityRow>
 
-                <View style={s.rowDivider} />
-
-                {/* ── WATER ───────────────────────────────────────────── */}
-                <ActivityRow
-                  label={activityCopy.logSheet.types.water}
-                  rightContent={
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                      <Text style={s.rowValue}>{totalOz} / {waterTarget} oz</Text>
-                      {goalReached && <Text style={s.rowCheck}>✓</Text>}
+                  {(localScore?.manual_calories_count ?? 0) > 0 && (
+                    <View>
+                      <Text style={ar.entriesLabel}>TODAY</Text>
+                      <View style={ar.entryRow}>
+                        <Text style={ar.entryAmount}>
+                          Manual:{" "}
+                          {(
+                            localScore?.manual_calories_count ?? 0
+                          ).toLocaleString()}{" "}
+                          cal
+                        </Text>
+                      </View>
                     </View>
-                  }
-                  showChevron
-                  isExpanded={expandedId === "water"}
-                  onPress={() => toggleRow("water")}
-                >
-                  {/* Quick-add chips */}
+                  )}
+                </>
+              )}
+
+              {/* Water Detail */}
+              {currentPage === "water" && (
+                <>
                   <View style={ar.chipRow}>
                     {QUICK_AMOUNTS.map((amount) => (
                       <Animated.View
                         key={amount}
-                        style={{ flex: 1, transform: [{ scale: scaleAnims[amount] }] }}
+                        style={{
+                          flex: 1,
+                          transform: [{ scale: scaleAnims[amount] }],
+                        }}
                       >
                         <TouchableOpacity
                           style={[ar.chip, saving && ar.chipDisabled]}
@@ -1311,53 +1697,34 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                     ))}
                   </View>
 
-                  <PhotoPicker
-                    photo={photos.water ?? null}
-                    onPhotoSelected={(p) => setPhotos((prev) => ({ ...prev, water: p }))}
-                    onPhotoRemoved={() => setPhotos((prev) => { const n = { ...prev }; delete n.water; return n; })}
-                    disabled={saving}
-                  />
-
-                  {goalReached && (
-                    <Animated.View style={{ opacity: goalFadeAnim }}>
-                      <Text style={ar.goalText}>Goal reached ✓</Text>
-                    </Animated.View>
-                  )}
-
-                  {/* Water entries log */}
                   {displayedEntries.length > 0 && (
                     <View>
                       <Text style={ar.entriesLabel}>TODAY</Text>
                       {displayedEntries.map((entry, i) => (
                         <View
                           key={`${entry.logged_at}-${i}`}
-                          style={[ar.entryRow, i < displayedEntries.length - 1 && ar.entryBorder]}
+                          style={[
+                            ar.entryRow,
+                            i < displayedEntries.length - 1 && ar.entryBorder,
+                          ]}
                         >
-                          <Text style={ar.entryAmount}>+{entry.amount_oz} oz</Text>
-                          <Text style={ar.entryTime}>{formatTime(entry.logged_at)}</Text>
+                          <Text style={ar.entryAmount}>
+                            +{entry.amount_oz} oz
+                          </Text>
+                          <Text style={ar.entryTime}>
+                            {formatTime(entry.logged_at)}
+                          </Text>
                         </View>
                       ))}
-                      {moreCount > 0 && <Text style={ar.moreText}>+ {moreCount} more</Text>}
+                      {moreCount > 0 && (
+                        <Text style={ar.moreText}>+ {moreCount} more</Text>
+                      )}
                     </View>
                   )}
-                </ActivityRow>
-              </View>
-            )}
-
-            {/* Feedback banner */}
-            {feedback && (
-              <Animated.View style={[s.feedbackRow, { opacity: feedbackAnim }]}>
-                <Text
-                  style={[
-                    s.feedbackText,
-                    feedback.positive ? s.feedbackPositive : s.feedbackNeutral,
-                  ]}
-                >
-                  {feedback.text}
-                </Text>
-              </Animated.View>
-            )}
-          </ScrollView>
+                </>
+              )}
+            </ScrollView>
+          </Animated.View>
         </Animated.View>
 
         {/* See More + ChipMenu render INSIDE LogSheet's Modal as siblings of
@@ -1370,10 +1737,29 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
           entryPoint={seeMoreState.entryPoint}
           pinnedCategories={quickSelectCategories}
           userId={userId ?? null}
-          onClose={closeSeeMore}
+          onClose={() => {
+            // Closing the sheet (backdrop tap) also clears any pending swap
+            setPendingSwapCategory(null);
+            closeSeeMore();
+          }}
+          pendingSwapCategory={pendingSwapCategory}
+          onSwapModeReplace={handleSwapModeReplace}
+          onSwapCancel={handleSwapCancel}
           onSelect={(cat) => {
             const ep = seeMoreState.entryPoint;
             const idx = seeMoreState.replaceTargetIndex;
+            // For "add" with a full Quick Select, route into swap mode and
+            // KEEP the sheet open so the user picks which pin to swap.
+            // All other paths (add-with-room, replace, browse) close and
+            // act as before.
+            if (
+              ep === "add" &&
+              quickSelectCategories.length >= QUICK_SELECT_MAX &&
+              !quickSelectCategories.includes(cat)
+            ) {
+              handlePinCategory(cat);
+              return;
+            }
             closeSeeMore();
             if (ep === "add") {
               handlePinCategory(cat);
@@ -1389,10 +1775,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
             separate Modal. Tapping outside dismisses via the backdrop
             Pressable's onPress. */}
         {chipMenuIndex !== null && (
-          <Pressable
-            style={cm.overlay}
-            onPress={() => setChipMenuIndex(null)}
-          >
+          <Pressable style={cm.overlay} onPress={() => setChipMenuIndex(null)}>
             <Pressable style={cm.sheet}>
               <View style={cm.handle} />
               <TouchableOpacity
@@ -1404,7 +1787,11 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                   if (idx !== null) openSeeMore("replace", idx);
                 }}
               >
-                <Ionicons name="swap-horizontal-outline" size={18} color="#FFFFFF" />
+                <Ionicons
+                  name="swap-horizontal-outline"
+                  size={18}
+                  color="#FFFFFF"
+                />
                 <Text style={cm.rowText}>Replace</Text>
               </TouchableOpacity>
               <View style={cm.divider} />
@@ -1442,10 +1829,35 @@ const s = StyleSheet.create({
     backgroundColor: C.surface,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    maxHeight: "88%",
+    height: 420,
   },
   scrollContent: {
+    paddingHorizontal: 16,
     paddingBottom: 40,
+  },
+  scrollContentDetail: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 40,
+  },
+  captionBlock: {
+    marginTop: 12,
+    marginBottom: 12,
+  },
+  pagesTrack: {
+    flexDirection: "row",
+    width: "200%",
+  },
+  page: {
+    width: "50%",
+  },
+  headerDetail: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 0,
   },
   handleWrap: { alignItems: "center", paddingTop: 12, paddingBottom: 4 },
   handle: {
@@ -1458,38 +1870,37 @@ const s = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
     color: C.textPrimary,
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 16,
   },
-  // Rows card — groups all activity rows
-  card: {
-    marginHorizontal: 16,
-    backgroundColor: C.surfaceRaised,
-    borderRadius: 16,
-    borderWidth: 0.5,
-    borderColor: C.border,
-    overflow: "hidden",
+  headerCenter: {
+    alignItems: "center",
+    justifyContent: "center",
   },
+  // Pass 25: dropped the boxed-card wrapper. Rows render directly on the
+  // sheet's C.surface background with hairline dividers between them — the
+  // dividers carry structural rhythm in absence of the card. The divider's
+  // marginHorizontal: 16 mirrors ar.header's paddingHorizontal so the
+  // divider visually aligns with row-content edges.
   rowDivider: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: C.border,
     marginHorizontal: 16,
   },
-  // Row right-side value styles
+  // Row right-side value styles. Pass 25: rowValue bumped to primary white
+  // for load-bearing data (today's count). Pass 25-followup-B: rowToday
+  // softens the trailing "today" suffix; rowCheck + valueSuccess removed
+  // (achievement icons gone with target removal).
   rowValue: {
-    fontSize: 14,
-    fontWeight: "500",
+    fontSize: 18,
+    fontWeight: "700",
+    color: C.textPrimary,
+  },
+  rowToday: {
+    fontSize: 12,
     color: C.textSecondary,
   },
   rowCaption: {
     fontSize: 11,
     color: C.textTertiary,
-  },
-  rowCheck: {
-    fontSize: 14,
-    color: C.success,
-    fontWeight: "700",
   },
   valueDim: {
     fontSize: 14,
@@ -1500,24 +1911,22 @@ const s = StyleSheet.create({
     fontWeight: "600",
     color: C.accent,
   },
-  valueSuccess: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: C.success,
-  },
-  // Feedback
+  // Feedback banner (Pass 25-followup-E.2.a.i-fix): now pinned in sheet
+  // chrome between header and ScrollView; color binding inline via
+  // bannerColorForState. Obsolete .feedbackPositive / .feedbackNeutral
+  // styles removed — state-driven binding supersedes them.
   feedbackRow: {
     alignItems: "center",
-    marginTop: 16,
+    justifyContent: "center",
+    paddingVertical: 0,
     paddingHorizontal: 20,
+    minHeight: 0,
   },
   feedbackText: {
     fontSize: 14,
     fontWeight: "600",
     textAlign: "center",
   },
-  feedbackPositive: { color: C.success },
-  feedbackNeutral: { color: C.textSecondary },
 });
 
 // Quick Select grid styles — 2 rows × 3 cols, 8pt gaps. Each cell is a
@@ -1535,6 +1944,12 @@ const qs = StyleSheet.create({
   cell: {
     width: "30%",
     flexGrow: 1,
+  },
+  // Pass 25-followup-C-fix-2: passed as CategoryChip/EmptyChipSlot's
+  // containerStyle. Chip wrapper stretches to fill the cell so all chips
+  // in a wrap-row share the row's height (set by the tallest chip).
+  chipFill: {
+    flex: 1,
   },
   hint: {
     fontSize: 12,

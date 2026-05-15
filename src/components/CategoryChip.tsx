@@ -9,10 +9,12 @@ import React, { useRef } from "react";
 import {
   Animated,
   Pressable,
+  StyleProp,
   StyleSheet,
   Text,
   Vibration,
   View,
+  ViewStyle,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -23,6 +25,12 @@ interface ChipProps {
   onPress?: () => void;
   onLongPress?: () => void;
   disabled?: boolean;
+  // Pass 25-followup-C-fix-2: callers that wrap the chip in a fixed-width
+  // grid cell (LogSheet, SeeMoreCategoriesSheet) pass `{ flex: 1 }` so the
+  // chip fills its cell vertically — gives uniform-height-per-row when one
+  // chip in the row wraps to two lines. Onboarding renders chips inline
+  // without a cell wrapper and passes nothing → chip stays content-sized.
+  containerStyle?: StyleProp<ViewStyle>;
 }
 
 export function CategoryChip({
@@ -32,6 +40,7 @@ export function CategoryChip({
   onPress,
   onLongPress,
   disabled,
+  containerStyle,
 }: ChipProps) {
   const scale = useRef(new Animated.Value(1)).current;
 
@@ -46,13 +55,17 @@ export function CategoryChip({
   };
 
   return (
-    <Animated.View style={{ transform: [{ scale }] }}>
+    <Animated.View style={[{ transform: [{ scale }] }, containerStyle]}>
       <Pressable
         onPress={onPress}
         onLongPress={onLongPress ? handleLongPress : undefined}
         disabled={disabled}
         style={({ pressed: pressedNow }) => [
           s.chip,
+          // When the wrapper is told to flex (containerStyle = { flex: 1 }),
+          // make the inner Pressable fill it so the chip background covers
+          // the stretched cell rather than leaving empty space below.
+          containerStyle ? s.chipFill : null,
           pressed && s.chipSelected,
           pressedNow && !disabled && s.chipPressed,
           disabled && s.chipDisabled,
@@ -81,14 +94,16 @@ export function CategoryChip({
 
 interface EmptySlotProps {
   onPress: () => void;
+  containerStyle?: StyleProp<ViewStyle>;
 }
 
-export function EmptyChipSlot({ onPress }: EmptySlotProps) {
+export function EmptyChipSlot({ onPress, containerStyle }: EmptySlotProps) {
   return (
     <Pressable
       onPress={onPress}
       style={({ pressed }) => [
         s.emptySlot,
+        containerStyle,
         pressed && s.emptySlotPressed,
       ]}
     >
@@ -113,6 +128,12 @@ const s = StyleSheet.create({
     paddingVertical: 10,
     minHeight: 52,
     gap: 6,
+  },
+  // Applied only when containerStyle is passed (flex-cell consumers).
+  // Fills the stretched cell so the chip's background covers the full
+  // row-uniform height instead of sitting top-aligned with empty space.
+  chipFill: {
+    flex: 1,
   },
   chipSelected: {
     backgroundColor: "rgba(10, 132, 255, 0.18)",

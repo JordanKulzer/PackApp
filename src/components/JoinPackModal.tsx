@@ -11,8 +11,8 @@ import {
 import { useAuthStore } from "../stores/authStore";
 import { useCurrentUser } from "../context/CurrentUserContext";
 import { supabase } from "../lib/supabase";
-import { packToday } from "../lib/packDates";
 import { ensureUserProfile } from "../lib/ensureUserProfile";
+import { seedDailyScoresOnJoin } from "../lib/joinPack";
 import { analytics } from "../lib/analytics";
 import { notifyPackMembers } from "../lib/notifications";
 import { fallbacks } from "../constants/strings";
@@ -69,9 +69,13 @@ export function JoinPackModal({ visible, onClose, onJoined }: JoinPackModalProps
       console.log("[JoinPackModal] Attempting join with code:", normalizedCode);
 
       // Step 1: Find pack by invite code
+      // F.2: SELECT expanded to feed seedDailyScoresOnJoin — it needs
+      // *_enabled flags and *_target values to compute initial achievement.
       const { data: pack, error: packError } = await supabase
         .from("packs")
-        .select("id, name, is_active, timezone")
+        .select(
+          "id, name, is_active, timezone, steps_enabled, workouts_enabled, calories_enabled, water_enabled, step_target, calorie_target, water_target_oz",
+        )
         .eq("invite_code", normalizedCode)
         .single();
 
@@ -159,7 +163,10 @@ export function JoinPackModal({ visible, onClose, onJoined }: JoinPackModalProps
         packName: pack.name,
       }).catch(() => {});
 
-      // Step 6: Create initial daily_scores row so the new member appears immediately
+      // Step 6: Create initial daily_scores row so the new member appears
+      // immediately. Delegates to seedDailyScoresOnJoin so this path stays
+      // in lock-step with the deep-link join in app/join/[code].tsx
+      // (Bug 8 fix — pre-F.2, deep-link skipped seeding entirely).
       const { data: activeRun, error: runError } = await supabase
         .from("runs")
         .select("id")
@@ -170,29 +177,7 @@ export function JoinPackModal({ visible, onClose, onJoined }: JoinPackModalProps
       console.log("[JoinPackModal] Active run:", { activeRun, runError });
 
       if (activeRun) {
-        const today = packToday((pack as { timezone?: string }).timezone ?? "UTC");
-
-        const { error: scoreError } = await supabase.from("daily_scores").upsert(
-          {
-            run_id: activeRun.id,
-            user_id: userId,
-            score_date: today,
-            total_points: 0,
-            streak_days: 0,
-            streak_multiplier: 1.0,
-            steps_achieved: false,
-            workout_achieved: false,
-            calories_achieved: false,
-            water_achieved: false,
-            steps_count: 0,
-            calories_count: 0,
-            water_oz_count: 0,
-            workout_count: 0,
-          },
-          { onConflict: "run_id,user_id,score_date" },
-        );
-
-        console.log("[JoinPackModal] Initial daily_scores upsert:", { scoreError });
+        await seedDailyScoresOnJoin(userId, pack, activeRun.id);
       }
 
       // Step 7: Success

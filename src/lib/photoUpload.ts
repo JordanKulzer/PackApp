@@ -315,13 +315,28 @@ export async function uploadVictoryPhoto(
     });
     const arrayBuffer = base64Decode(base64);
 
-    const path = `victory/${userId}/${feedItemId}.jpg`;
+    // Pass 25-followup-E.2.b.iii-fix-storage: first folder MUST be userId
+    // to satisfy the activity_photos bucket's INSERT RLS policy (policy
+    // requires first folder of path to match auth.uid()). The prior
+    // `victory/{userId}/...` scheme failed silently with a "Bucket not
+    // found" error from Storage's RLS layer. "victory" semantic preserved
+    // in the filename prefix instead of the folder.
+    const path = `${userId}/victory_${feedItemId}.jpg`;
 
+    // Pass 25-followup-E.2.b.iii-fix-storage-2: upsert MUST be false to
+    // match uploadPhoto's working pattern. supabase-js routes upsert:true
+    // via PUT, which triggers storage.objects's UPDATE RLS policy. The
+    // activity_photos bucket has an INSERT policy (first-folder = uid)
+    // but no matching UPDATE policy, so PUT requests fail with "new row
+    // violates row-level security policy" even on first upload (Storage's
+    // RLS layer flattens the rejection into INSERT-style error wording).
+    // upsert: false routes via POST → INSERT path → policy satisfied.
+    // Path uniqueness via feedItemId makes collision a non-concern.
     const { error } = await supabase.storage
       .from(VICTORY_BUCKET)
       .upload(path, arrayBuffer, {
         contentType: "image/jpeg",
-        upsert: true,
+        upsert: false,
         cacheControl: "3600",
       });
 
@@ -333,6 +348,57 @@ export async function uploadVictoryPhoto(
     return path;
   } catch (e) {
     console.error("[uploadVictoryPhoto] error:", (e as Error).message);
+    return null;
+  }
+}
+
+// ─── Chat photo ───────────────────────────────────────────────────────────────
+
+const CHAT_BUCKET = "activity_photos";
+const CHAT_MAX_EDGE = 1080;
+
+// Uploads a chat-attached photo. Returns the storage path, or null on failure.
+// Pass C-revised: parallel to uploadVictoryPhoto but keyed by chatMessageId.
+// Caller generates the chatMessageId (UUID via expo-crypto.randomUUID) BEFORE
+// the chat_messages INSERT so the storage path can be written into photo_url
+// atomically with the INSERT. Bucket RLS (first folder = auth.uid()) and
+// upsert:false rationale identical to uploadVictoryPhoto — see its comment
+// block for the full RLS reasoning.
+export async function uploadChatPhoto(
+  userId: string,
+  chatMessageId: string,
+  localUri: string,
+): Promise<string | null> {
+  try {
+    const compressed = await ImageManipulator.manipulateAsync(
+      localUri,
+      [{ resize: { width: CHAT_MAX_EDGE, height: CHAT_MAX_EDGE } }],
+      { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG },
+    );
+
+    const base64 = await FileSystem.readAsStringAsync(compressed.uri, {
+      encoding: "base64",
+    });
+    const arrayBuffer = base64Decode(base64);
+
+    const path = `${userId}/chat_${chatMessageId}.jpg`;
+
+    const { error } = await supabase.storage
+      .from(CHAT_BUCKET)
+      .upload(path, arrayBuffer, {
+        contentType: "image/jpeg",
+        upsert: false,
+        cacheControl: "3600",
+      });
+
+    if (error) {
+      console.error("[uploadChatPhoto] upload error:", error.message);
+      return null;
+    }
+
+    return path;
+  } catch (e) {
+    console.error("[uploadChatPhoto] error:", (e as Error).message);
     return null;
   }
 }

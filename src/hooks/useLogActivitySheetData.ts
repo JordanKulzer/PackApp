@@ -6,7 +6,7 @@ import {
   getTodayActiveCalories,
   isHealthKitAvailable,
 } from "../lib/healthkit";
-import { packToday, packTodayStartUTC } from "../lib/packDates";
+import { packToday, packTodayStartUTC, deviceLocalToday } from "../lib/packDates";
 
 export interface LogEntry {
   amount_oz: number;
@@ -30,20 +30,29 @@ export interface DailyScoreSnapshot {
   workout_count: number;
   streak_days: number;
   streak_multiplier: number;
-  has_manual_steps: boolean;
-  has_manual_calories: boolean;
+  // F.2: M badge derives from manual_*_count > 0 (replaced the prior
+  // has_manual_* booleans dropped in migration 20260513b).
+  manual_steps_count: number;
+  manual_calories_count: number;
 }
 
 export interface LogActivitySheetData {
   entries: LogEntry[];
   workoutLogs: WorkoutLogEntry[];
   totalOz: number;
-  waterTarget: number;
-  stepTarget: number;
-  calorieTarget: number;
   hkAuthorized: boolean;
   stepsToday: number | null;
   caloriesToday: number | null;
+  // Pass 25-followup-B: targets and per-pack enabled flags removed. LogSheet
+  // is now a personal activity logger, not a goal tracker — display is
+  // decoupled from any pack's targets. Per-pack scoring (logActivity.ts +
+  // healthkit.ts iterating over all memberships) still evaluates achievement
+  // against each pack's own targets server-side; LogSheet just doesn't
+  // render a target denominator. packRun.packId is still the arbitrary
+  // first-pack pick from `pack_members.limit(1)` — kept because manual log
+  // optimistic patching attaches to a single run and feed entries land in
+  // one pack. The arbitrary-pack-bias on optimistic UI is a separate
+  // architectural issue (backlog).
   packRun: { runId: string; packId: string; packTimezone: string } | null;
   localScore: DailyScoreSnapshot | null;
   localWeeklyPoints: number;
@@ -88,7 +97,7 @@ export function useLogActivitySheetData(
     async function load(): Promise<LogActivitySheetData> {
       const hkAvailable = Platform.OS === "ios" && isHealthKitAvailable();
       // Device-local today for water_logs display (water is logged with device-local date)
-      const deviceToday = new Intl.DateTimeFormat("en-CA").format(new Date());
+      const deviceToday = deviceLocalToday();
 
       // Round 1: all independent sources in parallel, including HealthKit reads
       const [logsResult, memberResult, userResult, hkValues] = await Promise.all([
@@ -100,9 +109,7 @@ export function useLogActivitySheetData(
           .order("logged_at", { ascending: false }),
         supabase
           .from("pack_members")
-          .select(
-            "pack_id, packs(water_target_oz, water_enabled, step_target, steps_enabled, calorie_target, calories_enabled, timezone)",
-          )
+          .select("pack_id, packs(timezone)")
           .eq("user_id", userId!)
           .eq("is_active", true)
           .limit(1)
@@ -122,22 +129,8 @@ export function useLogActivitySheetData(
 
       const member = memberResult.data as unknown as {
         pack_id: string;
-        packs: {
-          water_target_oz: number;
-          water_enabled: boolean;
-          step_target: number;
-          steps_enabled: boolean;
-          calorie_target: number;
-          calories_enabled: boolean;
-          timezone: string;
-        } | null;
+        packs: { timezone: string } | null;
       } | null;
-
-      const p = member?.packs;
-      const waterTarget =
-        p?.water_enabled && (p.water_target_oz ?? 0) > 0 ? p.water_target_oz : 64;
-      const stepTarget = (p?.step_target ?? 0) > 0 ? p!.step_target : 10000;
-      const calorieTarget = (p?.calorie_target ?? 0) > 0 ? p!.calorie_target : 500;
 
       const hkAuthorized = userResult.data?.healthkit_authorized ?? false;
       const [stepsRaw, calsRaw] = hkValues;
@@ -145,13 +138,13 @@ export function useLogActivitySheetData(
       const caloriesToday = hkAvailable && hkAuthorized ? calsRaw : null;
 
       const packId = member?.pack_id ?? null;
-      const packTimezone: string = p?.timezone ?? "UTC";
+      const packTimezone: string = member?.packs?.timezone ?? "UTC";
       // Compute "today" in the pack's timezone for score_date queries
       const today = packToday(packTimezone);
 
       if (!packId) {
         return {
-          entries, workoutLogs: [], totalOz, waterTarget, stepTarget, calorieTarget,
+          entries, workoutLogs: [], totalOz,
           hkAuthorized, stepsToday, caloriesToday,
           packRun: null, localScore: null, localWeeklyPoints: 0,
         };
@@ -167,7 +160,7 @@ export function useLogActivitySheetData(
 
       if (!run) {
         return {
-          entries, workoutLogs: [], totalOz, waterTarget, stepTarget, calorieTarget,
+          entries, workoutLogs: [], totalOz,
           hkAuthorized, stepsToday, caloriesToday,
           packRun: null, localScore: null, localWeeklyPoints: 0,
         };
@@ -180,7 +173,7 @@ export function useLogActivitySheetData(
         supabase
           .from("daily_scores")
           .select(
-            "total_points, steps_achieved, workout_achieved, calories_achieved, water_achieved, water_oz_count, steps_count, calories_count, workout_count, streak_days, streak_multiplier, has_manual_steps, has_manual_calories",
+            "total_points, steps_achieved, workout_achieved, calories_achieved, water_achieved, water_oz_count, steps_count, calories_count, workout_count, streak_days, streak_multiplier, manual_steps_count, manual_calories_count",
           )
           .eq("run_id", run.id)
           .eq("user_id", userId!)
@@ -211,7 +204,7 @@ export function useLogActivitySheetData(
       );
 
       return {
-        entries, workoutLogs, totalOz, waterTarget, stepTarget, calorieTarget,
+        entries, workoutLogs, totalOz,
         hkAuthorized, stepsToday, caloriesToday,
         packRun: { runId: run.id, packId, packTimezone },
         localScore,

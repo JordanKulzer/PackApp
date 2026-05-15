@@ -12,6 +12,7 @@ import { useAuthStore } from "../../src/stores/authStore";
 import { useCurrentUser } from "../../src/context/CurrentUserContext";
 import { supabase } from "../../src/lib/supabase";
 import { ensureUserProfile } from "../../src/lib/ensureUserProfile";
+import { seedDailyScoresOnJoin } from "../../src/lib/joinPack";
 import { analytics } from "../../src/lib/analytics";
 import { notifyPackMembers } from "../../src/lib/notifications";
 import { fallbacks } from "../../src/constants/strings";
@@ -126,6 +127,21 @@ export default function JoinPack() {
       setErrorMessage(error.message);
       setStatus("error");
       return;
+    }
+
+    // F.2 Bug 8: seed daily_scores so the new member shows on the
+    // leaderboard immediately, matching JoinPackModal behavior. Pre-F.2
+    // the deep-link path skipped this step entirely — users joining
+    // via invite link were invisible until their first activity logged.
+    const { data: activeRun } = await supabase
+      .from("runs")
+      .select("id")
+      .eq("pack_id", pack.id)
+      .eq("status", "active")
+      .maybeSingle();
+
+    if (activeRun) {
+      await seedDailyScoresOnJoin(user.id, pack, activeRun.id);
     }
 
     // Pass 9 funnel — pack_joined via deep link. userPackCount was queried

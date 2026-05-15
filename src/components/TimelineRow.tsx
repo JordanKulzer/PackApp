@@ -46,7 +46,15 @@ export function TimelineRow({
   onToggleChatReaction,
 }: Props) {
   if (item.kind === "activity") {
-    if (SYSTEM_ACTIVITY_TYPES.has(item.data.activityType)) {
+    // Pass 25-followup-E.2.b.iii-fix-2: photo-bearing took_lead rows route
+    // to the full feed renderer (FeedItemRow) so the user-attached photo
+    // + caption display. Photo-less took_lead rows keep the minimal
+    // centered system-message treatment. all_goals / goals_updated /
+    // pack_renamed always stay system-style.
+    const isSystem = SYSTEM_ACTIVITY_TYPES.has(item.data.activityType);
+    const isPhotoTookLead =
+      item.data.activityType === "took_lead" && !!item.data.photoUrl;
+    if (isSystem && !isPhotoTookLead) {
       return (
         <SystemMessageRow
           item={item.data}

@@ -3,7 +3,22 @@
 
 export type SubscriptionTier = "free" | "pro";
 export type CompetitionWindow = "weekly" | "monthly";
-export type ActivityType = "steps" | "workout" | "calories" | "water" | "daily_winner" | "goals_updated" | "pack_renamed";
+// Pass 25-followup-E.2.b.i: expanded to mirror the activity_feed.activity_type
+// CHECK constraint state post-E.2.a.i migration. Grouped by semantic category
+// for readability. `goals_updated` and `pack_renamed` are retained for the
+// defensive consumer branches in useActivityFeed / SystemMessageRow /
+// TimelineRow even though the E.2.a.i migration accidentally dropped them
+// from the CHECK constraint — a corrective migration (or consumer cleanup)
+// is tracked separately.
+export type ActivityType =
+  // Per-activity goal-cross
+  | "steps" | "workout" | "calories" | "water"
+  // System / derived events
+  | "took_lead" | "all_goals" | "daily_winner"
+  // Manual share (user-initiated, no dedup) — emit path lands in E.3
+  | "steps_share" | "calories_share" | "water_share" | "workout_share"
+  // Pack-level events (dead post-E.2.a.i regression — keep until corrective migration)
+  | "goals_updated" | "pack_renamed";
 export type RunStatus = "active" | "completed";
 export type MemberRole = "admin" | "member";
 export type NotificationType =
@@ -93,8 +108,12 @@ export interface DailyScore {
   hk_steps_count: number;
   hk_calories_count: number;
   hk_workout_count: number;
-  has_manual_steps: boolean;
-  has_manual_calories: boolean;
+  // F.2: source-isolated manual counters. steps_count / calories_count
+  // above are DB-generated as (manual_*_count + hk_*_count) STORED — see
+  // migration 20260513b. M badge derives from manual_*_count > 0
+  // (replaced the prior has_manual_* booleans).
+  manual_steps_count: number;
+  manual_calories_count: number;
   updated_at: string;
 }
 
@@ -146,6 +165,10 @@ export interface ChatMessage {
   updated_at: string;
   edited_at: string | null;
   is_deleted: boolean;
+  // Pass C-revised: optional storage path for chat-attached photos.
+  // Path convention `${userId}/chat_${chatMessageId}.jpg` in the
+  // activity_photos bucket. Use getSignedUrl to render.
+  photo_url?: string | null;
 }
 
 // Leaderboard row — joined query result

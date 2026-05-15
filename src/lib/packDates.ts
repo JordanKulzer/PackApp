@@ -2,6 +2,29 @@
 // Never call `new Date().toISOString().split("T")[0]` directly — use packToday().
 
 /**
+ * Returns today's date as a YYYY-MM-DD string in the DEVICE's local
+ * timezone. Use for records scoped to where the user physically is
+ * (e.g., water_logs.log_date). NOT for records scoped to a pack's
+ * timezone (use packToday for those).
+ *
+ * Critical: do NOT use Intl.DateTimeFormat for this — Hermes (the
+ * default RN JS engine) has unreliable Intl support and can leak
+ * UTC when no explicit timeZone option is passed (root cause of
+ * F.2 water Bug 3, observed at 20:48 Chicago / 01:48 UTC the
+ * Intl-formatted "deviceToday" came back as the next UTC day,
+ * mismatching the getDate()-based log_date written by LogSheet).
+ * Date.prototype getFullYear / getMonth / getDate read the device's
+ * actual local timezone reliably.
+ */
+export function deviceLocalToday(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/**
  * Returns "today" in the pack's timezone as a YYYY-MM-DD string.
  */
 export function packToday(packTimezone: string): string {

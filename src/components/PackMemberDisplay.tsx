@@ -54,6 +54,11 @@ interface PackMemberDisplayProps {
   strokeWidth: number;
   animValue?: Animated.Value;   // if provided → animated arc; else static
   showName?: boolean;           // default true; set false for compact strip rings
+  // Pass 25-followup-E.2.a-home-polish: when false, the rank badge pill
+  // (the #1/#2/#3 element below the ring) is suppressed. Home's MemberCard
+  // renders its own inline `#N · pts` line instead. Default true preserves
+  // PackGridView and other consumers' existing behavior.
+  showRank?: boolean;
   avatarUrl?: string | null;
 }
 
@@ -78,6 +83,7 @@ export function PackMemberDisplay({
   strokeWidth,
   animValue,
   showName = true,
+  showRank = true,
   avatarUrl,
 }: PackMemberDisplayProps) {
   const ringColor = getRingColor(userId, currentUserId, leaderId);
@@ -174,8 +180,8 @@ export function PackMemberDisplay({
         )}
       </View>
 
-      {/* Rank badge — top 3 only */}
-      {rank <= 3 && (
+      {/* Rank badge — top 3 only; gated additionally by showRank prop */}
+      {showRank && rank <= 3 && (
         <View
           style={[
             s.badge,

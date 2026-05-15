@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -7,7 +7,6 @@ import {
   ScrollView,
   TouchableOpacity,
   RefreshControl,
-  ActivityIndicator,
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useAuthStore } from "../../src/stores/authStore";
@@ -30,12 +29,22 @@ import { analytics } from "../../src/lib/analytics";
 import { useCurrentUser } from "../../src/context/CurrentUserContext";
 import { useRefreshCurrentUserOnFocus } from "../../src/hooks/useRefreshCurrentUserOnFocus";
 import { computeDailyWinnersForPack } from "../../src/lib/dailyWinners";
-import { useUnpostedWins, UnpostedWin } from "../../src/hooks/useUnpostedWins";
+import {
+  useUnpostedAchievements,
+  UnpostedAchievement,
+} from "../../src/hooks/useUnpostedAchievements";
 import { VictoryPostSheet } from "../../src/components/VictoryPostSheet";
+import {
+  HomeAchievementBanner,
+  isAchievementDismissed,
+  markAchievementDismissed,
+} from "../../src/components/HomeAchievementBanner";
 import { FEATURE_FLAGS } from "../../src/lib/featureFlags";
 import { PackLogo, PackWordmark } from "../../src/components/brand/PackLogo";
+import { PackBrandLoadingState } from "../../src/components/PackBrandLoadingState";
 import { packs as packsCopy } from "../../src/constants/strings";
 import { BrandColors } from "../../src/constants/brand";
+import { subscribeToRunScores } from "../../src/lib/realtimeSubscriptions";
 
 const C = {
   bg: "#0B0F14",
@@ -66,6 +75,16 @@ interface HomePackData {
   runStart: string; // ISO date — for weekly max denominator
   runEnd: string;
   myTodayPoints: number; // current user's points logged today only (not weekly)
+  // Current user's goal-achievement flags for TODAY in this pack. Drives
+  // the goal-hit progress strip below the "+N today" line. Per-pack —
+  // same user can hit Test15's lower steps target without hitting Test's
+  // higher one (the divergence diagnosed during E.2.a.i).
+  myAchievements: {
+    steps: boolean;
+    workout: boolean;
+    calories: boolean;
+    water: boolean;
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -113,8 +132,13 @@ function packDailyMax(pack: Pack): number {
 // consistent ring/badge/name rendering with the Pack Detail screen.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MEMBER_RING_SIZE = 60;
-const MEMBER_RING_STROKE = 5;
+// Pass 25-followup-E.2.a-home-polish: avatar bump from 60 → 96 (stroke 5
+// → 6) to consume the vertical space freed by collapsing the prior 4-line
+// cell (avatar / rank-pill / name / pts) into a 3-line cell (avatar /
+// name / `#N · pts` inline). Horizontal scroll absorbs the wider card;
+// ~3 members visible per row at the new size.
+const MEMBER_RING_SIZE = 96;
+const MEMBER_RING_STROKE = 6;
 
 // Per-member compact card. Tap navigates to the public user profile
 // screen (Pass 21b). The privacy gate inside get_user_public_profile
@@ -131,7 +155,11 @@ function MemberCard({
   maxPoints: number;
   currentUserId: string | undefined;
   leaderId: string | undefined;
-  currentUser: { id: string; displayName: string; avatarUrl: string | null } | null;
+  currentUser: {
+    id: string;
+    displayName: string;
+    avatarUrl: string | null;
+  } | null;
 }) {
   const router = useRouter();
   const pct = miniRingPct(entry.weekly_points, maxPoints);
@@ -140,29 +168,59 @@ function MemberCard({
     isMe && currentUser ? currentUser.displayName : entry.display_name;
   const avatarUrl =
     isMe && currentUser ? currentUser.avatarUrl : entry.avatar_url;
+  // Pass 25-followup-E.2.a-home-polish: narrowed tap region. Only the
+  // avatar (PackMemberDisplay) is wrapped in a Pressable → profile.
+  // Name + meta lines fall through to the card-level TouchableOpacity →
+  // Pack Detail. Was: entire cell wrapped → profile (overrode card tap).
+  const isLeader = entry.rank === 1;
+  const nameColor = isMe ? colors.self : colors.member;
   return (
-    <TouchableOpacity
-      style={miniRingS.memberCard}
-      onPress={() => {
-        router.push(`/user/${entry.user_id}` as any);
-      }}
-      activeOpacity={0.7}
-    >
-      <PackMemberDisplay
-        userId={entry.user_id}
-        displayName={displayName}
-        progressPct={pct}
-        rank={entry.rank}
-        currentUserId={currentUserId}
-        leaderId={leaderId}
-        size={MEMBER_RING_SIZE}
-        strokeWidth={MEMBER_RING_STROKE}
-        avatarUrl={avatarUrl}
-      />
-      <Text style={miniRingS.memberPts} numberOfLines={1}>
-        {entry.weekly_points} pts
+    <View style={miniRingS.memberCard}>
+      <TouchableOpacity
+        onPress={() => {
+          router.push(`/user/${entry.user_id}` as any);
+        }}
+        activeOpacity={0.7}
+        // Pass 25-followup-E.2.a-home-polish-3-fix: delay press-in capture
+        // so the parent horizontal ScrollView's pan detector wins on
+        // swipe gestures. Without this, the avatar TouchableOpacity locks
+        // touches immediately and horizontal scroll fails until a long-
+        // press first releases the touch. Genuine taps (~200-300ms total)
+        // still fire on release; horizontal pan resolves before 150ms.
+        delayPressIn={150}
+      >
+        <PackMemberDisplay
+          userId={entry.user_id}
+          displayName={displayName}
+          progressPct={pct}
+          rank={entry.rank}
+          currentUserId={currentUserId}
+          leaderId={leaderId}
+          size={MEMBER_RING_SIZE}
+          strokeWidth={MEMBER_RING_STROKE}
+          avatarUrl={avatarUrl}
+          showName={false}
+          showRank={false}
+        />
+      </TouchableOpacity>
+      <Text
+        style={[miniRingS.memberName, { color: nameColor }]}
+        numberOfLines={1}
+      >
+        {displayName}
       </Text>
-    </TouchableOpacity>
+      <Text style={miniRingS.memberMeta} numberOfLines={1}>
+        <Text
+          style={{
+            color: isLeader ? colors.leader : nameColor,
+            fontWeight: "700",
+          }}
+        >
+          #{entry.rank}
+        </Text>
+        {` · ${entry.weekly_points} pts`}
+      </Text>
+    </View>
   );
 }
 
@@ -233,6 +291,11 @@ function MiniRings({
           />
         ))}
       </ScrollView>
+      {/* Right-edge gradient overlay removed in Pass 25-followup-E.2.a-
+          home-polish-3-fix: it faded over the last avatar when scrolled to
+          the end. The 2.5-avatar partial visibility at initial scroll
+          position is the natural mobile convention for "scroll for more"
+          (App Store, Spotify, Apple Music etc.) — works without chrome. */}
     </View>
   );
 }
@@ -251,11 +314,19 @@ const miniRingS = StyleSheet.create({
   },
   memberCard: {
     alignItems: "center",
-    width: 88,
-    gap: 4,
+    // Width bumped 88 → 110 in Pass 25-followup-E.2.a-home-polish to
+    // accommodate the 96pt ring + clear breathing for the name and meta
+    // text below it.
+    width: 110,
+    gap: 6,
   },
-  memberPts: {
-    fontSize: 11,
+  memberName: {
+    fontSize: 13,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  memberMeta: {
+    fontSize: 12,
     color: C.textSecondary,
     fontWeight: "500",
     textAlign: "center",
@@ -288,7 +359,9 @@ function PacksEmptyState({
           onPress={onCreate}
           activeOpacity={0.8}
         >
-          <Text style={emptyS.primaryBtnText}>{packsCopy.empty.primaryCta}</Text>
+          <Text style={emptyS.primaryBtnText}>
+            {packsCopy.empty.primaryCta}
+          </Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -296,7 +369,9 @@ function PacksEmptyState({
           onPress={onJoin}
           activeOpacity={0.7}
         >
-          <Text style={emptyS.joinLinkText}>{packsCopy.empty.secondaryCta}</Text>
+          <Text style={emptyS.joinLinkText}>
+            {packsCopy.empty.secondaryCta}
+          </Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -375,7 +450,7 @@ function DarkPackCard({
   data: HomePackData | undefined;
   currentUserId: string | undefined;
   currentUserAuthId: string | undefined;
-  unpostedWin: UnpostedWin | undefined;
+  unpostedWin: UnpostedAchievement | undefined;
   onWinPosted: () => void;
   onPress: () => void;
 }) {
@@ -391,12 +466,18 @@ function DarkPackCard({
     const myIdx = rawScores.findIndex((s) => s.user_id === currentUserId);
     if (myIdx < 0) return rawScores;
     const patched = rawScores
-      .map((s, i) => i === myIdx ? { ...s, weekly_points: myOptimistic.weekly_points } : s)
+      .map((s, i) =>
+        i === myIdx ? { ...s, weekly_points: myOptimistic.weekly_points } : s,
+      )
       .sort((a, b) => b.weekly_points - a.weekly_points);
     // Recompute dense ranks after re-sort
-    let lastPts = -1, lastRank = 0;
+    let lastPts = -1,
+      lastRank = 0;
     return patched.map((s, i) => {
-      if (s.weekly_points !== lastPts) { lastRank = i + 1; lastPts = s.weekly_points; }
+      if (s.weekly_points !== lastPts) {
+        lastRank = i + 1;
+        lastPts = s.weekly_points;
+      }
       return { ...s, rank: lastRank };
     });
   })();
@@ -413,8 +494,7 @@ function DarkPackCard({
   // a typed result { kind: 'time_pressure' | 'competitive_filler', text }
   // when that helper gets revisited for voice work.
   const urgency =
-    rawUrgency &&
-    (rawUrgency.endsWith("h left") || rawUrgency === "Final day")
+    rawUrgency && (rawUrgency.endsWith("h left") || rawUrgency === "Final day")
       ? rawUrgency
       : null;
   const hasActivity = scores.length > 0;
@@ -479,12 +559,68 @@ function DarkPackCard({
 
           {/* Row 4 — Today's points delta (hidden when 0) */}
           {/* TODO(voice review): "+{N} today" placeholder copy. */}
-          {showDelta && (
-            <>
-              <View style={card.divider} />
-              <Text style={card.todayDelta}>+{todayPts} today</Text>
-            </>
-          )}
+          {/* Delta row (Pass 25-followup-E.2.a-home-polish-3): inline single-
+              line layout. "+N today" + separator + "M of N goals" + tiny dot
+              row, all siblings sharing one flexbox row. Replaces the polish-2
+              two-line treatment that wasted horizontal real estate on the
+              right half of each line. Conditional separator + goal section
+              when at least one goal is enabled; otherwise the row collapses
+              to just "+N today". Entire row hidden when showDelta === false. */}
+          {showDelta &&
+            (() => {
+              const segments = [
+                {
+                  key: "steps",
+                  enabled: pack.steps_enabled,
+                  hit: data.myAchievements.steps,
+                },
+                {
+                  key: "workout",
+                  enabled: pack.workouts_enabled,
+                  hit: data.myAchievements.workout,
+                },
+                {
+                  key: "calories",
+                  enabled: pack.calories_enabled,
+                  hit: data.myAchievements.calories,
+                },
+                {
+                  key: "water",
+                  enabled: pack.water_enabled,
+                  hit: data.myAchievements.water,
+                },
+              ].filter((s) => s.enabled);
+              const hitCount = segments.filter((s) => s.hit).length;
+              return (
+                <>
+                  <View style={card.divider} />
+                  <View style={card.deltaRow}>
+                    <Text style={card.todayDelta}>+{todayPts} today</Text>
+                    {segments.length > 0 && (
+                      <>
+                        <Text style={card.deltaSeparator}> · </Text>
+                        <Text style={card.goalCount}>
+                          {hitCount} of {segments.length} goals
+                        </Text>
+                        <View style={card.goalDots}>
+                          {segments.map((s) => (
+                            <View
+                              key={s.key}
+                              style={[
+                                card.goalDot,
+                                {
+                                  backgroundColor: s.hit ? C.success : C.border,
+                                },
+                              ]}
+                            />
+                          ))}
+                        </View>
+                      </>
+                    )}
+                  </View>
+                </>
+              );
+            })()}
         </>
       ) : (
         <Text style={card.noActivity}>{packsCopy.packCard.quietWeek}</Text>
@@ -492,14 +628,21 @@ function DarkPackCard({
 
       {unpostedWin && victorySheetOpen && (
         <VictoryPostSheet
-          feedItemId={unpostedWin.feedItemId}
-          userId={currentUserAuthId ?? ""}
-          packName={pack.name}
-          winningPoints={unpostedWin.winningPoints}
-          scoreDate={unpostedWin.scoreDate}
           visible={victorySheetOpen}
-          onClose={() => setVictorySheetOpen(false)}
-          onPosted={() => { setVictorySheetOpen(false); onWinPosted(); }}
+          onDismiss={() => setVictorySheetOpen(false)}
+          onPosted={() => {
+            setVictorySheetOpen(false);
+            onWinPosted();
+          }}
+          achievement={{
+            kind: "daily_winner",
+            feedItemId: unpostedWin.feedItemId,
+            userId: currentUserAuthId ?? "",
+            packId: pack.id,
+            packName: pack.name,
+            scoreDate: unpostedWin.scoreDate,
+            pointsEarned: unpostedWin.pointsEarned,
+          }}
         />
       )}
     </TouchableOpacity>
@@ -566,6 +709,34 @@ const card = StyleSheet.create({
     color: C.accent,
     textAlign: "left",
   },
+  // Pass 25-followup-E.2.a-home-polish-3: inline delta row replaces the
+  // polish-2 two-line treatment. "+N today" + separator + "M of N goals" +
+  // dot row, all siblings on a single horizontal line. Reclaims one
+  // vertical line per card; with multiple packs the score context for the
+  // second card no longer falls below the fold.
+  deltaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  deltaSeparator: {
+    fontSize: 12,
+    color: C.textSecondary,
+  },
+  goalCount: {
+    fontSize: 12,
+    color: C.textSecondary,
+  },
+  goalDots: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginLeft: 6,
+  },
+  goalDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
   victoryBanner: {
     flexDirection: "row",
     alignItems: "center",
@@ -609,15 +780,102 @@ export default function Home() {
   const user = useAuthStore((s) => s.user);
   useRefreshCurrentUserOnFocus();
   const { packs, isLoading, refetch } = useUserPacks(user?.id ?? null);
+
   const { isPro, effectivePackLimit } = useIsPro();
   const [refreshing, setRefreshing] = useState(false);
   const [packDataMap, setPackDataMap] = useState<Record<string, HomePackData>>(
     {},
   );
+  // Latches true after the first fetchScores completes. Stays true across
+  // realtime and logVersion refetches — same latching pattern as
+  // hasLoadedOnce. Now also drives the loading gate below: the branded
+  // loading state holds until this is true, so the screen swaps once to
+  // fully-populated cards instead of cascading quiet-week → real data.
+  const [scoresLoaded, setScoresLoaded] = useState(false);
+
+  // Branded loading gate — genuine first load only, and now holds until
+  // BOTH the pack list (isLoading) AND every pack's fetchScores
+  // (scoresLoaded) have resolved. useUserPacks flips isLoading true on
+  // EVERY refetch (incl. the useFocusEffect refetch + pull-to-refresh), so
+  // once the first load resolves hasLoadedOnce latches and subsequent
+  // refetches render stale-but-present data instead of re-showing loading.
+  const hasLoadedOnce = useRef(false);
+  if (!isLoading && scoresLoaded) hasLoadedOnce.current = true;
+  const showLoading = (isLoading || !scoresLoaded) && !hasLoadedOnce.current;
   const [joinModalVisible, setJoinModalVisible] = useState(false);
-  const { wins: unpostedWins, refresh: refreshWins } = useUnpostedWins(
-    FEATURE_FLAGS.dailyWinner ? user?.id : undefined,
+  // Pass 25-followup-E.2.b.iii: useUnpostedAchievements returns ALL unposted
+  // achievement kinds within the 2-day window. Two consumers split the
+  // result here:
+  //   - dailyWinnerAchievements → existing per-pack-card banner (gated by
+  //     dailyWinner flag; still false / shelved).
+  //   - bannerAchievements → new Home-level banner (gated by
+  //     achievementPrompts flag; took_lead only for now).
+  // Hook only fetches when EITHER flag is enabled — otherwise userId stays
+  // undefined and the hook short-circuits.
+  const achievementsEnabled =
+    FEATURE_FLAGS.dailyWinner || FEATURE_FLAGS.achievementPrompts;
+  const { achievements: unpostedAchievements, refresh: refreshAchievements } =
+    useUnpostedAchievements(achievementsEnabled ? user?.id : undefined);
+  const unpostedWins = useMemo(
+    () => unpostedAchievements.filter((a) => a.kind === "daily_winner"),
+    [unpostedAchievements],
   );
+
+  // Banner consumer: filters to ['took_lead'] for E.2.b.iii (all_goals
+  // defers to a future iteration). Dismissal state lives in AsyncStorage —
+  // we async-load the set of dismissed feedItemIds once per session, then
+  // exclude them from the queue. New dismissals from the X button also
+  // update this set so the banner disappears immediately without waiting
+  // for a refetch.
+  const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
+  const [achievementSheet, setAchievementSheet] =
+    useState<UnpostedAchievement | null>(null);
+
+  useEffect(() => {
+    if (!FEATURE_FLAGS.achievementPrompts || unpostedAchievements.length === 0)
+      return;
+    let cancelled = false;
+    (async () => {
+      const candidates = unpostedAchievements.filter(
+        (a) => a.kind === "took_lead",
+      );
+      const checks = await Promise.all(
+        candidates.map(async (a) => ({
+          a,
+          dismissed: await isAchievementDismissed(a.feedItemId),
+        })),
+      );
+      if (cancelled) return;
+      setDismissedIds((prev) => {
+        const next = new Set(prev);
+        for (const { a, dismissed } of checks) {
+          if (dismissed) next.add(a.feedItemId);
+        }
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [unpostedAchievements]);
+
+  const bannerQueueHead = useMemo<UnpostedAchievement | null>(() => {
+    if (!FEATURE_FLAGS.achievementPrompts) return null;
+    return (
+      unpostedAchievements.find(
+        (a) => a.kind === "took_lead" && !dismissedIds.has(a.feedItemId),
+      ) ?? null
+    );
+  }, [unpostedAchievements, dismissedIds]);
+
+  const handleBannerDismiss = useCallback((feedItemId: string) => {
+    setDismissedIds((prev) => {
+      const next = new Set(prev);
+      next.add(feedItemId);
+      return next;
+    });
+    markAchievementDismissed(feedItemId).catch(() => {});
+  }, []);
 
   const logVersion = useScoreStore((s) => s.logVersion);
 
@@ -654,14 +912,68 @@ export default function Home() {
     router.push("/(app)/pack/create");
   };
 
+  // Zero-pack case: fetchScores never runs for an empty pack list, so
+  // scoresLoaded would never latch and the loading gate would hang. Latch
+  // it directly here once useUserPacks has resolved (!isLoading guards
+  // against the initial empty-array render latching prematurely).
   useEffect(() => {
     if (packs.length > 0) fetchScores(packs);
+    else if (!isLoading) setScoresLoaded(true);
   }, [packs]);
 
   // Re-fetch whenever the user logs an activity so home cards update immediately
   useEffect(() => {
     if (logVersion > 0 && packs.length > 0) fetchScores(packs);
   }, [logVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Pass 25-followup-E.1-fix-3: realtime cross-device sync for home cards.
+  // Mirrors Pack Detail's inline subscription pattern (one channel per
+  // active run) but spans every pack the user is in, so other members'
+  // score changes update Home live without pull-to-refresh.
+  //
+  // The logVersion useEffect above handles same-device immediate refresh
+  // (instant feedback on the local user's logs, no realtime round-trip).
+  // This effect handles cross-device — when another pack member logs,
+  // their daily_scores row UPDATE fires postgres_changes here and we
+  // refetch. Both paths converging on the same final state is fine; the
+  // double-fire on the local user's own log is acceptable redundancy.
+  //
+  // Stable dep via packIdsKey (sorted+joined IDs) so re-renders without a
+  // pack-list change don't thrash the subscriptions.
+  const packIdsKey = useMemo(
+    () =>
+      packs
+        .map((p) => p.id)
+        .sort()
+        .join(","),
+    [packs],
+  );
+  useEffect(() => {
+    if (packs.length === 0) return;
+    let cancelled = false;
+    let unsubscribes: Array<() => void> = [];
+
+    (async () => {
+      const { data: runs } = await supabase
+        .from("runs")
+        .select("id")
+        .in(
+          "pack_id",
+          packs.map((p) => p.id),
+        )
+        .eq("status", "active");
+      if (cancelled || !runs?.length) return;
+
+      unsubscribes = runs.map((run) =>
+        subscribeToRunScores(run.id, () => fetchScores(packs), "home"),
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+      unsubscribes.forEach((unsub) => unsub());
+    };
+  }, [packIdsKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchScores = async (packList: Pack[]) => {
     const result: Record<string, HomePackData> = {};
@@ -690,11 +1002,16 @@ export default function Home() {
         const memberIds = (membersResult.data ?? []).map((m) => m.user_id);
         if (memberIds.length === 0) return;
 
-        // Fetch weekly scores + user info for all members in parallel
+        // Fetch weekly scores + user info for all members in parallel.
+        // Pass 25-followup-E.2.a-home-polish: SELECT expanded with
+        // achievement booleans so the goal-hit progress strip can read
+        // the actor's per-pack achievement state without an extra query.
         const [scoresResult, usersResult] = await Promise.all([
           supabase
             .from("daily_scores")
-            .select("user_id, total_points, score_date")
+            .select(
+              "user_id, total_points, score_date, steps_achieved, workout_achieved, calories_achieved, water_achieved",
+            )
             .eq("run_id", run.id),
           supabase
             .from("users")
@@ -703,16 +1020,26 @@ export default function Home() {
         ]);
 
         // Aggregate weekly totals per user across all run dates, and extract
-        // the current user's today-only points for the "+N today" footer
-        // delta. Pack timezone resolves the right calendar day even if the
-        // device clock differs.
+        // the current user's today-only points + achievement flags for the
+        // "+N today" footer delta and goal-hit progress strip. Pack timezone
+        // resolves the right calendar day even if the device clock differs.
         const today = packToday(pack.timezone ?? "UTC");
         const totals: Record<string, number> = {};
         let myTodayPoints = 0;
+        const myAchievements = {
+          steps: false,
+          workout: false,
+          calories: false,
+          water: false,
+        };
         (scoresResult.data ?? []).forEach((row) => {
           totals[row.user_id] = (totals[row.user_id] ?? 0) + row.total_points;
           if (row.user_id === user?.id && row.score_date === today) {
             myTodayPoints = row.total_points;
+            myAchievements.steps = row.steps_achieved ?? false;
+            myAchievements.workout = row.workout_achieved ?? false;
+            myAchievements.calories = row.calories_achieved ?? false;
+            myAchievements.water = row.water_achieved ?? false;
           }
         });
 
@@ -741,7 +1068,9 @@ export default function Home() {
         unsorted.sort((a, b) => {
           const ptsDiff = b.weekly_points - a.weekly_points;
           if (ptsDiff !== 0) return ptsDiff;
-          return (nameMap[a.user_id] ?? "").localeCompare(nameMap[b.user_id] ?? "");
+          return (nameMap[a.user_id] ?? "").localeCompare(
+            nameMap[b.user_id] ?? "",
+          );
         });
 
         // Dense rank by weekly_points (1,1,3,3 style)
@@ -766,11 +1095,13 @@ export default function Home() {
           runStart: run.start_date,
           runEnd: run.end_date,
           myTodayPoints,
+          myAchievements,
         };
       }),
     );
 
     setPackDataMap(result);
+    setScoresLoaded(true);
   };
 
   const handleRefresh = async () => {
@@ -778,14 +1109,6 @@ export default function Home() {
     await refetch();
     setRefreshing(false);
   };
-
-  if (isLoading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={C.accent} />
-      </View>
-    );
-  }
 
   return (
     <View style={styles.container}>
@@ -804,42 +1127,89 @@ export default function Home() {
             onPress={() => handleNewPack()}
             activeOpacity={0.8}
           >
-            <Text style={styles.createButtonText}>{packsCopy.newPackShort}</Text>
+            <Text style={styles.createButtonText}>
+              {packsCopy.newPackShort}
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
 
-      <FlatList
-        data={packs}
-        keyExtractor={(item) => item.id}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            tintColor={C.textTertiary}
-          />
-        }
-        renderItem={({ item }) => (
-          <DarkPackCard
-            pack={item}
-            data={packDataMap[item.id]}
-            currentUserId={user?.id}
-            currentUserAuthId={user?.id}
-            unpostedWin={unpostedWins.find((w) => w.packId === item.id)}
-            onWinPosted={refreshWins}
-            onPress={() => router.push(`/(app)/pack/${item.id}`)}
+      {showLoading ? (
+        <PackBrandLoadingState />
+      ) : (
+        <FlatList
+          data={packs}
+          keyExtractor={(item) => item.id}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={C.textTertiary}
+            />
+          }
+          /* Pass 25-followup-E.2.b.iii: Home-level achievement banner sits
+           above the pack cards via ListHeaderComponent. Renders only the
+           queue head (single banner at a time per audit C.3). */
+          ListHeaderComponent={
+            FEATURE_FLAGS.achievementCelebrationSheet && bannerQueueHead ? (
+              <HomeAchievementBanner
+                achievement={bannerQueueHead}
+                onTap={() => setAchievementSheet(bannerQueueHead)}
+                onDismiss={() =>
+                  handleBannerDismiss(bannerQueueHead.feedItemId)
+                }
+              />
+            ) : null
+          }
+          renderItem={({ item }) => (
+            <DarkPackCard
+              pack={item}
+              data={packDataMap[item.id]}
+              currentUserId={user?.id}
+              currentUserAuthId={user?.id}
+              unpostedWin={unpostedWins.find((w) => w.packId === item.id)}
+              onWinPosted={refreshAchievements}
+              onPress={() => router.push(`/(app)/pack/${item.id}`)}
+            />
+          )}
+          ListEmptyComponent={
+            <PacksEmptyState
+              onCreate={() => handleNewPack()}
+              onJoin={() => setJoinModalVisible(true)}
+            />
+          }
+          contentContainerStyle={
+            packs.length === 0 ? styles.emptyList : styles.list
+          }
+        />
+      )}
+
+      {/* Screen-level VictoryPostSheet for banner-triggered achievements.
+          Separate from the per-pack-card daily_winner sheet (shelved).
+          Pass C-revised: shelved behind achievementCelebrationSheet flag. */}
+      {FEATURE_FLAGS.achievementCelebrationSheet &&
+        achievementSheet &&
+        user?.id && (
+          <VictoryPostSheet
+            visible={!!achievementSheet}
+            onDismiss={() => setAchievementSheet(null)}
+            onPosted={() => {
+              setAchievementSheet(null);
+              refreshAchievements();
+            }}
+            achievement={{
+              kind: achievementSheet.kind,
+              feedItemId: achievementSheet.feedItemId,
+              userId: user.id,
+              packId: achievementSheet.packId,
+              packName: achievementSheet.packName,
+              scoreDate: achievementSheet.scoreDate,
+              pointsEarned: achievementSheet.pointsEarned,
+              leadGap: achievementSheet.leadGap,
+              opponentName: achievementSheet.opponentName,
+            }}
           />
         )}
-        ListEmptyComponent={
-          <PacksEmptyState
-            onCreate={() => handleNewPack()}
-            onJoin={() => setJoinModalVisible(true)}
-          />
-        }
-        contentContainerStyle={
-          packs.length === 0 ? styles.emptyList : styles.list
-        }
-      />
 
       <JoinPackModal
         visible={joinModalVisible}

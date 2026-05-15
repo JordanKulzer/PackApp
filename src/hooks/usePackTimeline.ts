@@ -14,6 +14,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { FEATURE_FLAGS } from "../lib/featureFlags";
+import { uploadChatPhoto } from "../lib/photoUpload";
 import type { FeedItem, Reactor } from "./useActivityFeed";
 import type { TimelineItem } from "../types/timeline";
 import type { ActivityCategory } from "../lib/activityCategoryMap";
@@ -41,6 +42,7 @@ type ChatMessageRow = {
   updated_at: string;
   edited_at: string | null;
   is_deleted: boolean;
+  photo_url?: string | null;
 };
 
 // Generate a client-side temporary id for optimistic messages. Real DB ids
@@ -87,7 +89,7 @@ export function usePackTimeline(
       supabase
         .from("chat_messages")
         .select(
-          "id, pack_id, user_id, body, created_at, updated_at, edited_at, is_deleted",
+          "id, pack_id, user_id, body, created_at, updated_at, edited_at, is_deleted, photo_url",
         )
         .eq("pack_id", packId)
         .order("created_at", { ascending: false })
@@ -226,6 +228,7 @@ export function usePackTimeline(
           updated_at: row.updated_at,
           edited_at: row.edited_at,
           is_deleted: row.is_deleted,
+          photo_url: row.photo_url ?? null,
           author: {
             id: row.user_id,
             display_name: nameMap[row.user_id] ?? "Unknown",
@@ -324,12 +327,16 @@ export function usePackTimeline(
   // ── Write functions (Phase C.2) ──────────────────────────────────────────
 
   const sendMessage = useCallback(
-    async (rawBody: string): Promise<void> => {
+    async (rawBody: string, photoLocalUri?: string | null): Promise<void> => {
       if (!packId) throw new Error("No active pack");
       if (!currentUserId) throw new Error("Not signed in");
 
       const body = rawBody.trim();
-      if (body.length === 0) throw new Error("Message cannot be empty");
+      // Pass C-revised: body MAY be empty when a photo is attached.
+      // Without a photo, body is still required.
+      if (body.length === 0 && !photoLocalUri) {
+        throw new Error("Message cannot be empty");
+      }
       if (body.length > MAX_BODY_LENGTH) {
         throw new Error(`Message too long (max ${MAX_BODY_LENGTH} characters)`);
       }
@@ -346,6 +353,9 @@ export function usePackTimeline(
         avatar_url: null,
       };
 
+      // Photo preview during upload: the optimistic row carries the local
+      // URI as photo_url so the UI shows the picked image immediately. The
+      // real row's photo_url (Storage path) replaces it on success.
       const optimistic: TimelineItem = {
         kind: "message",
         sortKey: nowIso,
@@ -358,6 +368,7 @@ export function usePackTimeline(
           updated_at: nowIso,
           edited_at: null,
           is_deleted: false,
+          photo_url: photoLocalUri ?? null,
           author,
           reactions: [],
         },
@@ -368,6 +379,12 @@ export function usePackTimeline(
         [...prev, optimistic].sort((a, b) => a.sortKey.localeCompare(b.sortKey)),
       );
 
+      // INSERT first with body only — id is server-generated. A
+      // client-supplied id was the prior shape; it tripped the
+      // chat_messages INSERT (RLS / column constraints don't expect
+      // a caller-set id). The Storage path is keyed off the real
+      // returned id instead, so the photo upload runs AFTER the
+      // insert succeeds.
       const { data, error: insErr } = await supabase
         .from("chat_messages")
         .insert({
@@ -376,7 +393,7 @@ export function usePackTimeline(
           body,
         })
         .select(
-          "id, pack_id, user_id, body, created_at, updated_at, edited_at, is_deleted",
+          "id, pack_id, user_id, body, created_at, updated_at, edited_at, is_deleted, photo_url",
         )
         .single();
 
@@ -390,10 +407,50 @@ export function usePackTimeline(
         throw insErr ?? new Error("Insert returned no data");
       }
 
+      const real = data as ChatMessageRow;
+
+      // Photo path: upload keyed off the real row id, then UPDATE the
+      // row's photo_url. On upload/update failure, delete the just-
+      // inserted row (it may have an empty body for photo-only sends)
+      // and throw so the caller surfaces the error.
+      let finalPhotoUrl: string | null = real.photo_url ?? null;
+      if (photoLocalUri) {
+        const photoPath = await uploadChatPhoto(
+          currentUserId,
+          real.id,
+          photoLocalUri,
+        );
+        if (!photoPath) {
+          await supabase.from("chat_messages").delete().eq("id", real.id);
+          setTimeline((prev) =>
+            prev.filter(
+              (it) => !(it.kind === "message" && it.data.id === tempId),
+            ),
+          );
+          throw new Error("Photo upload failed");
+        }
+
+        const { error: updErr } = await supabase
+          .from("chat_messages")
+          .update({ photo_url: photoPath })
+          .eq("id", real.id);
+
+        if (updErr) {
+          await supabase.from("chat_messages").delete().eq("id", real.id);
+          setTimeline((prev) =>
+            prev.filter(
+              (it) => !(it.kind === "message" && it.data.id === tempId),
+            ),
+          );
+          throw updErr;
+        }
+
+        finalPhotoUrl = photoPath;
+      }
+
       // Replace optimistic with the real row. Realtime INSERT may also fire
       // a refetch shortly after — the dedup logic in fetchTimeline drops
       // any leftover optimistic placeholders, so the brief overlap is safe.
-      const real = data as ChatMessageRow;
       setTimeline((prev) =>
         prev
           .map((it) => {
@@ -408,6 +465,7 @@ export function usePackTimeline(
                 updated_at: real.updated_at,
                 edited_at: real.edited_at,
                 is_deleted: real.is_deleted,
+                photo_url: finalPhotoUrl,
               },
             };
           })

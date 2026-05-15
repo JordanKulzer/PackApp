@@ -124,6 +124,11 @@ WHERE id IN (SELECT id FROM ranked WHERE rn > 2);
 
 -- (d) Reset daily_scores rows for affected (user, run, score_date) tuples.
 -- Filtered by run.pack_id to avoid touching unrelated packs' scoring.
+-- F.2: steps_count / calories_count are now DB-generated as
+-- (manual_*_count + hk_*_count); zeroing them happens implicitly when
+-- both source-columns are zeroed. has_manual_* booleans were dropped
+-- in migration 20260513b — M badge derives from manual_*_count > 0
+-- going forward.
 UPDATE daily_scores ds
 SET total_points = 0,
     streak_days = 0,
@@ -132,15 +137,13 @@ SET total_points = 0,
     workout_achieved = false,
     calories_achieved = false,
     water_achieved = false,
-    steps_count = 0,
-    calories_count = 0,
+    manual_steps_count = 0,
+    manual_calories_count = 0,
     water_oz_count = 0,
     workout_count = 0,
     hk_steps_count = 0,
     hk_calories_count = 0,
     hk_workout_count = 0,
-    has_manual_steps = false,
-    has_manual_calories = false,
     updated_at = NOW()
 FROM affected_user_pack_days a
 JOIN runs r ON r.pack_id = a.pack_id

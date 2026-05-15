@@ -13,6 +13,7 @@ import { POINTS, WORKOUT_MAX_DAILY, workoutPoints, getStreakMultiplier } from ".
 import { computeStreakForRun } from "./computeStreak";
 import { notifyPackMembers } from "./notifications";
 import { detectAndSendThreatNotifications } from "./threatNotifications";
+import { detectAndRecordTookLead, type CrossingEvent } from "./competitiveDetection";
 import { packToday, packDateRangeUTC } from "./packDates";
 import { getCategoryFromHKType } from "./activityCategoryMap";
 import { analytics } from "./analytics";
@@ -301,8 +302,9 @@ export async function syncHealthDataToSupabase(
   pack: Pack,
   scoreDate?: string,
   mode: "today" | "backfill" = "today",
-): Promise<void> {
-  if (!nativeAvailable()) return;
+): Promise<CrossingEvent[]> {
+  const crossings: CrossingEvent[] = [];
+  if (!nativeAvailable()) return crossings;
 
   const packTz = pack.timezone ?? "UTC";
   // Local name `today` is the score-date being processed (may be a backfill
@@ -324,10 +326,13 @@ export async function syncHealthDataToSupabase(
   // Step 2a: Read prior row for delta computation, threat delta, and Pass 9
   // funnel transition detection (activity_logged + streak_milestone gate on
   // these "before" values).
+  // F.2: SELECT manual_*_count + hk_*_count separately. steps_count and
+  // calories_count are now DB-generated (manual + hk); no need to read
+  // them here — we have the components.
   const { data: priorRow } = await supabase
     .from("daily_scores")
     .select(
-      "total_points, steps_count, calories_count, workout_count, hk_steps_count, hk_calories_count, hk_workout_count, streak_days, steps_achieved, calories_achieved, workout_achieved, water_achieved",
+      "total_points, manual_steps_count, manual_calories_count, workout_count, hk_steps_count, hk_calories_count, hk_workout_count, streak_days, steps_achieved, calories_achieved, workout_achieved, water_achieved",
     )
     .eq("run_id", runId)
     .eq("user_id", userId)
@@ -335,11 +340,9 @@ export async function syncHealthDataToSupabase(
     .maybeSingle();
 
   const oldTodayScore = priorRow?.total_points ?? 0;
-  const prevStepsCount = priorRow?.steps_count ?? 0;
-  const prevCaloriesCount = priorRow?.calories_count ?? 0;
+  const prevManualSteps = priorRow?.manual_steps_count ?? 0;
+  const prevManualCalories = priorRow?.manual_calories_count ?? 0;
   const prevWorkoutCount = priorRow?.workout_count ?? 0;
-  const prevHkSteps = priorRow?.hk_steps_count ?? 0;
-  const prevHkCalories = priorRow?.hk_calories_count ?? 0;
   const prevHkWorkouts = priorRow?.hk_workout_count ?? 0;
   // Frozen "before" snapshot for Pass 9 transition gating. Read from priorRow
   // (fresh DB read), NEVER from in-memory variables that get mutated below.
@@ -349,25 +352,29 @@ export async function syncHealthDataToSupabase(
   const prevWaterAchieved    = priorRow?.water_achieved    ?? false;
   const prevStreakDays       = priorRow?.streak_days       ?? 0;
 
-  // Step 2b: HealthKit values are absolute snapshots. Add only the new increment
-  // since last sync so manual entries in steps_count / workout_count are preserved.
+  // Step 2b: HealthKit values are absolute snapshots — write them as the
+  // absolute hk_*_count. The DB-generated steps_count / calories_count
+  // (manual + hk) reflects the combined total automatically. Workout
+  // count stays delta-based since it's not source-isolated (one
+  // workout_count column tracks manual + HK additively, capped by
+  // WORKOUT_MAX_DAILY).
   const cappedWorkouts = Math.min(workouts, WORKOUT_MAX_DAILY);
   const newHkSteps = Math.round(steps);
   const newHkCalories = Math.round(calories);
   const newHkWorkouts = cappedWorkouts;
 
-  const hkStepsDelta = Math.max(0, newHkSteps - prevHkSteps);
-  const hkCaloriesDelta = Math.max(0, newHkCalories - prevHkCalories);
   const hkWorkoutsDelta = Math.max(0, newHkWorkouts - prevHkWorkouts);
 
-  const newStepsCount = prevStepsCount + hkStepsDelta;
-  const newCaloriesCount = prevCaloriesCount + hkCaloriesDelta;
+  // Combined totals (manual + HK) for achievement / scoring / feed value.
+  // Match the DB-generated steps_count / calories_count exactly.
+  const totalSteps = prevManualSteps + newHkSteps;
+  const totalCalories = prevManualCalories + newHkCalories;
   const newWorkoutCount = Math.min(prevWorkoutCount + hkWorkoutsDelta, WORKOUT_MAX_DAILY);
 
   // Step 3: Determine achievements using combined (manual + HK) totals
-  const steps_achieved = pack.steps_enabled && newStepsCount >= pack.step_target;
+  const steps_achieved = pack.steps_enabled && totalSteps >= pack.step_target;
   const workout_achieved = pack.workouts_enabled && newWorkoutCount >= 1;
-  const calories_achieved = pack.calories_enabled && newCaloriesCount >= pack.calorie_target;
+  const calories_achieved = pack.calories_enabled && totalCalories >= pack.calorie_target;
   const water_achieved = pack.water_enabled && waterOz >= pack.water_target_oz;
 
   // Step 4: Base points (before multiplier)
@@ -399,8 +406,9 @@ export async function syncHealthDataToSupabase(
       workout_achieved,
       calories_achieved,
       water_achieved,
-      steps_count: newStepsCount,
-      calories_count: newCaloriesCount,
+      // F.2: steps_count / calories_count are DB-generated as
+      // (manual + hk); writes against them would fail. HK only
+      // writes its own absolute snapshot to hk_*_count.
       water_oz_count: Math.round(waterOz),
       workout_count: newWorkoutCount,
       hk_steps_count: newHkSteps,
@@ -579,9 +587,9 @@ export async function syncHealthDataToSupabase(
   if (water_achieved)    achievedTypes.push({ type: "water",    points: Math.round(POINTS.water    * streakMultiplier) });
 
   const rawValues: Record<string, number> = {
-    steps: newStepsCount,
+    steps: totalSteps,
     workout: newWorkoutCount,
-    calories: newCaloriesCount,
+    calories: totalCalories,
     water: Math.round(waterOz),
   };
 
@@ -615,6 +623,15 @@ export async function syncHealthDataToSupabase(
           console.error("[HealthKit Sync] activity_feed insert error:", feedError);
         }
       } else if (insertedRows && insertedRows.length > 0) {
+        crossings.push({
+          packId,
+          packName: pack.name,
+          packTimezone: packTz,
+          feedItemId: insertedRows[0].id,
+          activityType: type as "steps" | "calories" | "water",
+          pointsEarned: points,
+          scoreDate: today,
+        });
         notifyPackMembers(userId, packId, {
           kind: "goal",
           activityType: type as "steps" | "calories" | "water",
@@ -653,12 +670,27 @@ export async function syncHealthDataToSupabase(
           console.error("[HealthKit Sync] all_goals insert error:", allGoalsError);
         }
       } else if (insertedAllGoals && insertedAllGoals.length > 0) {
+        crossings.push({
+          packId,
+          packName: pack.name,
+          packTimezone: packTz,
+          feedItemId: insertedAllGoals[0].id,
+          activityType: "all_goals",
+          pointsEarned: total_points,
+          scoreDate: today,
+        });
         notifyPackMembers(userId, packId, {
           kind: "all_goals",
           totalPoints: total_points,
         }).catch(() => {});
       }
     }
+
+    // Pass 25-followup-E.2.a.ii: lib-side took_lead detection per pack.
+    // Skipped on backfill mode — past-day score changes shouldn't surface
+    // as live took_lead events. Matches the backfill suppression rationale
+    // documented in the activity_feed-insert section above.
+    detectAndRecordTookLead(userId, packId, runId, packTz).catch(() => {});
   }
 
   console.log("[HealthKit Sync] Success:", {
@@ -666,11 +698,9 @@ export async function syncHealthDataToSupabase(
     hkSteps: newHkSteps,
     hkCalories: newHkCalories,
     hkWorkouts: newHkWorkouts,
-    hkStepsDelta,
-    hkCaloriesDelta,
     hkWorkoutsDelta,
-    totalSteps: newStepsCount,
-    totalCalories: newCaloriesCount,
+    totalSteps,
+    totalCalories,
     totalWorkouts: newWorkoutCount,
     waterOz,
     steps_achieved,
@@ -681,6 +711,8 @@ export async function syncHealthDataToSupabase(
     streakDays,
     streakMultiplier,
   });
+
+  return crossings;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -691,8 +723,9 @@ export async function syncHealthDataToSupabase(
 // healthkit_data.synced_workout_ids), up to WORKOUT_MAX_DAILY per day per pack.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function syncWorkoutsToSupabase(userId: string): Promise<void> {
-  if (!nativeAvailable()) return;
+export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEvent[]> {
+  const crossings: CrossingEvent[] = [];
+  if (!nativeAvailable()) return crossings;
 
   // Query workouts from 2 days ago to catch any retroactive data
   const twoDaysAgo = new Date();
@@ -700,7 +733,7 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<void> {
   twoDaysAgo.setHours(0, 0, 0, 0);
 
   const samples = await getWorkoutSamples(twoDaysAgo);
-  if (samples.length === 0) return;
+  if (samples.length === 0) return crossings;
 
   // Group all samples by UTC date for initial bucketing — per-pack filtering
   // below re-checks using pack timezone once we know which pack we're in.
@@ -712,7 +745,7 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<void> {
     byDate.set(date, bucket);
   }
 
-  if (byDate.size === 0) return;
+  if (byDate.size === 0) return crossings;
 
   // Get all active packs for this user
   const { data: memberships } = await supabase
@@ -721,7 +754,7 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<void> {
     .eq("user_id", userId)
     .eq("is_active", true);
 
-  if (!memberships?.length) return;
+  if (!memberships?.length) return crossings;
 
   for (const { pack_id } of memberships) {
     const { data: pack } = await supabase
@@ -881,6 +914,15 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<void> {
           continue;
         }
         if (insertedRows && insertedRows.length > 0) {
+          crossings.push({
+            packId: pack_id,
+            packName: pack.name,
+            packTimezone: packTz,
+            feedItemId: insertedRows[0].id,
+            activityType: "workout",
+            pointsEarned: Math.round(POINTS.workout * streakMultiplier),
+            scoreDate: date,
+          });
           notifyPackMembers(userId, pack_id, {
             kind: "goal",
             activityType: "workout",
@@ -891,7 +933,13 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<void> {
 
       console.log(`[WorkoutSync] credited ${toCredit.length} new workout(s) for ${date} in pack ${pack_id}`);
     }
+
+    // Pass 25-followup-E.2.a.ii: lib-side took_lead detection per pack.
+    // Fires after per-day workout iterations finish for this pack so the
+    // detection sees the latest daily_scores state.
+    detectAndRecordTookLead(userId, pack_id, run.id, packTz).catch(() => {});
   }
+  return crossings;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -931,6 +979,23 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<void> {
 
 export async function syncHealthDataForUser(userId: string): Promise<void> {
   if (!nativeAvailable()) return;
+
+  // Gate 0 — auth status. Background observer subscriptions in app/_layout.tsx
+  // call into this orchestrator unconditionally on cold launch (HKObserverQuery
+  // fires an initial completion handler per registered type, regardless of
+  // auth state — Apple's design). Without this gate, every observer callback
+  // proceeds to read HK, those reads throw on unauth, the per-reader catches
+  // log [HealthKit] ... errors and return 0, and the orchestrator writes
+  // zero-value daily_scores rows. Three cases this catches:
+  //   • Simulator — no Health app, status stays "shouldRequest" forever.
+  //   • Physical pre-prompt — auth never requested.
+  //   • Revoked permission post-grant — user toggled off in iOS Settings.
+  // Foreground entries (useHealthKit's syncAllPacks + syncNow) are already
+  // hook-level auth-gated via `isAuthorized` state — this gate is for the
+  // background observer wake path which has no equivalent gate. Returns
+  // BEFORE stamping LAST_SYNC_KEY so post-grant resumption is immediate
+  // (no 60s throttle stall from a stale auth-gated-skip stamp).
+  if (!(await getHealthKitAuthStatus())) return;
 
   // Gate 1 — burst coalesce. Catches simultaneous observer fires from one
   // iOS wake before they race the AsyncStorage gate below. The leader

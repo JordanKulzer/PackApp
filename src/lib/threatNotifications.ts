@@ -12,7 +12,11 @@ interface RankedMember {
   runPoints: number;
 }
 
-type ThreatKind = "took_lead" | "passed_you" | "tied_you" | "one_action_away";
+// Pass 25-followup-E.2.a.iii: took_lead removed from this union. The
+// took_lead INSERT + push are now owned by detectAndRecordTookLead in
+// src/lib/competitiveDetection.ts. This file retains only victim-targeted
+// threats (passed_you / tied_you / one_action_away).
+type ThreatKind = "passed_you" | "tied_you" | "one_action_away";
 
 interface ThreatEvent {
   kind: ThreatKind;
@@ -96,8 +100,6 @@ export function detectThreats(
   const actorAfter  = after.find((m)  => m.userId === actorId);
   if (!actorBefore || !actorAfter) return threats;
 
-  const actorNowLeads   = after[0]?.userId === actorId;
-
   for (const victim of after) {
     if (victim.userId === actorId) continue;
 
@@ -106,28 +108,26 @@ export function detectThreats(
 
     const actorWasStrictlyBehind = actorBefore.runPoints < vBefore.runPoints;
     const actorIsNowStrictlyAhead = actorAfter.runPoints > victim.runPoints;
-    const victimWasLeader = before[0]?.userId === victim.userId;
     const victimNewRank = after.findIndex((m) => m.userId === victim.userId) + 1;
 
-    // ── 1. Actor took the lead from this victim ─────────────────────────────
-    if (victimWasLeader && actorNowLeads && actorIsNowStrictlyAhead) {
-      threats.push({ kind: "took_lead", victimId: victim.userId, actorName });
-      continue; // supersedes all other events for this victim
-    }
-
-    // ── 2. Actor passed this victim (moved strictly above, not to #1) ───────
+    // ── 1. Actor passed this victim (moved strictly above) ─────────────────
+    // took_lead removed in Pass 25-followup-E.2.a.iii — owned by
+    // detectAndRecordTookLead. passed_you fires regardless of whether the
+    // victim was the leader; if they were, the broadcast took_lead from
+    // competitiveDetection.ts also fires (the two events are not mutually
+    // exclusive post-consolidation).
     if (actorWasStrictlyBehind && actorIsNowStrictlyAhead) {
       threats.push({ kind: "passed_you", victimId: victim.userId, actorName, rankAfter: victimNewRank });
       continue;
     }
 
-    // ── 3. Actor tied this victim (was behind, now equal) ───────────────────
+    // ── 2. Actor tied this victim (was behind, now equal) ───────────────────
     if (actorWasStrictlyBehind && actorAfter.runPoints === victim.runPoints) {
       threats.push({ kind: "tied_you", victimId: victim.userId, actorName, rankAfter: victimNewRank });
       continue;
     }
 
-    // ── 4. Actor newly entered one-action range of catching victim ───────────
+    // ── 3. Actor newly entered one-action range of catching victim ─────────
     // Only fires when crossing into the ≤ workout-pts threshold from outside it.
     if (!actorIsNowStrictlyAhead && actorAfter.runPoints < victim.runPoints) {
       const gapBefore = vBefore.runPoints - actorBefore.runPoints;
@@ -144,13 +144,14 @@ export function detectThreats(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Edge function payload mapping. Mirrors the discriminated union in
-// supabase/functions/notify-pack-event/index.ts. took_lead is a broadcast
-// event; the other three are targeted at the specific victim.
+// Edge function payload mapping. Mirrors the victim-targeted subset of the
+// discriminated union in supabase/functions/notify-pack-event/index.ts.
+// took_lead is owned by competitiveDetection.ts post-Pass-25-followup-E.2.a.iii
+// — that path fires the broadcast push there. The three kinds here are all
+// targeted at the specific victim via the recipients filter.
 // ─────────────────────────────────────────────────────────────────────────────
 
 type EdgeEvent =
-  | { kind: "took_lead" }
   | { kind: "passed_you"; rankAfter: number }
   | { kind: "tied_you"; rankAfter: number }
   | { kind: "one_action_away"; actionLabel: string };
@@ -160,8 +161,6 @@ function buildEdgePayload(
   packId: string,
 ): { packId: string; event: EdgeEvent; recipients?: string[] } {
   switch (threat.kind) {
-    case "took_lead":
-      return { packId, event: { kind: "took_lead" } };
     case "passed_you":
       return {
         packId,
