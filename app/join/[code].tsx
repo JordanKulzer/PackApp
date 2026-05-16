@@ -99,7 +99,7 @@ export default function JoinPack() {
       setStatus("found");
       Alert.alert(
         "Pack limit reached",
-        `Free accounts can join up to ${FREE_PACK_LIMIT} packs. Upgrade to Pro for unlimited packs.`
+        `Free accounts can join up to ${FREE_PACK_LIMIT} packs. Pro upgrade coming soon!`
       );
       return;
     }
@@ -109,7 +109,7 @@ export default function JoinPack() {
       setStatus("found");
       Alert.alert(
         "Pack is full",
-        `This pack has reached the maximum of ${FREE_MEMBER_LIMIT} members.`
+        `This pack has reached its maximum of ${FREE_MEMBER_LIMIT} members. Larger pack sizes coming with Pro!`
       );
       return;
     }
