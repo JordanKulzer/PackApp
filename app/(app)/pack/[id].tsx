@@ -56,6 +56,7 @@ import {
 import type { ChatMessage } from "../../../src/types/database";
 import type { FeedItem } from "../../../src/hooks/useActivityFeed";
 import { useHealthKit } from "../../../src/hooks/useHealthKit";
+import { RulesSheet } from "../../../src/components/RulesSheet";
 import { supabase } from "../../../src/lib/supabase";
 import { formatName } from "../../../src/lib/displayName";
 import { rankWithTiebreakers } from "../../../src/lib/competitionCopy";
@@ -1956,6 +1957,7 @@ export default function PackScreen() {
   // Pack lifecycle state
   const [isCreator, setIsCreator] = useState(false);
   const [showPackMenu, setShowPackMenu] = useState(false);
+  const [showRules, setShowRules] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showTransferPicker, setShowTransferPicker] = useState(false);
@@ -2419,6 +2421,21 @@ export default function PackScreen() {
       >
         <Pressable style={s.menuOverlay} onPress={() => setShowPackMenu(false)}>
           <View style={s.menuSheet}>
+            <TouchableOpacity
+              style={s.menuRow}
+              onPress={() => {
+                setShowPackMenu(false);
+                setShowRules(true);
+              }}
+            >
+              <Ionicons
+                name="help-circle-outline"
+                size={18}
+                color={C.textSecondary}
+              />
+              <Text style={s.menuRowText}>How it works</Text>
+            </TouchableOpacity>
+            <View style={s.menuDivider} />
             {isCreator ? (
               <>
                 <TouchableOpacity
@@ -2488,6 +2505,13 @@ export default function PackScreen() {
           </View>
         </Pressable>
       </Modal>
+
+      {/* ── Rules / "How it works" sheet ──────────────────────────────── */}
+      <RulesSheet
+        visible={showRules}
+        onClose={() => setShowRules(false)}
+        pack={pack}
+      />
 
       {/* ── Leave pack confirmation ───────────────────────────────────── */}
       <ConfirmDialog

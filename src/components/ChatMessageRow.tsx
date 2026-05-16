@@ -64,6 +64,14 @@ export function ChatMessageRow({
   const [signedPhotoUrl, setSignedPhotoUrl] = useState<string | null>(
     isLocalPhoto ? photoRaw : null,
   );
+  // Natural pixel dimensions of the resolved photo. Drives aspect-ratio-
+  // aware sizing of the photo container below — null while still
+  // resolving or if Image.getSize fails, in which case render falls back
+  // to the legacy fixed 240×240 box.
+  const [photoDims, setPhotoDims] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
   useEffect(() => {
     if (!photoRaw) {
       setSignedPhotoUrl(null);
@@ -78,11 +86,38 @@ export function ChatMessageRow({
       .then((url) => {
         if (alive) setSignedPhotoUrl(url);
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error("[ChatMessageRow] getSignedUrl failed:", err);
+        if (alive) setSignedPhotoUrl(null);
+      });
     return () => {
       alive = false;
     };
   }, [photoRaw]);
+
+  // Resolve natural dimensions once a URL is in hand. Reset to null when
+  // the URL clears or changes so the fallback render kicks in until the
+  // new dimensions resolve.
+  useEffect(() => {
+    if (!signedPhotoUrl) {
+      setPhotoDims(null);
+      return;
+    }
+    let alive = true;
+    Image.getSize(
+      signedPhotoUrl,
+      (width, height) => {
+        if (alive) setPhotoDims({ width, height });
+      },
+      (err) => {
+        console.error("[ChatMessageRow] Image.getSize failed:", err);
+        // Keep photoDims null → fallback render path is used.
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [signedPhotoUrl]);
 
   // Smiley wrapper — measureInWindow anchors the reaction picker.
   const smileyRef = useRef<View>(null);
@@ -199,13 +234,33 @@ export function ChatMessageRow({
             the local file URI immediately; the Storage-path signed URL
             replaces it once the real row arrives. */}
         {!message.is_deleted && signedPhotoUrl ? (
-          <View style={s.photoWrap}>
-            <Image
-              source={{ uri: signedPhotoUrl }}
-              style={s.photo}
-              resizeMode="contain"
-            />
-          </View>
+          photoDims ? (
+            <View
+              style={[
+                s.photoWrap,
+                {
+                  width: "100%",
+                  aspectRatio: photoDims.width / photoDims.height,
+                  maxWidth: 240,
+                  maxHeight: 320,
+                },
+              ]}
+            >
+              <Image
+                source={{ uri: signedPhotoUrl }}
+                style={s.photoFill}
+                resizeMode="cover"
+              />
+            </View>
+          ) : (
+            <View style={s.photoWrap}>
+              <Image
+                source={{ uri: signedPhotoUrl }}
+                style={s.photo}
+                resizeMode="contain"
+              />
+            </View>
+          )
         ) : null}
         {!message.is_deleted && message.reactions.length > 0 && (
           <ReactionPills
@@ -333,5 +388,9 @@ const s = StyleSheet.create({
   photo: {
     width: 240,
     aspectRatio: 1,
+  },
+  photoFill: {
+    width: "100%",
+    height: "100%",
   },
 });

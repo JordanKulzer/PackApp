@@ -69,8 +69,11 @@ export function rankWithTiebreakers<T extends RankedEntry>(
 
 // ─── Rank status headline ──────────────────────────────────────────────────────
 // Returns the primary status string with correct tie detection.
-// "You're #1 · Leading by 20 pts" / "Tied for #1" / "Tied for #2" /
-// "You're #3 · 15 pts behind Lauren" / "You're #1 · No rivals yet"
+// Tie counting is by points only — members sharing the user's weekly_points form
+// the tie group. Ranks come from rankWithTiebreakers which assigns competition
+// ranks (1, 1, 3) so #1 badges on avatars stay consistent with this copy.
+// "You're #1 · Leading by 20 pts" / "You're tied for #1 with 2 others" /
+// "You're tied for #3 · 15 pts behind" / "You're #3 · 5 pts behind" / "You're #1"
 // Accepts plain RankedEntry[] or pre-ranked RankedWithTiebreaker<>[] arrays.
 export function buildRankStatus(
   members: RankedEntry[],
@@ -90,30 +93,33 @@ export function buildRankStatus(
   const myPts = me.weekly_points;
   const myRank = me.rank;
 
-  if (ranked.length === 1) return "You're #1 · No rivals yet";
+  if (ranked.length === 1) return "You're #1";
+
+  // Everyone at 0 — skip the "leading by" framing entirely.
+  if (ranked.every((r) => r.weekly_points === 0)) {
+    return "You're tied for #1 — no points yet";
+  }
+
+  // Tie group = members sharing my exact points total (including me).
+  const tiedCount = ranked.filter((r) => r.weekly_points === myPts).length;
+
+  if (tiedCount > 1) {
+    if (myRank === 1) {
+      const others = tiedCount - 1;
+      return `You're tied for #1 with ${others} other${others > 1 ? "s" : ""}`;
+    }
+    const pointsBehindLeader = ranked[0].weekly_points - myPts;
+    return `You're tied for #${myRank} · ${pointsBehindLeader} pts behind`;
+  }
 
   if (myRank === 1) {
-    if (me.isTied) return "Tied for #1";
-    if (me.tiebreaker === "streak") return "You're #1 · Leading by streak";
-    if (me.tiebreaker === "time") return "You're #1 · Got there first";
     const lead = myPts - ranked[1].weekly_points;
-    return `You're #1 · Leading by ${lead} pts`;
+    if (lead > 0) return `You're #1 · Leading by ${lead} pts`;
+    return "You're #1";
   }
 
-  const ahead = ranked[myIndex - 1];
-  const gap = ahead.weekly_points - myPts;
-
-  if (gap === 0) {
-    if (me.isTied) return `Tied for #${myRank}`;
-    if (ahead.tiebreaker === "streak")
-      return `You're #${myRank} · ${formatName(ahead.display_name, myRank - 1)} leads by streak`;
-    if (ahead.tiebreaker === "time")
-      return `You're #${myRank} · ${formatName(ahead.display_name, myRank - 1)} got there first`;
-    return `Tied for #${myRank}`;
-  }
-
-  const aheadName = formatName(ahead.display_name, myRank - 1);
-  return `You're #${myRank} · ${gap} pts behind ${aheadName}`;
+  const gap = ranked[myIndex - 1].weekly_points - myPts;
+  return `You're #${myRank} · ${gap} pts behind`;
 }
 
 // ─── Gap + today context line ──────────────────────────────────────────────────
