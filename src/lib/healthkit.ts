@@ -409,7 +409,7 @@ export async function syncHealthDataToSupabase(
       // F.2: steps_count / calories_count are DB-generated as
       // (manual + hk); writes against them would fail. HK only
       // writes its own absolute snapshot to hk_*_count.
-      water_oz_count: Math.round(waterOz),
+      hk_water_count: Math.round(waterOz),
       workout_count: newWorkoutCount,
       hk_steps_count: newHkSteps,
       hk_calories_count: newHkCalories,

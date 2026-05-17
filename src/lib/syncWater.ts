@@ -102,7 +102,7 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
           user_id: userId,
           score_date: today,
           water_achieved,
-          water_oz_count: Math.round(trueTotalOz),
+          manual_water_count: Math.round(trueTotalOz),
           total_points: newTotalPoints,
           streak_days: streakDays,
           streak_multiplier: multiplier,

@@ -8,7 +8,6 @@ import {
   TouchableOpacity,
   Keyboard,
   ScrollView,
-  Share,
   ActivityIndicator,
   LayoutAnimation,
   Modal,
@@ -57,6 +56,7 @@ import type { ChatMessage } from "../../../src/types/database";
 import type { FeedItem } from "../../../src/hooks/useActivityFeed";
 import { useHealthKit } from "../../../src/hooks/useHealthKit";
 import { RulesSheet } from "../../../src/components/RulesSheet";
+import { InviteSheet } from "../../../src/components/InviteSheet";
 import { supabase } from "../../../src/lib/supabase";
 import { formatName } from "../../../src/lib/displayName";
 import { rankWithTiebreakers } from "../../../src/lib/competitionCopy";
@@ -1958,6 +1958,7 @@ export default function PackScreen() {
   const [isCreator, setIsCreator] = useState(false);
   const [showPackMenu, setShowPackMenu] = useState(false);
   const [showRules, setShowRules] = useState(false);
+  const [showInviteSheet, setShowInviteSheet] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showTransferPicker, setShowTransferPicker] = useState(false);
@@ -2126,7 +2127,7 @@ export default function PackScreen() {
 
   // ── Handlers ──────────────────────────────────────────────────────────
 
-  const handleInvite = async () => {
+  const handleInvite = () => {
     if (!packData?.pack.invite_code) return;
     const memberLimit = isPro ? PRO_MEMBER_LIMIT : FREE_MEMBER_LIMIT;
     if (!isPro && (packData.memberCount ?? 0) >= memberLimit) {
@@ -2134,9 +2135,7 @@ export default function PackScreen() {
       router.push("/paywall?trigger=member_limit");
       return;
     }
-    await Share.share({
-      message: `Join my pack "${packData.pack.name}"! Invite code: ${packData.pack.invite_code}`,
-    });
+    setShowInviteSheet(true);
   };
 
   // ── Optimistic overlay from score store ──────────────────────────────
@@ -2511,6 +2510,16 @@ export default function PackScreen() {
         visible={showRules}
         onClose={() => setShowRules(false)}
         pack={pack}
+      />
+
+      {/* ── Invite sheet ──────────────────────────────────────────────── */}
+      <InviteSheet
+        visible={showInviteSheet}
+        onClose={() => setShowInviteSheet(false)}
+        packName={pack.name}
+        inviteCode={pack.invite_code}
+        memberCount={packData.memberCount ?? 0}
+        memberLimit={isPro ? PRO_MEMBER_LIMIT : FREE_MEMBER_LIMIT}
       />
 
       {/* ── Leave pack confirmation ───────────────────────────────────── */}

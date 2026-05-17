@@ -86,6 +86,27 @@ export const onboarding = {
     cta: "Continue",
     skip: "Skip",
   },
+  // Notifications primer — runs after integrations, before first-pack.
+  // Explains what Pack pushes look like so the iOS dialog lands with
+  // in-app context rather than cold. Skipping leaves the OS permission
+  // state undetermined so the user can opt in later from Settings.
+  notifications: {
+    headline: "Stay in the loop",
+    subhead:
+      "Pack uses notifications to keep you in the loop on what your friends are doing.",
+    rows: {
+      movementLabel: "Pack movement",
+      movementDesc: "When friends hit goals, take the lead, or pass you.",
+      streakLabel: "Streak alerts",
+      streakDesc: "A heads-up before your streak breaks.",
+      chatLabel: "Replies & reactions",
+      chatDesc: "When packmates react to your activity or message.",
+    },
+    cta: "Turn on notifications",
+    skipForNow: "Maybe later",
+    skipHint: "You can turn these on later in Settings.",
+    skip: "Skip",
+  },
 } as const;
 
 /* ============================================================
@@ -95,7 +116,7 @@ export const auth = {
   signIn: {
     // Echoes welcome's "Find your pack." Returning users land back in
     // the same brand frame they signed up under.
-    tagline: "Find your pack. Run together.",
+    tagline: "Find your pack. Compete together.",
   },
   signUp: {
     // Inverted form of "Find your pack." — explicit invitation.
@@ -144,7 +165,8 @@ export const forgotPassword = {
     invalidEmail: "Enter a valid email address.",
     rateLimit: "Too many requests. Try again in a few minutes.",
     network: "Couldn't reach the server. Check your connection.",
-    invalidLink: "This reset link is invalid or has expired. Request a new one.",
+    invalidLink:
+      "This reset link is invalid or has expired. Request a new one.",
     passwordsDoNotMatch: "Passwords don't match.",
     passwordTooShort: "Password must be at least 8 characters.",
     generic: "Something went wrong. Try again.",

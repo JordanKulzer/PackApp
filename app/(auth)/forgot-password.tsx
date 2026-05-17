@@ -109,9 +109,10 @@ export default function ForgotPassword() {
             <TouchableOpacity onPress={() => router.back()} hitSlop={12}>
               <Ionicons name="chevron-back" size={28} color={C.textPrimary} />
             </TouchableOpacity>
-            <View style={{ width: 28 }} />
+            <Text style={s.headline}>
+              {forgotPassword.request.successHeadline}
+            </Text>
           </View>
-          <Text style={s.headline}>{forgotPassword.request.successHeadline}</Text>
           <Text style={s.body}>
             {t(forgotPassword.request.successBody, { email: submittedEmail })}
           </Text>
@@ -160,10 +161,9 @@ export default function ForgotPassword() {
                 color={isSubmitting ? C.textTertiary : C.textPrimary}
               />
             </TouchableOpacity>
-            <View style={{ width: 28 }} />
+            <Text style={s.headline}>{forgotPassword.request.headline}</Text>
           </View>
 
-          <Text style={s.headline}>{forgotPassword.request.headline}</Text>
           <Text style={s.body}>{forgotPassword.request.body}</Text>
 
           <TextInput
@@ -206,14 +206,15 @@ const s = StyleSheet.create({
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    gap: 8,
     marginBottom: 8,
   },
   headline: {
-    fontSize: 28,
+    fontSize: 22,
     fontWeight: "700",
     color: C.textPrimary,
     letterSpacing: -0.5,
+    flex: 1,
   },
   body: {
     fontSize: 15,

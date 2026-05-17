@@ -353,9 +353,6 @@ export default function CreatePack() {
             onValueChange={setWorkoutsEnabled}
             expanded={
               <>
-                <Text style={styles.workoutHint}>
-                  1 per day — any logged workout counts
-                </Text>
                 {renderPointsEditor(
                   "workouts",
                   workoutPoints,
@@ -561,8 +558,7 @@ const styles = StyleSheet.create({
   // Activity expanded-slot styles. Pass 26-followup-2: target inputs use
   // the same subtle-box treatment as nameInput. Mirrors Pack Name's
   // affordance pattern; eliminates the bottom-hairline-only flatness that
-  // read as display values rather than editable inputs. Workouts hint
-  // (workoutHint below) stays plain text — no input affordance there.
+  // read as display values rather than editable inputs.
   inlineInput: {
     fontSize: 15,
     color: C.textPrimary,
@@ -572,12 +568,6 @@ const styles = StyleSheet.create({
     borderColor: C.border,
     borderRadius: 8,
     backgroundColor: "transparent",
-  },
-  workoutHint: {
-    fontSize: 13,
-    color: C.textTertiary,
-    marginTop: 4,
-    marginLeft: 4,
   },
   editPointsBtn: {
     paddingVertical: 4,

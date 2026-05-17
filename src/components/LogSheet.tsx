@@ -425,12 +425,27 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: (_, g) =>
         Math.abs(g.dy) > 4 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderMove: (_, g) => {
+        if (g.dy > 0) slideAnim.setValue(g.dy);
+      },
       onPanResponderRelease: (_, g) => {
-        if (g.dy > 80 || g.vy > 0.5) {
+        if (g.dy > 60 || g.vy > 0.3) {
           onCloseRef.current();
+        } else {
+          Animated.spring(slideAnim, {
+            toValue: 0,
+            useNativeDriver: true,
+            bounciness: 0,
+          }).start();
         }
       },
-      onPanResponderTerminate: () => {},
+      onPanResponderTerminate: () => {
+        Animated.spring(slideAnim, {
+          toValue: 0,
+          useNativeDriver: true,
+          bounciness: 0,
+        }).start();
+      },
     }),
   ).current;
   // Pass 25-followup-B-final-2 Section C: keyboard offset composed with the
@@ -1859,7 +1874,7 @@ const s = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 0,
   },
-  handleWrap: { alignItems: "center", paddingTop: 12, paddingBottom: 4 },
+  handleWrap: { alignItems: "center", paddingTop: 14, paddingBottom: 10 },
   handle: {
     width: 36,
     height: 4,

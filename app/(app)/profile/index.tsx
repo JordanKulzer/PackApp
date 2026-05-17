@@ -13,7 +13,9 @@ import {
   Linking,
   ActionSheetIOS,
   Platform,
+  Switch,
 } from "react-native";
+import { setProOverride, useProOverride } from "../../../src/hooks/useIsPro";
 import { ConfirmDialog } from "../../../src/components/ConfirmDialog";
 import { showToast } from "../../../src/lib/toast";
 import * as Application from "expo-application";
@@ -58,6 +60,7 @@ const C = {
   accent: colors.self,
   success: "#3FB950",
   danger: "#F85149",
+  warning: "#F5A623",
 } as const;
 
 interface AllTimeStats {
@@ -221,6 +224,7 @@ export default function Profile() {
   const [editNameVisible, setEditNameVisible] = useState(false);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const proOverride = useProOverride();
 
   const handleAvatarPress = () => {
     if (!user) return;
@@ -647,6 +651,34 @@ export default function Profile() {
           />
         </View>
 
+        {/* ── Developer (TESTING ONLY — remove before public launch) ───── */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, styles.devSectionTitle]}>
+            Developer
+          </Text>
+          <NavRow
+            icon={
+              <Ionicons
+                name="construct-outline"
+                size={22}
+                color={C.warning}
+              />
+            }
+            label="Test Pro Features"
+            subtitle="TESTING ONLY — overrides Pro state for testing. Will be removed before public launch."
+            onPress={() => setProOverride(!proOverride)}
+            trailing={
+              <Switch
+                value={proOverride}
+                onValueChange={setProOverride}
+                trackColor={{ false: C.border, true: C.warning }}
+                thumbColor="#FFFFFF"
+              />
+            }
+            isLast
+          />
+        </View>
+
         {/* ── Account (Pass 22 → 22-polish: Sign Out + Delete Account
                               both as NavRows; the outlined-red boxed
                               Delete button has been retired) ─────── */}
@@ -779,6 +811,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginLeft: 4,
   },
+  devSectionTitle: { color: C.warning },
 
   // Integration trailing status text (used inside NavRow's `trailing` slot
   // for "Connect" / "✓" / "Soon"). The connected `✓` flips to success green;

@@ -109,7 +109,7 @@ export async function seedDailyScoresOnJoin(
         workout_achieved: false,
         calories_achieved,
         water_achieved,
-        water_oz_count: waterOz,
+        manual_water_count: waterOz,
         hk_steps_count: hkSteps,
         hk_calories_count: hkCalories,
         hk_workout_count: 0,

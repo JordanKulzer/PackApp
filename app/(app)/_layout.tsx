@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   View,
   TouchableOpacity,
@@ -7,14 +7,18 @@ import {
   Platform,
   AppState,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Redirect, Tabs } from "expo-router";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuthStore } from "../../src/stores/authStore";
 import { LogSheet } from "../../src/components/LogSheet";
+import { LogSheetCoachMark } from "../../src/components/LogSheetCoachMark";
 import { Toast } from "../../src/components/Toast";
 import { rolloverExpiredRuns } from "../../src/lib/runRollover";
 import { useCurrentUser } from "../../src/context/CurrentUserContext";
+
+const LOGSHEET_HINT_KEY = "pack:logsheet:hint:plus_button";
 
 // Pass 24: routes that should suppress the tab bar entirely. Pack create is a
 // focused-task screen — converting from modal to pushed lost the modal's
@@ -70,11 +74,29 @@ function isTabBarHiddenRoute(state: BottomTabBarProps["state"]): boolean {
 
 function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const [logSheetVisible, setLogSheetVisible] = useState(false);
+  const [showPlusHint, setShowPlusHint] = useState(false);
+
+  useEffect(() => {
+    AsyncStorage.getItem(LOGSHEET_HINT_KEY).then((v) => {
+      if (v !== "1") setShowPlusHint(true);
+    });
+  }, []);
+
+  const dismissPlusHint = useCallback(() => {
+    setShowPlusHint(false);
+    AsyncStorage.setItem(LOGSHEET_HINT_KEY, "1").catch(() => {});
+  }, []);
 
   if (isTabBarHiddenRoute(state)) return null;
 
   return (
     <>
+      <View style={styles.coachMarkLayer} pointerEvents="box-none">
+        <LogSheetCoachMark
+          visible={showPlusHint}
+          onDismiss={dismissPlusHint}
+        />
+      </View>
       <View style={styles.tabBar}>
         {state.routes.map((route, index) => {
           const { options } = descriptors[route.key];
@@ -96,7 +118,10 @@ function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
               <View key="center" style={styles.centerSlot}>
                 <TouchableOpacity
                   style={styles.centerButton}
-                  onPress={() => setLogSheetVisible(true)}
+                  onPress={() => {
+                    dismissPlusHint();
+                    setLogSheetVisible(true);
+                  }}
                   activeOpacity={0.85}
                 >
                   <Ionicons name="add" size={32} color="#FFFFFF" />
@@ -233,6 +258,17 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
+  },
+  // Coach-mark layer sits above the tab bar, anchored to the bottom so the
+  // bubble's downward caret aligns over the center + button. `bottom` is
+  // tab-bar height (84/64) + a small gap so the caret kisses the button's
+  // top edge without overlapping it.
+  coachMarkLayer: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: Platform.OS === "ios" ? 92 : 72,
+    alignItems: "center",
   },
   // Pass 16 — Primary-action treatment for the LogSheet trigger. Brand-blue
   // (#2F81F7) solid fill against the dark bar reads as "this is the primary

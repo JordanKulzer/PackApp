@@ -12,14 +12,14 @@ import {
   ScrollView,
   SafeAreaView,
 } from "react-native";
-import { Link } from "expo-router";
+import { Link, useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/hooks/useAuth";
 import { normalizeDisplayName } from "../../src/lib/displayName";
-import { PackLogo } from "../../src/components/brand/PackLogo";
-import { auth } from "../../src/constants/strings";
-import { BrandColors, BrandTypography, BrandSpacing } from "../../src/constants/brand";
+import { BrandColors } from "../../src/constants/brand";
 
 export default function SignUp() {
+  const router = useRouter();
   const { signUp } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -86,12 +86,19 @@ export default function SignUp() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-        <View style={styles.hero}>
-          {/* Smaller icon than sign-in (80 → 48) — sign-up is form-focused;
-              sign-in is brand-impression. Intentional divergence. */}
-          <PackLogo size={48} />
-          <Text style={styles.wordmark}>Pack</Text>
-          <Text style={styles.tagline}>{auth.signUp.tagline}</Text>
+        <View style={styles.headerRow}>
+          <TouchableOpacity
+            onPress={() => router.back()}
+            hitSlop={12}
+            disabled={isLoading}
+          >
+            <Ionicons
+              name="chevron-back"
+              size={28}
+              color={isLoading ? BrandColors.inkMuted : BrandColors.ink}
+            />
+          </TouchableOpacity>
+          <Text style={styles.headline}>Sign Up</Text>
         </View>
 
         <View style={styles.form}>
@@ -180,21 +187,18 @@ const styles = StyleSheet.create({
     paddingBottom: 48,
     gap: 28,
   },
-  hero: {
+  headerRow: {
+    flexDirection: "row",
     alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
   },
-  wordmark: {
-    fontSize: 36,
-    fontWeight: BrandTypography.weightBold,
-    letterSpacing: BrandTypography.tightLetter,
+  headline: {
+    fontSize: 22,
+    fontWeight: "700",
     color: BrandColors.ink,
-    marginTop: BrandSpacing.md,
-    marginBottom: BrandSpacing.sm,
-  },
-  tagline: {
-    fontSize: 15,
-    color: BrandColors.inkMuted,
-    textAlign: "center",
+    letterSpacing: -0.5,
+    flex: 1,
   },
   form: {
     gap: 12,

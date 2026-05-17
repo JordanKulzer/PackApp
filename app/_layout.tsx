@@ -5,10 +5,7 @@ import * as Linking from "expo-linking";
 import { supabase } from "../src/lib/supabase";
 import { useAuthStore } from "../src/stores/authStore";
 import { ensureUserProfile } from "../src/lib/ensureUserProfile";
-import {
-  initNotifications,
-  addNotificationResponseListener,
-} from "../src/lib/notifications";
+import { addNotificationResponseListener } from "../src/lib/notifications";
 import { initAnalytics, identify, reset } from "../src/lib/analytics";
 import { CurrentUserProvider } from "../src/context/CurrentUserContext";
 import { ModalMutationProvider } from "../src/context/ModalMutationContext";
@@ -73,9 +70,9 @@ function RootLayout() {
       // next anonymous session doesn't get linked to the prior user.
       if (event === "SIGNED_IN" && session?.user) {
         identify(session.user.id);
-        initNotifications().catch((err) => {
-          console.error("[notifications] init failed:", err);
-        });
+        // initNotifications() is now triggered explicitly from the
+        // onboarding primer screen (or Profile → Notifications) so users
+        // see the in-app context before the iOS dialog fires.
       }
       if (event === "SIGNED_OUT") {
         reset();

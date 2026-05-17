@@ -72,7 +72,7 @@ export default function Integrations() {
   };
 
   const handleContinue = () => {
-    router.push("/(onboarding)/first-pack");
+    router.push("/(onboarding)/notifications");
   };
 
   return (
