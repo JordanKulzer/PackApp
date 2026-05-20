@@ -64,7 +64,6 @@ const C = {
 } as const;
 
 interface AllTimeStats {
-  totalPoints: number;
   totalDaysLogged: number;
   longestStreak: number;
   currentStreak: number;
@@ -310,7 +309,7 @@ export default function Profile() {
       supabase
         .from("daily_scores")
         .select(
-          "total_points, streak_days, score_date, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, workout_count, calories_count, water_oz_count",
+          "streak_days, score_date, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, workout_count, calories_count, water_oz_count",
         )
         .eq("user_id", user.id)
         .order("score_date", { ascending: true }),
@@ -319,7 +318,6 @@ export default function Profile() {
     setProfile(profileResult.data ?? null);
 
     const scores = scoresResult.data ?? [];
-    const totalPoints = scores.reduce((sum, s) => sum + s.total_points, 0);
     const longestStreak = scores.reduce(
       (max, s) => Math.max(max, s.streak_days),
       0,
@@ -348,7 +346,6 @@ export default function Profile() {
     }
 
     setStats({
-      totalPoints,
       totalDaysLogged: scores.length,
       longestStreak,
       currentStreak,

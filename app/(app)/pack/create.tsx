@@ -23,7 +23,6 @@ import { colors } from "../../../src/theme/colors";
 import { getDeviceTimezone } from "../../../src/lib/packDates";
 import { onboarding } from "../../../src/constants/strings";
 import { ActivityToggleRow } from "../../../src/components/profile/ActivityToggleRow";
-import { ScoringInfoSheet } from "../../../src/components/ScoringInfoSheet";
 
 const C = {
   bg: "#0B0F14",
@@ -55,7 +54,6 @@ export default function CreatePack() {
   const [calorieTarget, setCalorieTarget] = useState("500");
   const [waterTarget, setWaterTarget] = useState("64");
   const [isLoading, setIsLoading] = useState(false);
-  const [showScoringInfo, setShowScoringInfo] = useState(false);
 
   const openPaywall = (trigger: string) => {
     analytics.gateHit(trigger);
@@ -333,28 +331,8 @@ export default function CreatePack() {
             }
           />
 
-          {/* TODO(voice review): teaser line, provisional copy. */}
-          <Pressable
-            onPress={() => setShowScoringInfo(true)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            style={styles.scoringRow}
-          >
-            <Text style={styles.scoringText}>
-              Streaks multiply your points — keep showing up.
-            </Text>
-            <Ionicons
-              name="information-circle-outline"
-              size={16}
-              color={C.textTertiary}
-            />
-          </Pressable>
         </View>
       </ScrollView>
-
-      <ScoringInfoSheet
-        visible={showScoringInfo}
-        onClose={() => setShowScoringInfo(false)}
-      />
     </KeyboardAvoidingView>
   );
 }
@@ -494,21 +472,5 @@ const styles = StyleSheet.create({
     borderColor: C.border,
     borderRadius: 8,
     backgroundColor: "transparent",
-  },
-  // Scoring — Pass 26-followup-3-followup-2: whole-row Pressable wraps the
-  // teaser text + trailing info icon. flex: 1 on scoringText pushes the
-  // icon to the row's trailing edge regardless of text length and lets
-  // long copy wrap correctly inside the row.
-  scoringRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  scoringText: {
-    flex: 1,
-    fontSize: 13,
-    color: C.textTertiary,
-    lineHeight: 20,
-    marginLeft: 4,
   },
 });

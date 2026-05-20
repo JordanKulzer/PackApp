@@ -25,7 +25,7 @@ import { useAuthStore } from "../stores/authStore";
 import { useScoreStore } from "../stores/scoreStore";
 import { supabase } from "../lib/supabase";
 import { syncManualActivityToDailyScores } from "../lib/logActivity";
-import { packToday, deviceLocalToday } from "../lib/packDates";
+import { deviceLocalToday } from "../lib/packDates";
 import {
   getTodaySteps,
   getTodayActiveCalories,
@@ -88,38 +88,6 @@ const C = {
 } as const;
 
 const QUICK_AMOUNTS = [8, 16, 32] as const;
-
-// Pass 25-followup-E.2.a.i-fix: maps banner state → color token. Kept
-// at module scope (not inside component) so the function identity is
-// stable and doesn't churn render. `colors.leader` is reused from the
-// canonical design token (theme/colors.ts:18); no new tokens introduced.
-function bannerColorForState(
-  state:
-    | "leading"
-    | "tied_top"
-    | "took_lead"
-    | "behind"
-    | "tied_lower"
-    | "solo"
-    | "no_logs",
-): string {
-  switch (state) {
-    case "leading":
-      return C.success;
-    case "tied_top":
-      return colors.leader;
-    case "took_lead":
-      return colors.leader;
-    case "behind":
-      return C.textPrimary;
-    case "tied_lower":
-      return C.textPrimary;
-    case "solo":
-      return C.textSecondary;
-    case "no_logs":
-      return C.textTertiary;
-  }
-}
 
 // Pass 25-followup-B-final Section A: shared empty-shape baseline for
 // optimistic localScore patching. Pre-fix, every handler used
@@ -533,33 +501,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
   const workoutFlashAnim = useRef(new Animated.Value(0)).current;
   const waterFlashAnim = useRef(new Animated.Value(0)).current;
 
-  // Pass 25-followup-E.2.a.i-fix: banner state enum drives state-aware
-  // color treatment. Replaces the prior {text, positive: boolean} shape
-  // which only encoded a binary success/neutral split. Color mapping
-  // lives at the banner JSX site below; states map to:
-  //   leading    → C.success         (#1, strict lead)
-  //   tied_top   → colors.leader     (#1, tied)
-  //   took_lead  → colors.leader     (just took #1; settles to leading on next fetch)
-  //   behind     → C.textPrimary     (rank >1, strict gap)
-  //   tied_lower → C.textPrimary     (rank >1, tied with ahead)
-  //   solo       → C.textSecondary   ("+N pts today" — sole logger this run)
-  //   no_logs    → C.textTertiary    ("Start your day" — nothing yet)
-  type BannerState =
-    | "leading"
-    | "tied_top"
-    | "took_lead"
-    | "behind"
-    | "tied_lower"
-    | "solo"
-    | "no_logs";
-  const [feedback, setFeedback] = useState<{
-    text: string;
-    state: BannerState;
-  } | null>(null);
-  const feedbackAnim = useRef(new Animated.Value(0)).current;
-  const feedbackOpacity = useRef(new Animated.Value(0)).current;
-  const prevRankRef = useRef<number | null>(null);
-
   // ── Quick Select (workout category chips inside the Workout row) ─────────
   const { user: currentUser, applyLocal } = useCurrentUser();
   // Pass 25-followup-C-fix-2: display-only slice at consumption. Existing
@@ -703,14 +644,11 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
         useNativeDriver: true,
       }).start();
     } else {
-      setFeedback(null);
       setCurrentPage("overview");
       pageAnim.setValue(0);
       setRawSteps("");
       setRawCal("");
       setWorkoutLogs([]);
-      prevRankRef.current = null;
-      feedbackAnim.setValue(0);
       Animated.timing(slideAnim, {
         toValue: 600,
         duration: 250,
@@ -721,20 +659,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
       });
     }
   }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Pass 25-followup-E.2.a.i-fix: fetch rank context on sheet open so the
-  // banner shows immediately, not just after the first log. Fires whenever
-  // (visible flips to true) AND (packRun is loaded). For the typical
-  // cold-open path, packRun is null at the visible→true transition and
-  // populates a tick later via useLogActivitySheetData — this effect
-  // catches that case by depending on packRun?.runId.
-  useEffect(() => {
-    if (visible && userId && packRun) {
-      fetchFeedback(userId, packRun.runId).catch((e) =>
-        console.warn("[LogSheet] fetchFeedback mount:", e),
-      );
-    }
-  }, [visible, userId, packRun?.runId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Keyboard offset (Pass 25-followup-B-final-2 Section C) ────────────────
   //
@@ -791,19 +715,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     }
   }, [hookData, dataOpacityAnim]);
 
-  // ── Feedback banner opacity animation ──────────────────────────────────────
-  useEffect(() => {
-    if (feedback) {
-      Animated.timing(feedbackOpacity, {
-        toValue: 1,
-        duration: 200,
-        useNativeDriver: true,
-      }).start();
-    } else {
-      feedbackOpacity.setValue(0);
-    }
-  }, [feedback, feedbackOpacity]);
-
   // ── Connect Apple Health ───────────────────────────────────────────────────
 
   const handleConnectHealthKit = async () => {
@@ -826,120 +737,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     } catch (err) {
       console.error("[LogSheet] handleConnectHealthKit error:", err);
     }
-  };
-
-  // ── Competitive feedback ───────────────────────────────────────────────────
-  // Scope post-Pass-25-followup-E.2.a.iii: query weekly rank, drive banner
-  // text/state via setFeedback, update prevRankRef. NO activity_feed writes
-  // or push fires — those are owned by detectAndRecordTookLead in
-  // src/lib/competitiveDetection.ts, fired from inside each sync function's
-  // per-pack loop. Name retained because the function still fetches feedback
-  // (rank context → banner copy); E.2.b may absorb it into a broader
-  // competitive-feedback primitive.
-
-  const fetchFeedback = async (uid: string, runId: string) => {
-    const today = packToday(packRun?.packTimezone ?? "UTC");
-
-    // Pass 25-followup-E.1-fix: query the full run (not today only) and
-    // aggregate weekly_points client-side. Rank branches read weekly_points
-    // to match pack screen / home cards / threatNotifications;
-    // the "+N pts today" / "Start your day" copy still reads today's
-    // points via a parallel todayMap side-channel. Before this fix, rank
-    // was computed off today-only daily_scores rows, which produced false
-    // took_lead notifications when a user logged today while still behind
-    // on the weekly leaderboard.
-    const { data: rows } = await supabase
-      .from("daily_scores")
-      .select("user_id, total_points, score_date")
-      .eq("run_id", runId);
-
-    if (!rows || rows.length === 0) return;
-
-    const weekly: Record<string, number> = {};
-    const todayMap: Record<string, number> = {};
-    for (const r of rows) {
-      weekly[r.user_id] = (weekly[r.user_id] ?? 0) + r.total_points;
-      if (r.score_date === today) todayMap[r.user_id] = r.total_points;
-    }
-
-    const scores = Object.entries(weekly)
-      .map(([user_id, weekly_points]) => ({
-        user_id,
-        weekly_points,
-        today_points: todayMap[user_id] ?? 0,
-      }))
-      .sort((a, b) => b.weekly_points - a.weekly_points);
-
-    const myIndex = scores.findIndex((s) => s.user_id === uid);
-    if (myIndex === -1) return;
-
-    const myWeekly = scores[myIndex].weekly_points;
-    const myToday = scores[myIndex].today_points;
-    const myRank = myIndex + 1;
-    const prevRank = prevRankRef.current;
-    prevRankRef.current = myRank;
-
-    let text: string;
-    let state: BannerState;
-
-    // if (scores.length === 1) {
-    //   if (myToday > 0) {
-    //     text = `+${myToday} pts today`;
-    //     state = "solo";
-    //   } else {
-    //     text = "Start your day";
-    //     state = "no_logs";
-    //   }
-    // } else if (myRank === 1) {
-    //   const lead = myWeekly - scores[1].weekly_points;
-    //   // Tie suppression: took_lead requires strictly ahead (lead > 0).
-    //   // A tie isn't a lead — falls through to the "Tied for #1" branch
-    //   // below. Matches threatNotifications' actorIsNowStrictlyAhead gate
-    //   // so both took_lead emitters agree on semantics.
-    //   if (prevRank !== null && prevRank > 1 && lead > 0) {
-    //     text = "You took the lead";
-    //     state = "took_lead";
-    //     // took_lead INSERT + push moved to detectAndRecordTookLead in
-    //     // src/lib/competitiveDetection.ts, fired from inside each sync
-    //     // function's per-pack loop (Pass 25-followup-E.2.a.iii). This
-    //     // branch retains only the banner text/state update.
-    //   } else if (lead === 0) {
-    //     text = "Tied for #1";
-    //     state = "tied_top";
-    //   } else {
-    //     text = `#1 · Leading by ${lead} pts`;
-    //     state = "leading";
-    //   }
-    // } else {
-    //   const aheadRow = scores[myIndex - 1];
-    //   const gap = aheadRow.weekly_points - myWeekly;
-
-    //   const { data: userData } = await supabase
-    //     .from("users")
-    //     .select("display_name")
-    //     .eq("id", aheadRow.user_id)
-    //     .maybeSingle();
-
-    //   const aheadName = userData?.display_name ?? `#${myRank - 1}`;
-
-    //   if (gap === 0) {
-    //     text = `#${myRank} · Tied with ${aheadName}`;
-    //     state = "tied_lower";
-    //   } else {
-    //     text = `#${myRank} · ${gap} pts behind ${aheadName}`;
-    //     state = "behind";
-    //   }
-    // }
-
-    // feedbackAnim.setValue(0);
-    // setFeedback({ text, state });
-    // requestAnimationFrame(() => {
-    //   Animated.timing(feedbackAnim, {
-    //     toValue: 1,
-    //     duration: 350,
-    //     useNativeDriver: true,
-    //   }).start();
-    // });
   };
 
   // ── Page navigation ────────────────────────────────────────────────────────
@@ -1040,13 +837,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     try {
       await syncManualActivityToDailyScores(userId, "workout", 1, category);
       invalidateLogActivitySheetCache();
-      bumpLogVersion();
-      if (packRun) {
-        fetchFeedback(userId, packRun.runId).catch((e) =>
-          console.warn("[LogSheet] fetchFeedback:", e),
-        );
-      }
-    } catch (err) {
+      bumpLogVersion();    } catch (err) {
       // Rollback optimistic update on error
       setWorkoutLogs((prev) => prev.slice(0, -1));
       console.error("[LogSheet] handleLogWorkout error:", err);
@@ -1092,13 +883,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     try {
       await syncManualActivityToDailyScores(userId, "steps", delta);
       invalidateLogActivitySheetCache();
-      bumpLogVersion();
-      if (packRun) {
-        fetchFeedback(userId, packRun.runId).catch((e) =>
-          console.warn("[LogSheet] fetchFeedback:", e),
-        );
-      }
-    } catch (err) {
+      bumpLogVersion();    } catch (err) {
       console.error("[LogSheet] handleManualSteps error:", err);
     } finally {
       setManualStepsSaving(false);
@@ -1126,13 +911,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     try {
       await syncManualActivityToDailyScores(userId, "calories", delta);
       invalidateLogActivitySheetCache();
-      bumpLogVersion();
-      if (packRun) {
-        fetchFeedback(userId, packRun.runId).catch((e) =>
-          console.warn("[LogSheet] fetchFeedback:", e),
-        );
-      }
-    } catch (err) {
+      bumpLogVersion();    } catch (err) {
       console.error("[LogSheet] handleManualCalories error:", err);
     } finally {
       setManualCalSaving(false);
@@ -1220,13 +999,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
 
       await syncWaterToDailyScores(userId);
       invalidateLogActivitySheetCache();
-      bumpLogVersion();
-      if (packRun) {
-        fetchFeedback(userId, packRun.runId).catch((e) =>
-          console.warn("[LogSheet] fetchFeedback:", e),
-        );
-      }
-    } catch (err) {
+      bumpLogVersion();    } catch (err) {
       console.error("[LogSheet] handleAddWater error:", err);
       setEntries((prev) => prev.filter((e) => e !== newEntry));
       setTotalOz((prev) => prev - amount);
@@ -1364,27 +1137,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
               <View style={{ width: 24 }} />
             </View>
           )}
-
-          {/* Rank-context banner (Pass 25-followup-E.2.a.i-fix).
-              Pinned to sheet chrome — sits between the header and the
-              scrollable activity rows so the user's rank position +
-              gap-to-next is the first thing visible on open. Color
-              tracks `feedback.state`: success for leading, leader gold
-              for tied_top/took_lead, textPrimary for behind/tied_lower,
-              textSecondary/Tertiary for solo/no_logs. */}
-          <Animated.View style={[s.feedbackRow, { opacity: feedbackOpacity }]}>
-            {feedback && (
-              <Text
-                style={[
-                  s.feedbackText,
-                  { color: bannerColorForState(feedback.state) },
-                ]}
-              >
-                {feedback.text}
-              </Text>
-            )}
-          </Animated.View>
-          <Animated.View style={[s.rowDivider, { opacity: feedbackOpacity }]} />
 
           <Animated.View
             style={[
@@ -1909,22 +1661,6 @@ const s = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     color: C.accent,
-  },
-  // Feedback banner (Pass 25-followup-E.2.a.i-fix): now pinned in sheet
-  // chrome between header and ScrollView; color binding inline via
-  // bannerColorForState. Obsolete .feedbackPositive / .feedbackNeutral
-  // styles removed — state-driven binding supersedes them.
-  feedbackRow: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 0,
-    paddingHorizontal: 20,
-    minHeight: 0,
-  },
-  feedbackText: {
-    fontSize: 14,
-    fontWeight: "600",
-    textAlign: "center",
   },
 });
 

@@ -170,13 +170,6 @@ export function FeedItemRow({
   };
 
   const phrase = actionPhrase(item);
-  const showPts =
-    item.pointsEarned > 0
-    && item.activityType !== "daily_winner"
-    && item.activityType !== "took_lead";
-  const isManualNumeric =
-    item.entryMethod === "manual" &&
-    (item.activityType === "steps" || item.activityType === "calories");
 
   return (
     <View style={[s.row, s.rowActivity]}>
@@ -209,14 +202,6 @@ export function FeedItemRow({
         <View style={s.actionLine}>
           <Text style={s.action} numberOfLines={2}>
             {phrase}
-            {showPts && (
-              <>
-                <Text style={s.dot}> · </Text>
-                <Text style={[s.ptsPill, isManualNumeric && s.ptsPillManual]}>
-                  {isManualNumeric ? "M " : ""}+{item.pointsEarned} pts
-                </Text>
-              </>
-            )}
           </Text>
         </View>
 
@@ -430,17 +415,6 @@ const s = StyleSheet.create({
     fontSize: 14,
     color: "#9CA3AF",
     lineHeight: 19,
-  },
-  dot: {
-    color: "#6B7280",
-  },
-  ptsPill: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#0A84FF",
-  },
-  ptsPillManual: {
-    color: "#8A8A8E",
   },
   manualBadge: {
     paddingHorizontal: 6,

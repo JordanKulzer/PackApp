@@ -129,9 +129,7 @@ export default function WaterScreen() {
 
       <View style={styles.infoBox}>
         <Text style={styles.infoText}>
-          Reach {DEFAULT_WATER_TARGET} oz to earn{" "}
-          <Text style={styles.infoPoints}>+8 pts</Text> toward your Pack score
-          today!
+          Reach {DEFAULT_WATER_TARGET} oz to log your water for the day.
         </Text>
       </View>
     </ScrollView>
@@ -229,8 +227,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: BrandColors.blueSoft,
     lineHeight: 20,
-  },
-  infoPoints: {
-    fontWeight: "700",
   },
 });
