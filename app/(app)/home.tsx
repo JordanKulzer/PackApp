@@ -881,9 +881,11 @@ export default function Home() {
 
   useFocusEffect(
     useCallback(() => {
-      if (!FEATURE_FLAGS.dailyWinner) return;
+      // Categories pivot: the daily-winners RPC runs unconditionally now
+      // (no longer gated on FEATURE_FLAGS.dailyWinner). computeDailyWinnersForPack
+      // throttles to one real RPC call per pack per day via AsyncStorage.
       packs.forEach((pack) => {
-        computeDailyWinnersForPack(pack.id).catch(() => {});
+        computeDailyWinnersForPack(pack.id, pack.timezone).catch(() => {});
       });
     }, [packs]),
   );

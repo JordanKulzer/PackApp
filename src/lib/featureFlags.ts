@@ -1,10 +1,15 @@
 export const FEATURE_FLAGS = {
   // Shelved 2026-04-24: didn't want daily winner to outshine weekly winner
-  // (the actual product). Plumbing preserved — flip to true to revive, but
-  // polish VictoryPostSheet and Home banner visuals first. Gates daily_winner
-  // row visibility (useActivityFeed / usePackTimeline), useUnpostedWins
-  // activation, and computeDailyWinnersForPack execution.
+  // (the actual product). NOT the categories-pivot gate — see categoriesPivot
+  // below. Its original shelved-feature semantics still apply: filters
+  // daily_winner activity_feed rows out of useActivityFeed / usePackTimeline,
+  // and gates the RulesSheet daily-winner event row. The daily-winners RPC
+  // trigger no longer gates on this flag.
   dailyWinner: false,
+  // Categories pivot (2026-05-19): gates which leaderboard UI renders (new
+  // per-category vs legacy points). Backend always computes daily_winners
+  // now — this flag is UI-only. Flip to true to expose the new leaderboard.
+  categoriesPivot: false,
   // Pass C-revised (2026-05-13): shelved alongside the celebration sheet.
   // The HomeAchievementBanner + VictoryPostSheet flow is product-locked off;
   // achievement events surface as plain feed rows + push notifications now.
