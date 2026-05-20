@@ -63,7 +63,6 @@ import { RulesSheet } from "../../../src/components/RulesSheet";
 import { InviteSheet } from "../../../src/components/InviteSheet";
 import { supabase } from "../../../src/lib/supabase";
 import { formatName } from "../../../src/lib/displayName";
-import { rankWithTiebreakers } from "../../../src/lib/competitionCopy";
 import { useScoreStore } from "../../../src/stores/scoreStore";
 import type { Pack, Run } from "../../../src/types/database";
 import { colors } from "../../../src/theme/colors";
@@ -127,12 +126,7 @@ interface MemberScore {
   user_id: string;
   display_name: string;
   avatar_url?: string | null;
-  // weekly_points: total accumulated this run — used for ranking + primary display
-  weekly_points: number;
-  // total_points: today's daily score only — used for "+X pts today" and daily bar
-  total_points: number;
   streak_days: number;
-  streak_multiplier: number;
   updated_at: string | null;
   steps_achieved: boolean;
   workout_achieved: boolean;
@@ -148,18 +142,9 @@ interface MemberScore {
   manual_calories_count: number;
 }
 
-interface WeeklyEntry {
-  user_id: string;
-  display_name: string;
-  weekly_points: number;
-  avatar_url?: string | null;
-}
-
 type ScoreRow = {
   user_id: string;
-  total_points: number;
   streak_days: number;
-  streak_multiplier: number;
   updated_at: string | null;
   steps_achieved: boolean;
   workout_achieved: boolean;
@@ -180,15 +165,11 @@ type ScoreRow = {
 function mapRows(
   data: ScoreRow[],
   nameMap: Record<string, string>,
-  weeklyTotals: Record<string, number>,
 ): MemberScore[] {
   return data.map((row) => ({
     user_id: row.user_id,
     display_name: nameMap[row.user_id] ?? "",
-    weekly_points: weeklyTotals[row.user_id] ?? row.total_points,
-    total_points: row.total_points, // today's daily score only
     streak_days: row.streak_days,
-    streak_multiplier: row.streak_multiplier ?? 1,
     updated_at: row.updated_at,
     steps_achieved: row.steps_achieved,
     workout_achieved: row.workout_achieved,
@@ -208,7 +189,7 @@ function mapRows(
 // steps_count/calories_count are DB-generated (manual + hk) and still
 // returned by Postgres; no client-side recompute needed.
 const SCORE_SELECT =
-  "user_id, total_points, streak_days, streak_multiplier, updated_at, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, calories_count, water_oz_count, workout_count, manual_steps_count, manual_calories_count";
+  "user_id, streak_days, updated_at, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, calories_count, water_oz_count, workout_count, manual_steps_count, manual_calories_count";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Manual badge
@@ -1140,7 +1121,6 @@ function PastRunsSection({
   packId,
   currentUserId,
   activeRun,
-  activeRanked,
   categoryStandings,
   pack,
   memberNameMap,
@@ -1149,7 +1129,6 @@ function PastRunsSection({
   packId: string;
   currentUserId: string | undefined;
   activeRun?: Run;
-  activeRanked?: (WeeklyEntry & { rank: number })[];
   categoryStandings: PackCategoryStandings | null;
   pack: Pack;
   memberNameMap: Map<string, string>;
@@ -1421,10 +1400,7 @@ const pbS = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
-  crown: { fontSize: 18 },
-  winnerMeta: { flex: 1, gap: 1 },
   winnerName: { flex: 1, fontSize: 14, fontWeight: "700", color: colors.leader },
-  winnerPts: { fontSize: 12, fontWeight: "500", color: C.textSecondary },
   // Empty state
   emptyState: { paddingVertical: 24, gap: 6, alignItems: "center" },
   emptyTitle: { fontSize: 14, fontWeight: "600", color: C.textSecondary },
@@ -2164,7 +2140,6 @@ export default function PackScreen() {
   const TAB_ORDER: TabId[] = ["compete", "chat", "history"];
 
   const [scores, setScores] = useState<MemberScore[]>([]);
-  const [weeklyTotals, setWeeklyTotals] = useState<Record<string, number>>({});
   const [scoresLoading, setScoresLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabId>("compete");
 
@@ -2251,52 +2226,31 @@ export default function PackScreen() {
     if (tab) setActiveTab(tab);
   };
 
-  // ── Fetch scores: today's details + weekly totals (parallel) ─────────
+  // ── Fetch scores: today's detail rows ────────────────────────────────
 
   const fetchWeekly = useCallback(async (runId: string) => {
     // Pass F.1.b: wait for the pack's timezone to hydrate before issuing
     // the today-scoped query. Without this guard, the very first render's
     // closure captures packData=undefined → today defaults to UTC's date,
     // which mismatches the score_date written by sync functions using the
-    // pack's actual timezone. Symptom: scoreById misses today's row,
-    // PackGridView's expanded progress bars all render 0 while pts pill
-    // (which reads weekly_points from a separate non-date-filtered query)
-    // shows the correct value.
+    // pack's actual timezone — scoreById then misses today's row.
     if (!packData?.pack.timezone) return;
     const today = packToday(packData.pack.timezone);
 
-    // Fetch today's daily detail rows (goal flags, counts, streak) and the
-    // full run's totals (for ranking and primary point display) in parallel.
-    const [todayResult, weeklyResult] = await Promise.all([
-      supabase
-        .from("daily_scores")
-        .select(SCORE_SELECT)
-        .eq("run_id", runId)
-        .eq("score_date", today),
-      supabase
-        .from("daily_scores")
-        .select("user_id, total_points")
-        .eq("run_id", runId),
-    ]);
+    // Today's daily detail rows (goal flags, counts, streak) — feeds the
+    // PackGridView leaderboard via scores → scoreById → gridEntries.
+    const todayResult = await supabase
+      .from("daily_scores")
+      .select(SCORE_SELECT)
+      .eq("run_id", runId)
+      .eq("score_date", today);
 
     if (todayResult.error) {
       console.error("[fetchWeekly] today query failed:", todayResult.error);
     }
 
-    // Aggregate weekly totals per user across all run dates
-    const weeklyTotals: Record<string, number> = {};
-    (weeklyResult.data ?? []).forEach((row) => {
-      weeklyTotals[row.user_id] =
-        (weeklyTotals[row.user_id] ?? 0) + row.total_points;
-    });
-
-    // Store weeklyTotals separately so fullRoster can give correct weekly_points
-    // to members who have no today row (scored on previous days but not today).
-    setWeeklyTotals(weeklyTotals);
     setScores(
-      todayResult.data
-        ? mapRows(todayResult.data as ScoreRow[], {}, weeklyTotals)
-        : [],
+      todayResult.data ? mapRows(todayResult.data as ScoreRow[], {}) : [],
     );
     setScoresLoading(false);
   }, [packData?.pack.timezone]);
@@ -2352,14 +2306,6 @@ export default function PackScreen() {
     setShowInviteSheet(true);
   };
 
-  // ── Optimistic overlay from score store ──────────────────────────────
-  // Populated by LogSheet immediately on each log tap (before DB roundtrip).
-  // Realtime subscription reconciles after DB write completes.
-  const packId = packData?.pack.id;
-  const optimisticMyScore = useScoreStore((s) =>
-    packId ? s.myScores[packId] : undefined,
-  );
-
   // ── Derived ───────────────────────────────────────────────────────────
 
   // Build a name map from packData.members — the pack_members→users join is
@@ -2384,85 +2330,16 @@ export default function PackScreen() {
     avatar_url: memberAvatarMap.get(s.user_id) ?? null,
   }));
 
-  // Build a full roster from ALL pack members so everyone is always visible,
-  // even if they have no daily_scores row today (they show at 0 pts).
+  // Today's scores keyed by user — gridEntries reads streak_days from this.
   const scoreById = new Map(namedScores.map((s) => [s.user_id, s]));
-  const zero = (): Omit<MemberScore, "user_id" | "display_name"> => ({
-    weekly_points: 0,
-    total_points: 0,
-    streak_days: 0,
-    streak_multiplier: 1,
-    updated_at: null,
-    steps_achieved: false,
-    workout_achieved: false,
-    calories_achieved: false,
-    water_achieved: false,
-    steps_count: 0,
-    calories_count: 0,
-    water_oz_count: 0,
-    workout_count: 0,
-    manual_steps_count: 0,
-    manual_calories_count: 0,
-  });
-
-  const fullRoster: MemberScore[] = (packData?.members ?? []).map((m) => {
-    const existing = scoreById.get(m.user_id);
-    if (existing) return existing;
-    // Member has no today row — use their accumulated run total so the ring
-    // and standings show their real weekly progress, not a misleading 0.
-    return {
-      user_id: m.user_id,
-      display_name: memberNameMap.get(m.user_id) ?? "",
-      avatar_url: memberAvatarMap.get(m.user_id) ?? null,
-      weekly_points: weeklyTotals[m.user_id] ?? 0,
-      total_points: 0,
-      streak_days: 0,
-      streak_multiplier: 1,
-      updated_at: null,
-      steps_achieved: false,
-      workout_achieved: false,
-      calories_achieved: false,
-      water_achieved: false,
-      steps_count: 0,
-      calories_count: 0,
-      water_oz_count: 0,
-      workout_count: 0,
-      manual_steps_count: 0,
-      manual_calories_count: 0,
-    };
-  });
-
-  // Guarantee current user is present even if they aren't in pack_members yet
-  if (!fullRoster.find((r) => r.user_id === user?.id)) {
-    fullRoster.push({
-      user_id: user?.id ?? "",
-      display_name:
-        (user?.user_metadata?.display_name as string | undefined) ?? "",
-      ...zero(),
-    });
-  }
-
-  // Apply optimistic values for the current user's row so the leaderboard
-  // updates the moment LogSheet writes — before the realtime event fires.
-  if (optimisticMyScore && user?.id) {
-    const idx = fullRoster.findIndex((r) => r.user_id === user.id);
-    if (idx >= 0) {
-      fullRoster[idx] = { ...fullRoster[idx], ...optimisticMyScore };
-    }
-  }
-
-  const ranked = rankWithTiebreakers(fullRoster);
 
   // ── Categories-pivot grid entries (Stage 3d) ──────────────────────────
   // PackGridView consumes a categories-shaped GridEntry[]. Build it from
   // usePack members + usePackCategoryStandings: total wins / wins-by-
   // category from rankedMembers, today's per-category values + leader
   // flags from todayByCategory, streak from today's daily_scores row.
-  //
-  // Ranking is inlined rather than reusing rankWithTiebreakers: that helper
-  // ranks by weekly_points and lives in competitionCopy.ts (the points
-  // module, out of scope here). The categories model ranks by total_wins.
-  // Order: total_wins desc, streak_days desc, display_name asc. Competition
+  // Ranking is inlined: total_wins desc, streak_days desc, display_name
+  // asc. Competition
   // ranks — genuine ties share a rank and the next rank skips (1,1,3,3).
   let gridEntries: GridEntry[] = [];
   if (categoryStandings) {
@@ -2674,7 +2551,6 @@ export default function PackScreen() {
             packId={pack.id}
             currentUserId={user?.id}
             activeRun={packData.activeRun ?? undefined}
-            activeRanked={ranked}
             categoryStandings={categoryStandings}
             pack={pack}
             memberNameMap={memberNameMap}
