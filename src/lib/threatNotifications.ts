@@ -12,8 +12,11 @@
 
 import { supabase } from "./supabase";
 import { packToday } from "./packDates";
+import { CATEGORY_DAILY_SCORE_COLUMN, type Category } from "./categories";
 
-export type Category = "steps" | "workouts" | "calories" | "water";
+// Re-exported so existing consumers (logActivity.ts) that import Category
+// from this module keep working.
+export type { Category };
 
 export type CategoryDelta = {
   category: Category;
@@ -27,17 +30,6 @@ export type CategoryDelta = {
 };
 
 export type ThreatKind = "passed_you" | "tied_you";
-
-// daily_scores column backing each threat category.
-const CATEGORY_COLUMN: Record<
-  Category,
-  "steps_count" | "workout_count" | "calories_count" | "water_oz_count"
-> = {
-  steps: "steps_count",
-  workouts: "workout_count",
-  calories: "calories_count",
-  water: "water_oz_count",
-};
 
 type ScoreRow = {
   user_id: string;
@@ -82,7 +74,7 @@ export async function detectAndSendCategoryThreats(
     const actorName = actor?.display_name ?? "A pack member";
 
     for (const change of changes) {
-      const column = CATEGORY_COLUMN[change.category];
+      const column = CATEGORY_DAILY_SCORE_COLUMN[change.category];
       for (const row of rows) {
         if (row.user_id === actorId) continue;
         const victimValue = row[column] ?? 0;

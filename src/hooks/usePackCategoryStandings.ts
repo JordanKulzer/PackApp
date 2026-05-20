@@ -1,0 +1,245 @@
+// usePackCategoryStandings — the data layer for the categories-pivot
+// leaderboard. Reads two surfaces and merges them:
+//
+//   • daily_winners  — settled per-day-per-category winners for the run.
+//                      Aggregated into per-user wins counts.
+//   • daily_scores   — today's live per-category metric values, used to
+//                      surface the provisional "today's leader" before
+//                      the day closes and a daily_winners row exists.
+//
+// Always returns all 4 categories in todayByCategory (Pattern A) and a
+// member set padded with zeros, so the UI never has to special-case
+// missing data. Ties are first-class — winner_user_ids is a uuid[] and
+// todayLeaderIds is a string[].
+
+import { useState, useEffect, useCallback } from "react";
+import { supabase } from "../lib/supabase";
+import {
+  CATEGORIES,
+  type Category,
+  CATEGORY_DAILY_SCORE_COLUMN,
+} from "../lib/categories";
+import { packToday } from "../lib/packDates";
+
+export type CategoryStanding = {
+  category: Category;
+  // Today's leader(s) — tied leaders supported, empty when no one logged.
+  todayLeaderIds: string[];
+  // The metric value of the leader (0 when there is no leader).
+  todayLeaderValue: number;
+  // Per-user today values. Padded with 0 for members who haven't logged.
+  todayValuesByUser: Record<string, number>;
+};
+
+export type MemberWinsCount = {
+  userId: string;
+  totalWins: number;
+  winsByCategory: Record<Category, number>;
+};
+
+export type PackCategoryStandings = {
+  todayByCategory: Record<Category, CategoryStanding>;
+  memberWins: MemberWinsCount[];
+  rankedMembers: MemberWinsCount[]; // sorted by totalWins desc
+};
+
+// ── Query row shapes ─────────────────────────────────────────────────────
+type DailyWinnerRow = {
+  category: Category;
+  winner_user_ids: string[];
+};
+
+type ScoreRow = {
+  user_id: string;
+  steps_count: number;
+  workout_count: number;
+  calories_count: number;
+  water_oz_count: number;
+};
+
+// Fresh per-category wins record, all categories zeroed.
+function emptyWinsByCategory(): Record<Category, number> {
+  return { steps: 0, workouts: 0, calories: 0, water: 0 };
+}
+
+export function usePackCategoryStandings(
+  packId: string,
+  runId: string | null,
+  packTimezone: string,
+  memberIds: string[],
+): {
+  data: PackCategoryStandings | null;
+  isLoading: boolean;
+  error: Error | null;
+  refetch: () => void;
+} {
+  const [data, setData] = useState<PackCategoryStandings | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+  const [refetchKey, setRefetchKey] = useState(0);
+
+  const refetch = useCallback(() => {
+    setRefetchKey((k) => k + 1);
+  }, []);
+
+  // memberIds is a fresh array each render — key off its joined form so the
+  // effect only re-runs when the actual member set changes.
+  const memberKey = memberIds.join(",");
+
+  useEffect(() => {
+    if (!runId) {
+      setData(null);
+      setIsLoading(false);
+      setError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoading(true);
+    setError(null);
+
+    const members = memberKey === "" ? [] : memberKey.split(",");
+
+    (async () => {
+      try {
+        const today = packToday(packTimezone);
+
+        const [winnersRes, scoresRes] = await Promise.all([
+          supabase
+            .from("daily_winners")
+            .select("category, winner_user_ids")
+            .eq("run_id", runId)
+            .neq("category", "legacy"),
+          supabase
+            .from("daily_scores")
+            .select(
+              "user_id, steps_count, workout_count, calories_count, water_oz_count",
+            )
+            .eq("run_id", runId)
+            .eq("score_date", today),
+        ]);
+
+        if (winnersRes.error) throw winnersRes.error;
+        if (scoresRes.error) throw scoresRes.error;
+        if (cancelled) return;
+
+        const winnerRows = (winnersRes.data ?? []) as DailyWinnerRow[];
+        const scoreRows = (scoresRes.data ?? []) as ScoreRow[];
+
+        // ── memberWins: tally per-user per-category wins from daily_winners.
+        // winner_user_ids is a uuid[] — a tied day credits every listed
+        // user. Seed every passed-in member at zero so the returned set is
+        // the full roster regardless of who has actually won a day.
+        const winsByUser: Record<string, MemberWinsCount> = {};
+        for (const id of members) {
+          winsByUser[id] = {
+            userId: id,
+            totalWins: 0,
+            winsByCategory: emptyWinsByCategory(),
+          };
+        }
+        for (const row of winnerRows) {
+          for (const uid of row.winner_user_ids) {
+            // A winner outside the passed-in member set (e.g. a member who
+            // has since left the pack) is still counted — create on demand.
+            if (!winsByUser[uid]) {
+              winsByUser[uid] = {
+                userId: uid,
+                totalWins: 0,
+                winsByCategory: emptyWinsByCategory(),
+              };
+            }
+            winsByUser[uid].winsByCategory[row.category] += 1;
+            winsByUser[uid].totalWins += 1;
+          }
+        }
+        const memberWins = Object.values(winsByUser);
+
+        // ── todayByCategory: per-category leader from today's daily_scores.
+        // Every category always appears (Pattern A). Per-user values padded
+        // with 0 for members with no daily_scores row today.
+        const todayByCategory = {} as Record<Category, CategoryStanding>;
+        for (const category of CATEGORIES) {
+          const column = CATEGORY_DAILY_SCORE_COLUMN[category];
+          const todayValuesByUser: Record<string, number> = {};
+          for (const id of members) todayValuesByUser[id] = 0;
+          for (const row of scoreRows) {
+            todayValuesByUser[row.user_id] = row[column] ?? 0;
+          }
+          const values = Object.values(todayValuesByUser);
+          const todayLeaderValue =
+            values.length > 0 ? Math.max(...values) : 0;
+          // A leader only exists once someone has a non-zero value — an
+          // all-zero category has no leader (empty array).
+          const todayLeaderIds =
+            todayLeaderValue > 0
+              ? Object.keys(todayValuesByUser).filter(
+                  (id) => todayValuesByUser[id] === todayLeaderValue,
+                )
+              : [];
+          todayByCategory[category] = {
+            category,
+            todayLeaderIds,
+            todayLeaderValue,
+            todayValuesByUser,
+          };
+        }
+
+        // ── rankedMembers: memberWins sorted by total wins desc.
+        const rankedMembers = [...memberWins].sort(
+          (a, b) => b.totalWins - a.totalWins,
+        );
+
+        setData({ todayByCategory, memberWins, rankedMembers });
+        setIsLoading(false);
+      } catch (err) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err : new Error(String(err)));
+        setIsLoading(false);
+      }
+    })();
+
+    // ── Realtime: refetch on any daily_winners / daily_scores change for
+    // this run. Mirrors usePackTimeline's channel pattern.
+    const channel = supabase
+      .channel(`pack-category-standings-${packId}-${runId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "daily_winners",
+          filter: `run_id=eq.${runId}`,
+        },
+        () => setRefetchKey((k) => k + 1),
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "daily_scores",
+          filter: `run_id=eq.${runId}`,
+        },
+        () => setRefetchKey((k) => k + 1),
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "daily_scores",
+          filter: `run_id=eq.${runId}`,
+        },
+        () => setRefetchKey((k) => k + 1),
+      )
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, [packId, runId, packTimezone, memberKey, refetchKey]);
+
+  return { data, isLoading, error, refetch };
+}
