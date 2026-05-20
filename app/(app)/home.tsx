@@ -10,7 +10,6 @@ import {
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useAuthStore } from "../../src/stores/authStore";
-import { packToday } from "../../src/lib/packDates";
 import { useConsumeSuppressFlag } from "../../src/context/ModalMutationContext";
 import { useScoreStore } from "../../src/stores/scoreStore";
 import { useUserPacks } from "../../src/hooks/usePack";
@@ -62,29 +61,16 @@ const C = {
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface HomeScore {
+interface HomeMember {
   user_id: string;
   display_name: string;
-  weekly_points: number; // total accumulated this run — never daily
-  avatar_url?: string | null;
-  rank: number; // dense rank by weekly_points (1,1,3,3 style)
+  avatar_url: string | null;
 }
 
 interface HomePackData {
-  scores: HomeScore[]; // sorted by weekly_points desc
-  runStart: string; // ISO date — for weekly max denominator
+  members: HomeMember[];
+  runStart: string;
   runEnd: string;
-  myTodayPoints: number; // current user's points logged today only (not weekly)
-  // Current user's goal-achievement flags for TODAY in this pack. Drives
-  // the goal-hit progress strip below the "+N today" line. Per-pack —
-  // same user can hit Test15's lower steps target without hitting Test's
-  // higher one (the divergence diagnosed during E.2.a.i).
-  myAchievements: {
-    steps: boolean;
-    workout: boolean;
-    calories: boolean;
-    water: boolean;
-  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -442,45 +428,19 @@ function DarkPackCard({
   data,
   currentUserId,
   currentUserAuthId,
-  unpostedWin,
-  onWinPosted,
   onPress,
 }: {
   pack: Pack;
   data: HomePackData | undefined;
   currentUserId: string | undefined;
   currentUserAuthId: string | undefined;
-  unpostedWin: UnpostedAchievement | undefined;
-  onWinPosted: () => void;
   onPress: () => void;
 }) {
-  const [victorySheetOpen, setVictorySheetOpen] = useState(false);
-  const myOptimistic = useScoreStore((s) => s.myScores[pack.id]);
-
   const rawScores = data?.scores ?? [];
 
-  // Apply optimistic weekly_points overlay so Home card matches Pack screen
-  // immediately after logging, without waiting for fetchScores to complete.
-  const scores = (() => {
-    if (!myOptimistic || !currentUserId) return rawScores;
-    const myIdx = rawScores.findIndex((s) => s.user_id === currentUserId);
-    if (myIdx < 0) return rawScores;
-    const patched = rawScores
-      .map((s, i) =>
-        i === myIdx ? { ...s, weekly_points: myOptimistic.weekly_points } : s,
-      )
-      .sort((a, b) => b.weekly_points - a.weekly_points);
-    // Recompute dense ranks after re-sort
-    let lastPts = -1,
-      lastRank = 0;
-    return patched.map((s, i) => {
-      if (s.weekly_points !== lastPts) {
-        lastRank = i + 1;
-        lastPts = s.weekly_points;
-      }
-      return { ...s, rank: lastRank };
-    });
-  })();
+  // Optimistic overlay dropped (Stage 3e-prep) — DarkPackCard reads straight
+  // from the data prop now. 3e-core rebuilds this card on the categories model.
+  const scores = rawScores;
 
   const statusLine = buildRankStatus(scores, currentUserId);
   const rawUrgency = data
@@ -499,12 +459,6 @@ function DarkPackCard({
       : null;
   const hasActivity = scores.length > 0;
 
-  // Daily delta footer: prefer the optimistic store (updates immediately on
-  // log) over the DB-fetched value (cold-launch source of truth). Hide
-  // entirely when zero — empty state shouldn't read as a celebratory delta.
-  const todayPts = myOptimistic?.total_points ?? data?.myTodayPoints ?? 0;
-  const showDelta = todayPts > 0;
-
   return (
     <TouchableOpacity
       style={card.container}
@@ -522,25 +476,6 @@ function DarkPackCard({
           </Text>
         </View>
       </View>
-
-      {/* Victory banner */}
-      {unpostedWin && (
-        <>
-          <View style={card.victoryBanner}>
-            <Text style={card.victoryBannerIcon}>🏆</Text>
-            <Text style={card.victoryBannerText}>Yesterday's winner</Text>
-            <TouchableOpacity
-              style={card.victoryPostBtn}
-              onPress={() => setVictorySheetOpen(true)}
-              activeOpacity={0.8}
-              hitSlop={6}
-            >
-              <Text style={card.victoryPostBtnText}>Post</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={card.victoryBannerDivider} />
-        </>
-      )}
 
       {hasActivity && data ? (
         <>
@@ -624,26 +559,6 @@ function DarkPackCard({
         </>
       ) : (
         <Text style={card.noActivity}>{packsCopy.packCard.quietWeek}</Text>
-      )}
-
-      {unpostedWin && victorySheetOpen && (
-        <VictoryPostSheet
-          visible={victorySheetOpen}
-          onDismiss={() => setVictorySheetOpen(false)}
-          onPosted={() => {
-            setVictorySheetOpen(false);
-            onWinPosted();
-          }}
-          achievement={{
-            kind: "daily_winner",
-            feedItemId: unpostedWin.feedItemId,
-            userId: currentUserAuthId ?? "",
-            packId: pack.id,
-            packName: pack.name,
-            scoreDate: unpostedWin.scoreDate,
-            pointsEarned: unpostedWin.pointsEarned,
-          }}
-        />
       )}
     </TouchableOpacity>
   );
@@ -816,10 +731,6 @@ export default function Home() {
     FEATURE_FLAGS.dailyWinner || FEATURE_FLAGS.achievementPrompts;
   const { achievements: unpostedAchievements, refresh: refreshAchievements } =
     useUnpostedAchievements(achievementsEnabled ? user?.id : undefined);
-  const unpostedWins = useMemo(
-    () => unpostedAchievements.filter((a) => a.kind === "daily_winner"),
-    [unpostedAchievements],
-  );
 
   // Banner consumer: filters to ['took_lead'] for E.2.b.iii (all_goals
   // defers to a future iteration). Dismissal state lives in AsyncStorage —
@@ -919,13 +830,13 @@ export default function Home() {
   // it directly here once useUserPacks has resolved (!isLoading guards
   // against the initial empty-array render latching prematurely).
   useEffect(() => {
-    if (packs.length > 0) fetchScores(packs);
+    if (packs.length > 0) fetchPackMembers(packs);
     else if (!isLoading) setScoresLoaded(true);
   }, [packs]);
 
   // Re-fetch whenever the user logs an activity so home cards update immediately
   useEffect(() => {
-    if (logVersion > 0 && packs.length > 0) fetchScores(packs);
+    if (logVersion > 0 && packs.length > 0) fetchPackMembers(packs);
   }, [logVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Pass 25-followup-E.1-fix-3: realtime cross-device sync for home cards.
@@ -967,7 +878,7 @@ export default function Home() {
       if (cancelled || !runs?.length) return;
 
       unsubscribes = runs.map((run) =>
-        subscribeToRunScores(run.id, () => fetchScores(packs), "home"),
+        subscribeToRunScores(run.id, () => fetchPackMembers(packs), "home"),
       );
     })();
 
@@ -977,7 +888,7 @@ export default function Home() {
     };
   }, [packIdsKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const fetchScores = async (packList: Pack[]) => {
+  const fetchPackMembers = async (packList: Pack[]) => {
     const result: Record<string, HomePackData> = {};
 
     await Promise.all(
@@ -1004,53 +915,19 @@ export default function Home() {
         const memberIds = (membersResult.data ?? []).map((m) => m.user_id);
         if (memberIds.length === 0) return;
 
-        // Fetch weekly scores + user info for all members in parallel.
-        // Pass 25-followup-E.2.a-home-polish: SELECT expanded with
-        // achievement booleans so the goal-hit progress strip can read
-        // the actor's per-pack achievement state without an extra query.
-        const [scoresResult, usersResult] = await Promise.all([
-          supabase
-            .from("daily_scores")
-            .select(
-              "user_id, total_points, score_date, steps_achieved, workout_achieved, calories_achieved, water_achieved",
-            )
-            .eq("run_id", run.id),
-          supabase
-            .from("users")
-            .select("id, display_name, avatar_url")
-            .in("id", memberIds),
-        ]);
+        // Resolve display name + avatar for every active member. The
+        // categories-model standings are loaded per-card by 3e-core via
+        // usePackCategoryStandings — this layer only builds the roster.
+        const usersResult = await supabase
+          .from("users")
+          .select("id, display_name, avatar_url")
+          .in("id", memberIds);
 
-        // Aggregate weekly totals per user across all run dates, and extract
-        // the current user's today-only points + achievement flags for the
-        // "+N today" footer delta and goal-hit progress strip. Pack timezone
-        // resolves the right calendar day even if the device clock differs.
-        const today = packToday(pack.timezone ?? "UTC");
-        const totals: Record<string, number> = {};
-        let myTodayPoints = 0;
-        const myAchievements = {
-          steps: false,
-          workout: false,
-          calories: false,
-          water: false,
-        };
-        (scoresResult.data ?? []).forEach((row) => {
-          totals[row.user_id] = (totals[row.user_id] ?? 0) + row.total_points;
-          if (row.user_id === user?.id && row.score_date === today) {
-            myTodayPoints = row.total_points;
-            myAchievements.steps = row.steps_achieved ?? false;
-            myAchievements.workout = row.workout_achieved ?? false;
-            myAchievements.calories = row.calories_achieved ?? false;
-            myAchievements.water = row.water_achieved ?? false;
-          }
-        });
-
-        // Build name/avatar maps
         const nameMap: Record<string, string> = {};
         const avatarMap: Record<string, string | null> = {};
         if (usersResult.error) {
           console.warn(
-            "[fetchScores] Could not read display names — check RLS policy on users table:",
+            "[fetchPackMembers] Could not read display names — check RLS policy on users table:",
             usersResult.error,
           );
         } else {
@@ -1060,44 +937,16 @@ export default function Home() {
           });
         }
 
-        // All active members, 0 pts for those who haven't logged yet
-        const unsorted = memberIds.map((uid) => ({
+        const members: HomeMember[] = memberIds.map((uid) => ({
           user_id: uid,
-          weekly_points: totals[uid] ?? 0,
+          display_name: formatName(nameMap[uid]),
+          avatar_url: avatarMap[uid] ?? null,
         }));
 
-        // Sort: weekly_points DESC, display_name ASC (deterministic tie order)
-        unsorted.sort((a, b) => {
-          const ptsDiff = b.weekly_points - a.weekly_points;
-          if (ptsDiff !== 0) return ptsDiff;
-          return (nameMap[a.user_id] ?? "").localeCompare(
-            nameMap[b.user_id] ?? "",
-          );
-        });
-
-        // Dense rank by weekly_points (1,1,3,3 style)
-        let lastPts = -1;
-        let lastRank = 0;
-        const sorted: HomeScore[] = unsorted.map((entry, i) => {
-          if (entry.weekly_points !== lastPts) {
-            lastRank = i + 1;
-            lastPts = entry.weekly_points;
-          }
-          return {
-            user_id: entry.user_id,
-            display_name: formatName(nameMap[entry.user_id], lastRank),
-            weekly_points: entry.weekly_points,
-            avatar_url: avatarMap[entry.user_id] ?? null,
-            rank: lastRank,
-          };
-        });
-
         result[pack.id] = {
-          scores: sorted,
+          members,
           runStart: run.start_date,
           runEnd: run.end_date,
-          myTodayPoints,
-          myAchievements,
         };
       }),
     );
@@ -1169,8 +1018,6 @@ export default function Home() {
               data={packDataMap[item.id]}
               currentUserId={user?.id}
               currentUserAuthId={user?.id}
-              unpostedWin={unpostedWins.find((w) => w.packId === item.id)}
-              onWinPosted={refreshAchievements}
               onPress={() => router.push(`/(app)/pack/${item.id}`)}
             />
           )}

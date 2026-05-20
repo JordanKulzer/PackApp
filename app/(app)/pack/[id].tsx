@@ -63,7 +63,9 @@ import { rankWithTiebreakers } from "../../../src/lib/competitionCopy";
 import { useScoreStore } from "../../../src/stores/scoreStore";
 import type { Pack, Run } from "../../../src/types/database";
 import { colors } from "../../../src/theme/colors";
-import { PackGridView } from "../../../src/components/PackGridView";
+import { PackGridView, type GridEntry } from "../../../src/components/PackGridView";
+import { usePackCategoryStandings } from "../../../src/hooks/usePackCategoryStandings";
+import { CATEGORIES, type Category } from "../../../src/lib/categories";
 import { useCurrentUser } from "../../../src/context/CurrentUserContext";
 import { useRefreshCurrentUserOnFocus } from "../../../src/hooks/useRefreshCurrentUserOnFocus";
 import { den, packs as packsCopy, packEdit, t } from "../../../src/constants/strings";
@@ -1942,6 +1944,14 @@ export default function PackScreen() {
   const { data: packData, isLoading: packLoading, refetch: refetchPack } = usePack(id ?? null);
   const { syncNow } = useHealthKit(user?.id ?? null);
 
+  // Categories-pivot standings (Stage 3d) — feeds PackGridView's GridEntry[].
+  const { data: categoryStandings } = usePackCategoryStandings(
+    packData?.pack.id ?? "",
+    packData?.activeRun?.id ?? null,
+    packData?.pack.timezone ?? "UTC",
+    (packData?.members ?? []).map((m) => m.user_id),
+  );
+
   const { width: screenWidth } = useWindowDimensions();
   const { top: topInset } = useSafeAreaInsets();
   const pageScrollRef = React.useRef<ScrollView>(null);
@@ -2239,6 +2249,64 @@ export default function PackScreen() {
 
   const ranked = rankWithTiebreakers(fullRoster);
 
+  // ── Categories-pivot grid entries (Stage 3d) ──────────────────────────
+  // PackGridView consumes a categories-shaped GridEntry[]. Build it from
+  // usePack members + usePackCategoryStandings: total wins / wins-by-
+  // category from rankedMembers, today's per-category values + leader
+  // flags from todayByCategory, streak from today's daily_scores row.
+  //
+  // Ranking is inlined rather than reusing rankWithTiebreakers: that helper
+  // ranks by weekly_points and lives in competitionCopy.ts (the points
+  // module, out of scope here). The categories model ranks by total_wins.
+  // Order: total_wins desc, streak_days desc, display_name asc. Competition
+  // ranks — genuine ties share a rank and the next rank skips (1,1,3,3).
+  let gridEntries: GridEntry[] = [];
+  if (categoryStandings) {
+    const winsById = new Map(
+      categoryStandings.memberWins.map((w) => [w.userId, w]),
+    );
+    gridEntries = (packData?.members ?? []).map((m) => {
+      const wins = winsById.get(m.user_id);
+      const today_values = {} as Record<Category, number>;
+      const is_today_leader_in: Category[] = [];
+      for (const category of CATEGORIES) {
+        const standing = categoryStandings.todayByCategory[category];
+        today_values[category] = standing.todayValuesByUser[m.user_id] ?? 0;
+        if (standing.todayLeaderIds.includes(m.user_id)) {
+          is_today_leader_in.push(category);
+        }
+      }
+      return {
+        user_id: m.user_id,
+        display_name: memberNameMap.get(m.user_id) ?? "",
+        avatarUrl: memberAvatarMap.get(m.user_id) ?? null,
+        rank: 0,
+        total_wins: wins?.totalWins ?? 0,
+        wins_by_category:
+          wins?.winsByCategory ??
+          ({ steps: 0, workouts: 0, calories: 0, water: 0 } as Record<
+            Category,
+            number
+          >),
+        today_values,
+        is_today_leader_in,
+        streak_days: scoreById.get(m.user_id)?.streak_days ?? 0,
+      };
+    });
+
+    gridEntries.sort((a, b) => {
+      if (b.total_wins !== a.total_wins) return b.total_wins - a.total_wins;
+      if (b.streak_days !== a.streak_days) return b.streak_days - a.streak_days;
+      return a.display_name.localeCompare(b.display_name);
+    });
+    for (let i = 0; i < gridEntries.length; i++) {
+      gridEntries[i].rank =
+        i > 0 && gridEntries[i].total_wins === gridEntries[i - 1].total_wins
+          ? gridEntries[i - 1].rank
+          : i + 1;
+    }
+  }
+
   // ── Loading / error ───────────────────────────────────────────────────
 
   if (packLoading) {
@@ -2374,7 +2442,7 @@ export default function PackScreen() {
             </View>
           ) : packData.activeRun ? (
             <PackGridView
-              entries={ranked}
+              entries={gridEntries}
               pack={pack}
               activeRun={packData.activeRun}
               currentUserId={user?.id}

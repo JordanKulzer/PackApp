@@ -11,14 +11,15 @@ import {
   Easing,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { Crown } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import { PackMemberDisplay } from "./PackMemberDisplay";
-import { POINTS, WORKOUT_MAX_DAILY } from "../lib/scoring";
 import { showToast } from "../lib/toast";
 import type { Pack, Run } from "../types/database";
+import { CATEGORIES, CATEGORY_LABELS, type Category } from "../lib/categories";
 import { colors } from "../theme/colors";
-import { activity, den, t } from "../constants/strings";
+import { den } from "../constants/strings";
 import { formatName } from "../lib/displayName";
 
 // Android requires this experimental flag for LayoutAnimation. iOS no-op.
@@ -54,33 +55,35 @@ const C = {
 } as const;
 
 // ── Local helpers ──────────────────────────────────────────────────────────
-// Inlined from pack/[id].tsx so the grid is a self-contained component.
-// Mirrors the math used by the existing podium rings.
 
-function maxPossiblePointsForPack(pack: Pack): number {
-  let pts = 0;
-  if (pack.steps_enabled) pts += POINTS.steps;
-  if (pack.workouts_enabled) pts += POINTS.workout * WORKOUT_MAX_DAILY;
-  if (pack.calories_enabled) pts += POINTS.calories;
-  if (pack.water_enabled) pts += POINTS.water;
-  return pts;
-}
-
-function maxRunPoints(pack: Pack, run: Run): number {
+// Ring fill for the categories model. A member's ring shows their share of
+// the daily category-contests won so far this run: total_wins / daysElapsed.
+// total_wins spans all 4 categories, so a member sweeping every category
+// every day can exceed 1.0 — the result is intentionally clamped to 100%.
+// daysElapsed is 1-indexed (run start = day 1) and capped at 7 (weekly runs).
+// The divisor floor of 1 covers the just-started / clock-skew edge case
+// (a fresh run reads as an empty ring for a 0-win member, which is correct).
+function ringFillPct(totalWins: number, run: Run): number {
   const msPerDay = 1000 * 60 * 60 * 24;
-  const total =
-    Math.round(
-      (new Date(run.end_date + "T12:00:00").getTime() -
-        new Date(run.start_date + "T12:00:00").getTime()) /
-        msPerDay,
-    ) + 1;
-  return maxPossiblePointsForPack(pack) * Math.max(1, total);
+  const start = new Date(run.start_date + "T12:00:00").getTime();
+  const rawDays = Math.floor((Date.now() - start) / msPerDay) + 1;
+  const daysElapsed = Math.min(7, Math.max(1, rawDays));
+  return Math.min(100, Math.max(0, (totalWins / daysElapsed) * 100));
 }
 
-function ringPct(weeklyPoints: number, pack: Pack, run: Run): number {
-  const max = maxRunPoints(pack, run);
-  if (max === 0) return 0;
-  return Math.min(100, Math.round((weeklyPoints / max) * 100));
+// pack enable-flags aren't keyed by Category — map explicitly. The exhaustive
+// switch means adding a Category surfaces a compile error here.
+function categoryEnabled(pack: Pack, category: Category): boolean {
+  switch (category) {
+    case "steps":
+      return pack.steps_enabled;
+    case "workouts":
+      return pack.workouts_enabled;
+    case "calories":
+      return pack.calories_enabled;
+    case "water":
+      return pack.water_enabled;
+  }
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -88,28 +91,20 @@ function ringPct(weeklyPoints: number, pack: Pack, run: Run): number {
 export interface GridEntry {
   user_id: string;
   display_name: string;
-  avatar_url?: string | null;
-  weekly_points: number;
+  avatarUrl: string | null;
   rank: number;
+  total_wins: number;
+  wins_by_category: Record<Category, number>;
+  today_values: Record<Category, number>;
+  is_today_leader_in: Category[];
   streak_days: number;
-  // Fields below are consumed by the inline RankRowExpanded breakdown.
-  // Source: MemberScore (rankWithTiebreakers output) — already present.
-  streak_multiplier: number;
-  steps_achieved: boolean;
-  workout_achieved: boolean;
-  calories_achieved: boolean;
-  water_achieved: boolean;
-  steps_count: number;
-  calories_count: number;
-  water_oz_count: number;
-  workout_count: number;
 }
 
 interface RankGroup {
   rank: number;
   members: GridEntry[];
   isTied: boolean;
-  pointsBehindLeader: number;
+  winsBehindLeader: number;
 }
 
 interface Props {
@@ -141,14 +136,12 @@ export function PackGridView({
     [entries],
   );
 
-  // Group all entries by rank for the unified vertical list. Phase 2.0
-  // removed the FeaturedTile/FeaturedSplit hero block — every member,
+  // Group all entries by rank for the unified vertical list. Every member,
   // including rank 1, renders in this list.
-  // pointsBehindLeader = leader's pts (entries[0]) − this group's pts.
+  // winsBehindLeader = leader's wins (entries[0]) − this group's wins.
   // Members within a group are sorted alphabetically (mirrors tie order).
   const rankGroups = useMemo<RankGroup[]>(() => {
-    const leaderPoints =
-      entries.length > 0 ? entries[0].weekly_points : 0;
+    const leaderWins = entries.length > 0 ? entries[0].total_wins : 0;
     const grouped: Record<number, GridEntry[]> = {};
     entries.forEach((entry) => {
       if (!grouped[entry.rank]) grouped[entry.rank] = [];
@@ -167,7 +160,7 @@ export function PackGridView({
           rank,
           members,
           isTied: members.length > 1,
-          pointsBehindLeader: leaderPoints - members[0].weekly_points,
+          winsBehindLeader: leaderWins - members[0].total_wins,
         };
       });
   }, [entries]);
@@ -178,13 +171,7 @@ export function PackGridView({
   if (totalMembers === 1) {
     return (
       <View style={s.container}>
-        <SoloPackHero
-          entry={entries[0]}
-          pack={pack}
-          activeRun={activeRun}
-          currentUserId={currentUserId}
-          onInvite={onInvite}
-        />
+        <SoloPackHero entry={entries[0]} pack={pack} onInvite={onInvite} />
       </View>
     );
   }
@@ -200,13 +187,12 @@ export function PackGridView({
               <RankGroupHeader
                 isTied={group.isTied}
                 memberCount={group.members.length}
-                pointsBehindLeader={group.pointsBehindLeader}
+                winsBehindLeader={group.winsBehindLeader}
               />
               {group.members.map((entry) => (
                 <View key={entry.user_id}>
                   <RankRow
                     entry={entry}
-                    pack={pack}
                     activeRun={activeRun}
                     currentUserId={currentUserId}
                     leaderId={leaderId}
@@ -216,8 +202,8 @@ export function PackGridView({
                   {expandedUserId === entry.user_id && (
                     <RankRowExpanded
                       entry={entry}
+                      entries={entries}
                       currentUserId={currentUserId}
-                      pack={pack}
                     />
                   )}
                 </View>
@@ -233,17 +219,17 @@ export function PackGridView({
 // ── Rank group header ──────────────────────────────────────────────────────
 // Renders above each group of rows ONLY when the group is tied. Solo ranks
 // have no header — the row's own #X cell speaks for itself. Tied groups
-// show "TIED · N way" on the left and "{gap} pts behind" on the right when
+// show "TIED · N way" on the left and "{gap} wins behind" on the right when
 // not the leader group.
 
 function RankGroupHeader({
   isTied,
   memberCount,
-  pointsBehindLeader,
+  winsBehindLeader,
 }: {
   isTied: boolean;
   memberCount: number;
-  pointsBehindLeader: number;
+  winsBehindLeader: number;
 }) {
   // Solo rank = no header. The row's prominent #X cell carries the rank.
   if (!isTied) return null;
@@ -252,22 +238,24 @@ function RankGroupHeader({
   return (
     <View style={s.groupHeader}>
       <Text style={s.groupHeaderText}>{tieLabel}</Text>
-      {pointsBehindLeader > 0 && (
-        <Text style={s.groupHeaderGap}>{pointsBehindLeader} pts behind</Text>
+      {winsBehindLeader > 0 && (
+        <Text style={s.groupHeaderGap}>
+          {winsBehindLeader} {winsBehindLeader === 1 ? "win" : "wins"} behind
+        </Text>
       )}
     </View>
   );
 }
 
 // ── Rank row ───────────────────────────────────────────────────────────────
-// Single member row. Layout: prominent #X cell, ring, name+streak, pts.
-// Rank 1 gets a larger ring (80pt vs 70pt) and a 👑 prefix on the name.
-// Self-row always gets a blue left accent bar; non-self rows get one only
-// when expanded — gold for rank-1, blue for everyone else.
+// Single member row. Layout: prominent #X cell, ring, crown+name / streak,
+// wins count. Rank 1 gets a larger ring (80pt vs 70pt). A gold crown
+// prefixes the name when the member leads any category TODAY. Self-row
+// always gets a blue left accent bar; non-self rows get one only when
+// expanded — gold for rank-1, blue for everyone else.
 
 function RankRow({
   entry,
-  pack,
   activeRun,
   currentUserId,
   leaderId,
@@ -275,7 +263,6 @@ function RankRow({
   onPress,
 }: {
   entry: GridEntry;
-  pack: Pack;
   activeRun: Run;
   currentUserId: string | undefined;
   leaderId: string | undefined;
@@ -291,7 +278,10 @@ function RankRow({
   const useLeaderBarColor = !isMe && isLeader && isExpanded;
   const ringSize = isLeader ? 80 : 70;
   const ringStroke = isLeader ? 8 : 7;
-  const pct = ringPct(entry.weekly_points, pack, activeRun);
+  // Ring fill is the member's wins-share of the run so far (see ringFillPct).
+  const pct = ringFillPct(entry.total_wins, activeRun);
+  // Crown = leading any category today. One crown regardless of how many.
+  const isTodayLeader = entry.is_today_leader_in.length > 0;
   const router = useRouter();
   return (
     <TouchableOpacity
@@ -309,9 +299,9 @@ function RankRow({
         #{entry.rank}
       </Text>
       {/* Avatar is its own tap target — opens the public user profile
-          (Pass 21b). Row body's onPress still expands the per-goal
-          breakdown (Pass 18-C.1). React Native routes the avatar tap to
-          this child handler; row body taps fall through to the parent. */}
+          (Pass 21b). Row body's onPress still toggles the per-category
+          breakdown. React Native routes the avatar tap to this child
+          handler; row body taps fall through to the parent. */}
       <TouchableOpacity
         style={s.rowAvatar}
         onPress={() => {
@@ -332,159 +322,128 @@ function RankRow({
           size={ringSize}
           strokeWidth={ringStroke}
           showName={false}
-          avatarUrl={entry.avatar_url}
+          avatarUrl={entry.avatarUrl}
         />
       </TouchableOpacity>
       <View style={s.rowCenter}>
-        <Text style={[s.rowName, isMe && s.nameSelf]} numberOfLines={1}>
-          {isLeader && "👑 "}
-          {formatName(entry.display_name)}
-        </Text>
+        {/* Crown + name on one line; streak badge sits below. The gold
+            crown is a leader-only signal. */}
+        <View style={s.rowNameLine}>
+          {isTodayLeader && (
+            <Crown
+              size={14}
+              color={colors.leader}
+              strokeWidth={2}
+              style={{ marginRight: 4 }}
+            />
+          )}
+          <Text style={[s.rowName, isMe && s.nameSelf]} numberOfLines={1}>
+            {formatName(entry.display_name)}
+          </Text>
+        </View>
         {entry.streak_days > 0 && (
           <Text style={s.rowStreak}>🔥 {entry.streak_days}</Text>
         )}
       </View>
-      <Text style={s.rowPts}>{entry.weekly_points} pts</Text>
+      <Text style={s.rowWins}>
+        {entry.total_wins} {entry.total_wins === 1 ? "win" : "wins"}
+      </Text>
     </TouchableOpacity>
   );
 }
 
-// ── Goal row (animated bar + ratio + check) ────────────────────────────────
-// One source of truth for the achieved state, shared by the bar's fill color,
-// the ratio text color, and the ✓ icon. State flips at animation end (going
-// up to 100%) and immediately (going down below 100%) so all three elements
-// land the goal-hit moment together.
-function GoalRow({
-  label,
-  pct,
-  ratio,
+// ── Category bar (animated per-category comparison) ─────────────────────────
+// One row in the expanded breakdown. The member's value is drawn as a bar
+// scaled against TODAY's leading value for that category: the category
+// leader gets a full gold bar, everyone else scales in blue. A category
+// nobody has logged yet (leaderValue 0) shows an empty track.
+// Animation mirrors the prior GoalRow pattern (350ms, JS-thread width).
+function CategoryBar({
+  category,
+  memberValue,
+  leaderValue,
+  isLeader,
 }: {
-  label: string;
-  pct: number;
-  ratio: string;
+  category: Category;
+  memberValue: number;
+  leaderValue: number;
+  isLeader: boolean;
 }) {
+  const pct = isLeader
+    ? 100
+    : leaderValue > 0
+      ? Math.min(100, (memberValue / leaderValue) * 100)
+      : 0;
   const animValue = useRef(new Animated.Value(0)).current;
-  const [achieved, setAchieved] = useState(false);
 
   useEffect(() => {
-    if (pct < 100) setAchieved(false);
     Animated.timing(animValue, {
       toValue: pct,
       duration: 350,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false, // width% interpolation requires JS thread
-    }).start(({ finished }) => {
-      if (finished && pct >= 100) setAchieved(true);
-    });
+    }).start();
   }, [pct]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const width = animValue.interpolate({
     inputRange: [0, 100],
     outputRange: ["0%", "100%"],
   });
-  const fillColor = achieved ? C.success : C.accent;
+  const suffix = category === "water" ? " oz" : "";
+  // The category leader has no one above them — show just their value.
+  const ratio = isLeader
+    ? `${memberValue}${suffix}`
+    : `${memberValue} / ${leaderValue}${suffix}`;
 
   return (
     <View style={s.goalRow}>
-      <Text style={s.goalLabel}>{label}</Text>
+      <Text style={s.goalLabel}>{CATEGORY_LABELS[category]}</Text>
       <View style={[s.goalBarTrack, s.goalBarTrackFilled]}>
         <Animated.View
-          style={[s.goalBarFill, { width, backgroundColor: fillColor }]}
+          style={[
+            s.goalBarFill,
+            { width, backgroundColor: isLeader ? colors.leader : C.accent },
+          ]}
         />
       </View>
       <View style={s.goalRatioBlock}>
-        <Text style={[s.goalRatio, achieved && s.goalRatioAchieved]}>
-          {ratio}
-        </Text>
-        {achieved && (
-          <Ionicons
-            name="checkmark"
-            size={14}
-            color={C.success}
-            style={{ marginLeft: 4 }}
-          />
-        )}
+        <Text style={s.goalRatio}>{ratio}</Text>
       </View>
     </View>
   );
 }
 
-// ── Inline expansion (per-member goal breakdown) ───────────────────────────
-// Renders below the corresponding row when expanded. Shows streak header (if
-// any), then one row per goal the pack tracks. Self-row's accent bar extends
-// through the expansion via `isMe`.
+// ── Inline expansion (per-category breakdown) ──────────────────────────────
+// Renders below the corresponding row when expanded. One CategoryBar per
+// category (all four, in CATEGORIES order), each scaled against today's
+// leading value for that category. The self-row's accent bar continues
+// through the expansion; a non-self rank-1 row gets the gold accent.
 
 function RankRowExpanded({
   entry,
+  entries,
   currentUserId,
-  pack,
 }: {
   entry: GridEntry;
+  entries: GridEntry[];
   currentUserId: string | undefined;
-  pack: Pack;
 }) {
   const isMe = entry.user_id === currentUserId;
   const useLeaderAccent = !isMe && entry.rank === 1;
-  const multiplier = entry.streak_multiplier ?? 1;
-  const showStreak = entry.streak_days > 0;
 
-  type Goal = {
-    label: string;
-    pct: number; // 0-100, capped
-    ratio: string;
-  };
-  const goals: Goal[] = [];
-  let earnedSum = 0;
-
-  if (pack.steps_enabled) {
-    const pct =
-      pack.step_target > 0
-        ? Math.min(100, (entry.steps_count / pack.step_target) * 100)
-        : 0;
-    goals.push({
-      label: "Steps",
-      pct,
-      ratio: `${entry.steps_count.toLocaleString()} / ${pack.step_target.toLocaleString()}`,
-    });
-    if (entry.steps_achieved) earnedSum += POINTS.steps * multiplier;
-  }
-  if (pack.workouts_enabled) {
-    const cappedCount = Math.min(entry.workout_count, WORKOUT_MAX_DAILY);
-    goals.push({
-      label: "Workout",
-      pct: (cappedCount / WORKOUT_MAX_DAILY) * 100,
-      ratio: `${entry.workout_count} / ${WORKOUT_MAX_DAILY}`,
-    });
-    if (entry.workout_count > 0) {
-      earnedSum += POINTS.workout * cappedCount * multiplier;
+  // Today's leading value per category = the max today_values across every
+  // member. Computed once here, then handed to each CategoryBar so a
+  // member's bar scales against the live leader for that category.
+  const leaderTodayValues = useMemo(() => {
+    const out = {} as Record<Category, number>;
+    for (const category of CATEGORIES) {
+      out[category] = entries.reduce(
+        (max, e) => Math.max(max, e.today_values[category] ?? 0),
+        0,
+      );
     }
-  }
-  if (pack.calories_enabled) {
-    const pct =
-      pack.calorie_target > 0
-        ? Math.min(100, (entry.calories_count / pack.calorie_target) * 100)
-        : 0;
-    goals.push({
-      label: "Calories",
-      pct,
-      ratio: `${entry.calories_count} / ${pack.calorie_target}`,
-    });
-    if (entry.calories_achieved) earnedSum += POINTS.calories * multiplier;
-  }
-  if (pack.water_enabled) {
-    const pct =
-      pack.water_target_oz > 0
-        ? Math.min(100, (entry.water_oz_count / pack.water_target_oz) * 100)
-        : 0;
-    goals.push({
-      label: "Water",
-      pct,
-      ratio: `${entry.water_oz_count} / ${pack.water_target_oz} oz`,
-    });
-    if (entry.water_achieved) earnedSum += POINTS.water * multiplier;
-  }
-
-  const totalEarned = Math.round(earnedSum);
+    return out;
+  }, [entries]);
 
   return (
     <View
@@ -493,21 +452,15 @@ function RankRowExpanded({
         useLeaderAccent && { borderLeftColor: colors.leader },
       ]}
     >
-      {showStreak && (
-        <Text style={s.expandedStreak}>
-          {entry.streak_days === 1
-            ? activity.streak.day
-            : t(activity.streak.days, { count: entry.streak_days })}
-          {" · "}
-          {t(activity.streak.multiplier, { multiplier })}
-        </Text>
-      )}
-      {goals.map((g) => (
-        <GoalRow key={g.label} label={g.label} pct={g.pct} ratio={g.ratio} />
+      {CATEGORIES.map((category) => (
+        <CategoryBar
+          key={category}
+          category={category}
+          memberValue={entry.today_values[category] ?? 0}
+          leaderValue={leaderTodayValues[category]}
+          isLeader={entry.is_today_leader_in.includes(category)}
+        />
       ))}
-      {totalEarned > 0 && (
-        <Text style={s.totalEarned}>+{totalEarned} pts today</Text>
-      )}
     </View>
   );
 }
@@ -515,24 +468,36 @@ function RankRowExpanded({
 // ── Solo-pack hero ─────────────────────────────────────────────────────────
 // Renders when the pack has exactly one member (the current user). Replaces
 // the competitive rank list with an invite-first card + a non-competitive
-// "your activity today" readout. The pill-styled invite code reuses the
-// pack-level Share flow on tap (no separate clipboard dependency wired up).
+// one-line readout of today's category values. No rank/crown/ring — solo
+// mode has no competition. The pill-styled invite code copies to clipboard.
 
 function SoloPackHero({
   entry,
   pack,
-  activeRun,
-  currentUserId,
   onInvite,
 }: {
   entry: GridEntry;
   pack: Pack;
-  activeRun: Run;
-  currentUserId: string | undefined;
   onInvite: () => void;
 }) {
   const inviteCode = pack.invite_code;
-  const pct = ringPct(entry.weekly_points, pack, activeRun);
+
+  // One readout line — "Steps: 8000 · Workouts: 1 · …" — over the pack's
+  // enabled categories only. Water carries an "oz" suffix. When every
+  // enabled category is still 0, show the empty-state copy instead.
+  const enabledCategories = CATEGORIES.filter((c) => categoryEnabled(pack, c));
+  const allZero = enabledCategories.every(
+    (c) => (entry.today_values[c] ?? 0) === 0,
+  );
+  const soloLine = enabledCategories
+    .map(
+      (c) =>
+        `${CATEGORY_LABELS[c]}: ${entry.today_values[c] ?? 0}${
+          c === "water" ? " oz" : ""
+        }`,
+    )
+    .join(" · ");
+
   return (
     <>
       <View style={s.heroCard}>
@@ -570,38 +535,13 @@ function SoloPackHero({
 
       <Text style={s.soloSectionHeader}>{den.todaysHunt.title}</Text>
 
-      {/* Self-row: blue accent bar stays (still "you"), but no rank cell,
-          no crown, and the ring color falls back to self-blue (not gold)
-          by passing leaderId={undefined}. */}
-      <View style={[s.row, s.rowAccentBar]}>
-        <View style={s.rowAvatar}>
-          <PackMemberDisplay
-            userId={entry.user_id}
-            displayName={entry.display_name}
-            progressPct={pct}
-            // rank > 3 suppresses the built-in rank badge.
-            rank={4}
-            currentUserId={currentUserId}
-            leaderId={undefined}
-            size={70}
-            strokeWidth={7}
-            showName={false}
-            avatarUrl={entry.avatar_url}
-          />
-        </View>
-        <View style={s.rowCenter}>
-          <Text style={[s.rowName, s.nameSelf]} numberOfLines={1}>
-            {formatName(entry.display_name)}
-          </Text>
-          {entry.streak_days > 0 && (
-            <Text style={s.rowStreak}>🔥 {entry.streak_days}</Text>
-          )}
-        </View>
-        <Text style={s.rowPts}>{entry.weekly_points} pts</Text>
+      {/* Solo mode has no competition — a plain values readout replaces the
+          ranked self-row + per-category bars used in 2+ mode. */}
+      <View style={s.soloTodayBox}>
+        <Text style={s.soloTodayText}>
+          {allZero ? "No activity yet today." : soloLine}
+        </Text>
       </View>
-
-      {/* Always-visible goal breakdown — no expansion needed in solo mode. */}
-      <RankRowExpanded entry={entry} currentUserId={currentUserId} pack={pack} />
     </>
   );
 }
@@ -688,19 +628,25 @@ const s = StyleSheet.create({
     flex: 1,
     gap: 2,
   },
+  // Crown + name share one horizontal line within the column rowCenter.
+  rowNameLine: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
   rowName: {
     fontSize: 16,
     fontWeight: "600",
     color: C.textPrimary,
+    flexShrink: 1, // truncate (numberOfLines=1) rather than push the crown
   },
   rowStreak: {
     fontSize: 12,
     color: C.streak,
   },
-  rowPts: {
+  rowWins: {
     fontSize: 16,
     fontWeight: "600",
-    color: C.accent,
+    color: C.textPrimary,
     marginLeft: 8,
   },
 
@@ -713,14 +659,6 @@ const s = StyleSheet.create({
     paddingRight: 16,
     borderLeftWidth: 3,
     borderLeftColor: C.accent,
-  },
-  expandedStreak: {
-    fontSize: 13,
-    color: C.streak,
-    paddingBottom: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#2C2C2E",
-    marginBottom: 10,
   },
   goalRow: {
     flexDirection: "row",
@@ -763,15 +701,6 @@ const s = StyleSheet.create({
     fontSize: 12,
     color: C.textSecondary,
     textAlign: "right",
-  },
-  goalRatioAchieved: {
-    color: C.success,
-  },
-  totalEarned: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: C.accent,
-    paddingTop: 8,
   },
 
   // ── Solo-pack hero ──
@@ -835,5 +764,18 @@ const s = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 32,
     paddingBottom: 12,
+  },
+  // Solo-mode today's-values readout — single line inside a surface card.
+  soloTodayBox: {
+    marginHorizontal: 16,
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    backgroundColor: C.surface,
+    borderRadius: 12,
+  },
+  soloTodayText: {
+    fontSize: 14,
+    color: C.textPrimary,
+    lineHeight: 20,
   },
 });
