@@ -64,7 +64,11 @@ import { useScoreStore } from "../../../src/stores/scoreStore";
 import type { Pack, Run } from "../../../src/types/database";
 import { colors } from "../../../src/theme/colors";
 import { PackGridView, type GridEntry } from "../../../src/components/PackGridView";
-import { usePackCategoryStandings } from "../../../src/hooks/usePackCategoryStandings";
+import {
+  usePackCategoryStandings,
+  type PackCategoryStandings,
+} from "../../../src/hooks/usePackCategoryStandings";
+import { Crown } from "lucide-react-native";
 import { CATEGORIES, type Category } from "../../../src/lib/categories";
 import { useCurrentUser } from "../../../src/context/CurrentUserContext";
 import { useRefreshCurrentUserOnFocus } from "../../../src/hooks/useRefreshCurrentUserOnFocus";
@@ -998,6 +1002,7 @@ function PastRunsSection({
   currentUserId,
   activeRun,
   activeRanked,
+  categoryStandings,
   pack,
   memberNameMap,
   isPro,
@@ -1006,6 +1011,7 @@ function PastRunsSection({
   currentUserId: string | undefined;
   activeRun?: Run;
   activeRanked?: (WeeklyEntry & { rank: number })[];
+  categoryStandings: PackCategoryStandings | null;
   pack: Pack;
   memberNameMap: Map<string, string>;
   isPro: boolean;
@@ -1015,6 +1021,33 @@ function PastRunsSection({
   const [detailEntry, setDetailEntry] = useState<WeekDetailEntry | null>(null);
 
   const hasAnyHistory = !!activeRun || completedRuns.length > 0;
+
+  // "week" / "month" — the run's competition period.
+  const period = pack.competition_window === "monthly" ? "month" : "week";
+
+  // "This Week" card leading copy, from the live category standings.
+  // activeRanked still feeds WeekDetailSheet's CURRENT STANDINGS (3f-core-3
+  // scope) so it stays threaded into setDetailEntry below — only this
+  // visible copy line moves off it.
+  const thisWeekLine = (() => {
+    const ranked = categoryStandings?.rankedMembers ?? [];
+    if (ranked.length === 0 || ranked.every((r) => r.totalWins === 0)) {
+      return `No wins yet this ${period}`;
+    }
+    const topWins = ranked[0].totalWins;
+    const leaders = ranked.filter((r) => r.totalWins === topWins);
+    const winsLabel = `${topWins} ${topWins === 1 ? "win" : "wins"}`;
+    if (leaders.some((r) => r.userId === currentUserId)) {
+      return leaders.length > 1
+        ? `Tied for the lead · ${winsLabel}`
+        : `You're leading · ${winsLabel}`;
+    }
+    const leaderName = formatName(
+      memberNameMap.get(ranked[0].userId) ?? null,
+      1,
+    );
+    return `${leaderName} is leading · ${winsLabel}`;
+  })();
 
   const handleLockedRun = () => {
     analytics.gateHit("history");
@@ -1061,11 +1094,7 @@ function PastRunsSection({
               </View>
               <View style={pbS.currentBody}>
                 <Text style={pbS.currentLeader} numberOfLines={1}>
-                  {activeRanked && activeRanked.length > 0
-                    ? activeRanked[0].user_id === currentUserId
-                      ? `You're leading · ${activeRanked[0].weekly_points} pts`
-                      : `${formatName(activeRanked[0].display_name, 1)} is leading · ${activeRanked[0].weekly_points} pts`
-                    : packsCopy.packCard.quietWeek}
+                  {thisWeekLine}
                 </Text>
                 <Ionicons
                   name="chevron-forward"
@@ -1079,8 +1108,28 @@ function PastRunsSection({
           {/* Completed weeks — free tier unlocks the FREE_HISTORY_WEEKS
               most recent (completedRuns is sorted end_date DESC by the
               server query); week N+1 onward render as locked Pro teasers. */}
-          {completedRuns.map((run, idx) =>
-            isPro || idx < FREE_HISTORY_WEEKS ? (
+          {completedRuns.map((run, idx) => {
+            // Overall winner = the standings rank-1 group (standings is
+            // rank-sorted; ties share rank 1). Empty standings = nobody
+            // won any category-day this run.
+            const leaders = run.standings.filter((s) => s.rank === 1);
+            const completedLine = (() => {
+              if (leaders.length === 0) return `No winner — quiet ${period}`;
+              const topWins = leaders[0].totalWins;
+              const winsLabel = `${topWins} ${topWins === 1 ? "win" : "wins"}`;
+              if (leaders.length === 1) {
+                const w = leaders[0];
+                return w.userId === currentUserId
+                  ? `You won the ${period} · ${winsLabel}`
+                  : `${formatName(w.displayName, 1)} won the ${period} · ${winsLabel}`;
+              }
+              if (leaders.length === 2) {
+                return `${formatName(leaders[0].displayName, 1)} & ${formatName(leaders[1].displayName, 1)} tied · ${winsLabel}`;
+              }
+              const others = leaders.length - 1;
+              return `${formatName(leaders[0].displayName, 1)} & ${others} others tied · ${winsLabel}`;
+            })();
+            return isPro || idx < FREE_HISTORY_WEEKS ? (
               <TouchableOpacity
                 key={run.runId}
                 style={pbS.card}
@@ -1090,7 +1139,6 @@ function PastRunsSection({
                     startedAt: run.startedAt,
                     endedAt: run.endedAt,
                     isActive: false,
-                    winner: run.winner,
                     completedStandings: run.standings,
                   })
                 }
@@ -1100,17 +1148,10 @@ function PastRunsSection({
                   {formatRunRange(run.startedAt, run.endedAt)}
                 </Text>
                 <View style={pbS.completedBody}>
-                  <Text style={pbS.crown}>🏆</Text>
-                  <View style={pbS.winnerMeta}>
-                    <Text style={pbS.winnerName} numberOfLines={1}>
-                      {run.winner.userId === currentUserId
-                        ? "You won"
-                        : `${formatName(run.winner.displayName, 1)} won`}
-                    </Text>
-                    <Text style={pbS.winnerPts}>
-                      {run.winner.totalPoints} pts
-                    </Text>
-                  </View>
+                  <Crown size={16} color={colors.leader} strokeWidth={2} />
+                  <Text style={pbS.winnerName} numberOfLines={1}>
+                    {completedLine}
+                  </Text>
                   <Ionicons
                     name="chevron-forward"
                     size={16}
@@ -1142,8 +1183,8 @@ function PastRunsSection({
                   />
                 </View>
               </TouchableOpacity>
-            ),
-          )}
+            );
+          })}
         </>
       )}
 
@@ -1219,7 +1260,7 @@ const pbS = StyleSheet.create({
   },
   crown: { fontSize: 18 },
   winnerMeta: { flex: 1, gap: 1 },
-  winnerName: { fontSize: 14, fontWeight: "700", color: colors.leader },
+  winnerName: { flex: 1, fontSize: 14, fontWeight: "700", color: colors.leader },
   winnerPts: { fontSize: 12, fontWeight: "500", color: C.textSecondary },
   // Empty state
   emptyState: { paddingVertical: 24, gap: 6, alignItems: "center" },
@@ -2471,6 +2512,7 @@ export default function PackScreen() {
             currentUserId={user?.id}
             activeRun={packData.activeRun ?? undefined}
             activeRanked={ranked}
+            categoryStandings={categoryStandings}
             pack={pack}
             memberNameMap={memberNameMap}
             isPro={isPro}
