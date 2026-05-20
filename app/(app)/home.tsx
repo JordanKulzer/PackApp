@@ -8,19 +8,20 @@ import {
   TouchableOpacity,
   RefreshControl,
 } from "react-native";
+import { Crown } from "lucide-react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useAuthStore } from "../../src/stores/authStore";
 import { useConsumeSuppressFlag } from "../../src/context/ModalMutationContext";
 import { useScoreStore } from "../../src/stores/scoreStore";
 import { useUserPacks } from "../../src/hooks/usePack";
 import { useIsPro } from "../../src/hooks/useIsPro";
+import {
+  usePackCategoryStandings,
+  type MemberWinsCount,
+} from "../../src/hooks/usePackCategoryStandings";
 import { supabase } from "../../src/lib/supabase";
 import { formatName } from "../../src/lib/displayName";
 import { PackMemberDisplay } from "../../src/components/PackMemberDisplay";
-import {
-  buildRankStatus,
-  buildUrgencyHint,
-} from "../../src/lib/competitionCopy";
 import type { Pack } from "../../src/types/database";
 import { JoinPackModal } from "../../src/components/JoinPackModal";
 import { colors } from "../../src/theme/colors";
@@ -71,44 +72,36 @@ interface HomePackData {
   members: HomeMember[];
   runStart: string;
   runEnd: string;
+  runId: string | null;
+}
+
+// One mini-ring cell — a roster member joined with their wins standing.
+interface MiniRingEntry {
+  user_id: string;
+  display_name: string;
+  avatar_url: string | null;
+  total_wins: number;
+  rank: number; // competition rank by total_wins (1,1,3,…)
+  isWinsLeader: boolean; // rank 1 with > 0 wins — gets the crown
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function maxRunPointsForPeriod(
-  pack: Pack,
-  runStart: string,
-  runEnd: string,
-): number {
+// Mini-ring fill for the categories model. Mirrors PackGridView's
+// ringFillPct — intentionally duplicated rather than imported, to keep the
+// two screens decoupled. A member's ring shows their share of the daily
+// category-contests won so far this run: total_wins / daysElapsed. wins
+// span all 4 categories, so the ratio can exceed 1.0 — clamped to 100%.
+// daysElapsed is 1-indexed (run start = day 1), capped at 7 (weekly runs),
+// divisor floored at 1 for the just-started / clock-skew edge case.
+function winsRingPct(totalWins: number, runStart: string): number {
   const msPerDay = 1000 * 60 * 60 * 24;
-  const days = Math.max(
-    1,
-    Math.round(
-      (new Date(runEnd).getTime() - new Date(runStart).getTime()) / msPerDay,
-    ),
-  );
-  let dailyMax = 0;
-  if (pack.steps_enabled) dailyMax += 10;
-  if (pack.workouts_enabled) dailyMax += 30; // up to 2 workouts × 15 pts
-  if (pack.calories_enabled) dailyMax += 10;
-  if (pack.water_enabled) dailyMax += 8;
-  return dailyMax * days;
-}
-
-function miniRingPct(weeklyPoints: number, maxPoints: number): number {
-  if (maxPoints === 0) return 0;
-  return Math.min(100, Math.round((weeklyPoints / maxPoints) * 100));
-}
-
-function packDailyMax(pack: Pack): number {
-  let max = 0;
-  if (pack.steps_enabled) max += 10;
-  if (pack.workouts_enabled) max += 15;
-  if (pack.calories_enabled) max += 10;
-  if (pack.water_enabled) max += 8;
-  return max;
+  const start = new Date(runStart + "T12:00:00").getTime();
+  const rawDays = Math.floor((Date.now() - start) / msPerDay) + 1;
+  const daysElapsed = Math.min(7, Math.max(1, rawDays));
+  return Math.min(100, Math.max(0, (totalWins / daysElapsed) * 100));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,13 +125,13 @@ const MEMBER_RING_STROKE = 6;
 // route.
 function MemberCard({
   entry,
-  maxPoints,
+  runStart,
   currentUserId,
   leaderId,
   currentUser,
 }: {
-  entry: HomeScore;
-  maxPoints: number;
+  entry: MiniRingEntry;
+  runStart: string;
   currentUserId: string | undefined;
   leaderId: string | undefined;
   currentUser: {
@@ -148,17 +141,12 @@ function MemberCard({
   } | null;
 }) {
   const router = useRouter();
-  const pct = miniRingPct(entry.weekly_points, maxPoints);
+  const pct = winsRingPct(entry.total_wins, runStart);
   const isMe = entry.user_id === currentUser?.id;
   const displayName =
     isMe && currentUser ? currentUser.displayName : entry.display_name;
   const avatarUrl =
     isMe && currentUser ? currentUser.avatarUrl : entry.avatar_url;
-  // Pass 25-followup-E.2.a-home-polish: narrowed tap region. Only the
-  // avatar (PackMemberDisplay) is wrapped in a Pressable → profile.
-  // Name + meta lines fall through to the card-level TouchableOpacity →
-  // Pack Detail. Was: entire cell wrapped → profile (overrode card tap).
-  const isLeader = entry.rank === 1;
   const nameColor = isMe ? colors.self : colors.member;
   return (
     <View style={miniRingS.memberCard}>
@@ -189,67 +177,84 @@ function MemberCard({
           showRank={false}
         />
       </TouchableOpacity>
-      <Text
-        style={[miniRingS.memberName, { color: nameColor }]}
-        numberOfLines={1}
-      >
-        {displayName}
-      </Text>
-      <Text style={miniRingS.memberMeta} numberOfLines={1}>
+      <View style={miniRingS.nameLine}>
+        {entry.isWinsLeader && (
+          <Crown
+            size={12}
+            color={colors.leader}
+            strokeWidth={2}
+            style={{ marginRight: 3 }}
+          />
+        )}
         <Text
-          style={{
-            color: isLeader ? colors.leader : nameColor,
-            fontWeight: "700",
-          }}
+          style={[miniRingS.memberName, { color: nameColor }]}
+          numberOfLines={1}
         >
-          #{entry.rank}
+          {displayName}
         </Text>
-        {` · ${entry.weekly_points} pts`}
+      </View>
+      <Text style={miniRingS.memberMeta} numberOfLines={1}>
+        {entry.total_wins} {entry.total_wins === 1 ? "win" : "wins"}
       </Text>
     </View>
   );
 }
 
 function MiniRings({
-  scores,
-  pack,
+  members,
+  rankedMembers,
   runStart,
-  runEnd,
   currentUserId,
 }: {
-  scores: HomeScore[];
-  pack: Pack;
+  members: HomeMember[];
+  rankedMembers: MemberWinsCount[];
   runStart: string;
-  runEnd: string;
   currentUserId: string | undefined;
 }) {
   const { user: currentUser } = useCurrentUser();
-  const maxPoints = maxRunPointsForPeriod(pack, runStart, runEnd);
 
-  // Sort: pts desc, alpha within same-pts groups (deterministic tie order).
-  // The optimistic-update overlay in DarkPackCard recomputes ranks after
-  // re-sort; MemberCard reads entry.rank directly, so the gold-leader and
-  // top-3 badges stay correct after a self-log without a full refetch.
-  const sorted = [...scores].sort((a, b) =>
-    b.weekly_points !== a.weekly_points
-      ? b.weekly_points - a.weekly_points
-      : a.display_name.localeCompare(b.display_name),
-  );
+  // rankedMembers is wins-desc; join each to its roster row for display.
+  // Filtered to the current roster — the standings hook also counts
+  // ex-members who won days, but those shouldn't appear as ghost avatars.
+  // Competition ranks (1,1,3,…) by total_wins; the crown shows on rank-1
+  // members with > 0 wins (at 0 wins everyone is "rank 1" — meaningless).
+  const memberById = new Map(members.map((m) => [m.user_id, m]));
+  const rankedRoster = rankedMembers.filter((rm) => memberById.has(rm.userId));
+  const entries: MiniRingEntry[] = [];
+  for (let i = 0; i < rankedRoster.length; i++) {
+    const rm = rankedRoster[i];
+    const m = memberById.get(rm.userId)!;
+    const rank =
+      i > 0 && rankedRoster[i - 1].totalWins === rm.totalWins
+        ? entries[i - 1].rank
+        : i + 1;
+    entries.push({
+      user_id: rm.userId,
+      display_name: m.display_name,
+      avatar_url: m.avatar_url,
+      total_wins: rm.totalWins,
+      rank,
+      isWinsLeader: rank === 1 && rm.totalWins > 0,
+    });
+  }
 
-  if (sorted.length === 0) return null;
+  if (entries.length === 0) return null;
 
-  const leaderId = sorted[0].user_id;
+  // Gold ring identity goes to the top-of-list member, but only when there
+  // are real wins (mirrors the crown + status-line "No wins yet").
+  const leaderId =
+    entries[0].total_wins > 0 ? entries[0].user_id : undefined;
 
   // Solo-pack: center a single card. ScrollView with one child left-aligns
   // and looks broken; the standalone <View> matches the prior solo layout
   // visually (no scroll affordance, just the centered ring).
-  if (sorted.length === 1) {
+  if (entries.length === 1) {
     return (
       <View style={miniRingS.wrapper}>
         <View style={miniRingS.solo}>
           <MemberCard
-            entry={sorted[0]}
-            maxPoints={maxPoints}
+            entry={entries[0]}
+            runStart={runStart}
             currentUserId={currentUserId}
             leaderId={leaderId}
             currentUser={currentUser}
@@ -266,22 +271,17 @@ function MiniRings({
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={miniRingS.scrollContent}
       >
-        {sorted.map((entry) => (
+        {entries.map((entry) => (
           <MemberCard
             key={entry.user_id}
             entry={entry}
-            maxPoints={maxPoints}
+            runStart={runStart}
             currentUserId={currentUserId}
             leaderId={leaderId}
             currentUser={currentUser}
           />
         ))}
       </ScrollView>
-      {/* Right-edge gradient overlay removed in Pass 25-followup-E.2.a-
-          home-polish-3-fix: it faded over the last avatar when scrolled to
-          the end. The 2.5-avatar partial visibility at initial scroll
-          position is the natural mobile convention for "scroll for more"
-          (App Store, Spotify, Apple Music etc.) — works without chrome. */}
     </View>
   );
 }
@@ -306,10 +306,16 @@ const miniRingS = StyleSheet.create({
     width: 110,
     gap: 6,
   },
+  nameLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   memberName: {
     fontSize: 13,
     fontWeight: "600",
     textAlign: "center",
+    flexShrink: 1,
   },
   memberMeta: {
     fontSize: 12,
@@ -427,37 +433,47 @@ function DarkPackCard({
   pack,
   data,
   currentUserId,
-  currentUserAuthId,
   onPress,
 }: {
   pack: Pack;
   data: HomePackData | undefined;
   currentUserId: string | undefined;
-  currentUserAuthId: string | undefined;
   onPress: () => void;
 }) {
-  const rawScores = data?.scores ?? [];
+  // One card = one pack = one legal hook call. Standings load per-card;
+  // the hook returns null while runId is null (no active run / not loaded).
+  const { data: standings } = usePackCategoryStandings(
+    pack.id,
+    data?.runId ?? null,
+    pack.timezone,
+    (data?.members ?? []).map((m) => m.user_id),
+  );
 
-  // Optimistic overlay dropped (Stage 3e-prep) — DarkPackCard reads straight
-  // from the data prop now. 3e-core rebuilds this card on the categories model.
-  const scores = rawScores;
+  const members = data?.members ?? [];
+  const hasActivity = members.length > 0;
 
-  const statusLine = buildRankStatus(scores, currentUserId);
-  const rawUrgency = data
-    ? buildUrgencyHint(scores, currentUserId, packDailyMax(pack), data.runEnd)
-    : null;
-  // Pass 21a-polish: keep only time-pressure hints, drop competitive filler
-  // ("can still catch up", "One strong day…"). End-of-day pressure has real
-  // utility; competitive filler doesn't carry weight at this surface.
-  // KEEP IN SYNC with src/lib/competitionCopy.ts buildUrgencyHint time outputs.
-  // Brittle string-match — see backlog: refactor buildUrgencyHint to return
-  // a typed result { kind: 'time_pressure' | 'competitive_filler', text }
-  // when that helper gets revisited for voice work.
-  const urgency =
-    rawUrgency && (rawUrgency.endsWith("h left") || rawUrgency === "Final day")
-      ? rawUrgency
-      : null;
-  const hasActivity = scores.length > 0;
+  // Status line — inline category-wins copy derived from standings.
+  // TODO(3c): extract to competitionCopy.ts once categories copy
+  // semantics are finalized.
+  const statusLine = (() => {
+    if (!standings) return "";
+    const ranked = standings.rankedMembers;
+    if (ranked.length === 0 || ranked.every((r) => r.totalWins === 0)) {
+      return "No wins yet";
+    }
+    const leaderWins = ranked[0].totalWins;
+    const leaders = ranked.filter((r) => r.totalWins === leaderWins);
+    const winsLabel = `${leaderWins} ${leaderWins === 1 ? "win" : "wins"}`;
+    if (leaders.some((r) => r.userId === currentUserId)) {
+      return leaders.length > 1
+        ? `Tied for the lead · ${winsLabel}`
+        : `You're leading · ${winsLabel}`;
+    }
+    const leaderName =
+      members.find((m) => m.user_id === ranked[0].userId)?.display_name ??
+      "Someone";
+    return `${leaderName} leads · ${winsLabel}`;
+  })();
 
   return (
     <TouchableOpacity
@@ -479,83 +495,18 @@ function DarkPackCard({
 
       {hasActivity && data ? (
         <>
-          {/* Row 2 — Mini weekly rings: visual competitive snapshot */}
+          {/* Row 2 — Mini wins rings: visual competitive snapshot */}
           <MiniRings
-            scores={scores}
-            pack={pack}
+            members={members}
+            rankedMembers={standings?.rankedMembers ?? []}
             runStart={data.runStart}
-            runEnd={data.runEnd}
             currentUserId={currentUserId}
           />
 
-          {/* Row 3 — Status: where you stand in the weekly race */}
-          <Text style={card.status}>{statusLine}</Text>
-          {urgency && <Text style={card.urgency}>{urgency}</Text>}
-
-          {/* Row 4 — Today's points delta (hidden when 0) */}
-          {/* TODO(voice review): "+{N} today" placeholder copy. */}
-          {/* Delta row (Pass 25-followup-E.2.a-home-polish-3): inline single-
-              line layout. "+N today" + separator + "M of N goals" + tiny dot
-              row, all siblings sharing one flexbox row. Replaces the polish-2
-              two-line treatment that wasted horizontal real estate on the
-              right half of each line. Conditional separator + goal section
-              when at least one goal is enabled; otherwise the row collapses
-              to just "+N today". Entire row hidden when showDelta === false. */}
-          {showDelta &&
-            (() => {
-              const segments = [
-                {
-                  key: "steps",
-                  enabled: pack.steps_enabled,
-                  hit: data.myAchievements.steps,
-                },
-                {
-                  key: "workout",
-                  enabled: pack.workouts_enabled,
-                  hit: data.myAchievements.workout,
-                },
-                {
-                  key: "calories",
-                  enabled: pack.calories_enabled,
-                  hit: data.myAchievements.calories,
-                },
-                {
-                  key: "water",
-                  enabled: pack.water_enabled,
-                  hit: data.myAchievements.water,
-                },
-              ].filter((s) => s.enabled);
-              const hitCount = segments.filter((s) => s.hit).length;
-              return (
-                <>
-                  <View style={card.divider} />
-                  <View style={card.deltaRow}>
-                    <Text style={card.todayDelta}>+{todayPts} today</Text>
-                    {segments.length > 0 && (
-                      <>
-                        <Text style={card.deltaSeparator}> · </Text>
-                        <Text style={card.goalCount}>
-                          {hitCount} of {segments.length} goals
-                        </Text>
-                        <View style={card.goalDots}>
-                          {segments.map((s) => (
-                            <View
-                              key={s.key}
-                              style={[
-                                card.goalDot,
-                                {
-                                  backgroundColor: s.hit ? C.success : C.border,
-                                },
-                              ]}
-                            />
-                          ))}
-                        </View>
-                      </>
-                    )}
-                  </View>
-                </>
-              );
-            })()}
+          {/* Row 3 — Status: where you stand in the wins race */}
+          {statusLine !== "" && (
+            <Text style={card.status}>{statusLine}</Text>
+          )}
         </>
       ) : (
         <Text style={card.noActivity}>{packsCopy.packCard.quietWeek}</Text>
@@ -947,6 +898,7 @@ export default function Home() {
           members,
           runStart: run.start_date,
           runEnd: run.end_date,
+          runId: run.id,
         };
       }),
     );
@@ -1017,7 +969,6 @@ export default function Home() {
               pack={item}
               data={packDataMap[item.id]}
               currentUserId={user?.id}
-              currentUserAuthId={user?.id}
               onPress={() => router.push(`/(app)/pack/${item.id}`)}
             />
           )}
