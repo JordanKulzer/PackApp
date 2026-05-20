@@ -34,7 +34,7 @@ import { showToast } from "../../../src/lib/toast";
 import { packToday } from "../../../src/lib/packDates";
 import { useAuthStore } from "../../../src/stores/authStore";
 import { usePack } from "../../../src/hooks/usePack";
-import { usePackHistory } from "../../../src/hooks/usePackHistory";
+import { usePackRunHistory } from "../../../src/hooks/usePackRunHistory";
 import { useIsPro } from "../../../src/hooks/useIsPro";
 import {
   FREE_HISTORY_WEEKS,
@@ -282,9 +282,9 @@ interface WeekDetailEntry {
   // output of rankWithTiebreakers, so each entry already carries its
   // tie-aware competition rank — consume e.rank directly, don't re-number.
   activeRanked?: (WeeklyEntry & { rank: number })[];
-  // Completed run: final snapshot from usePackHistory
+  // Completed run: final snapshot from usePackRunHistory
   winner?: { userId: string; displayName: string; totalPoints: number };
-  completedStandings?: import("../../../src/hooks/usePackHistory").RunStanding[];
+  completedStandings?: import("../../../src/hooks/usePackRunHistory").RunMemberStanding[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1011,7 +1011,7 @@ function PastRunsSection({
   isPro: boolean;
 }) {
   const router = useRouter();
-  const { completedRuns, isLoading } = usePackHistory(packId);
+  const { completedRuns, isLoading } = usePackRunHistory(packId);
   const [detailEntry, setDetailEntry] = useState<WeekDetailEntry | null>(null);
 
   const hasAnyHistory = !!activeRun || completedRuns.length > 0;

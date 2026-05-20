@@ -7,7 +7,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { usePackHistory } from "../../../../src/hooks/usePackHistory";
+import { usePackRunHistory } from "../../../../src/hooks/usePackRunHistory";
 import { colors } from "../../../../src/theme/colors";
 import { recap, den, t } from "../../../../src/constants/strings";
 import { formatName, getInitial } from "../../../../src/lib/displayName";
@@ -110,7 +110,7 @@ export default function RecapScreen() {
     packId: string;
   }>();
   const router = useRouter();
-  const { completedRuns, isLoading } = usePackHistory(packId ?? "");
+  const { completedRuns, isLoading } = usePackRunHistory(packId ?? "");
 
   if (isLoading) {
     return (
