@@ -3,8 +3,6 @@ import { create } from "zustand";
 // Mirrors the fields PackScreen needs for a MemberScore row,
 // minus user_id / display_name which are derived elsewhere.
 export interface OptimisticScore {
-  weekly_points: number; // full run total — drives ring animation and ranking
-  total_points: number;  // today only — drives Today section and goal bars
   streak_days: number;
   steps_achieved: boolean;
   workout_achieved: boolean;
@@ -18,8 +16,6 @@ export interface OptimisticScore {
 
 export function emptyOptimisticScore(): OptimisticScore {
   return {
-    weekly_points: 0,
-    total_points: 0,
     streak_days: 0,
     steps_achieved: false,
     workout_achieved: false,

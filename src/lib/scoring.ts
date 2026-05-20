@@ -38,55 +38,7 @@ export function getTimeUntilReset(): {
   return { days, hours, minutes, label };
 }
 
-// Point values — single source of truth for scoring logic
-export const POINTS = {
-  steps: 10,
-  workout: 15,
-  calories: 10,
-  water: 8,
-} as const;
-
-// Maximum workouts credited per user per day
+// Maximum workouts credited per user per day — semantic limit on workout
+// counting. Retained after the Categories pivot (Stage 2A) removed the
+// POINTS table, streak multipliers, and the points-calculation helpers.
 export const WORKOUT_MAX_DAILY = 2;
-
-// Points for N workouts in a day (pre-multiplier)
-export function workoutPoints(count: number): number {
-  return Math.min(count, WORKOUT_MAX_DAILY) * POINTS.workout;
-}
-
-// Streak multiplier thresholds
-export function getStreakMultiplier(streakDays: number): number {
-  if (streakDays >= 7) return 2.0;
-  if (streakDays >= 5) return 1.5;
-  if (streakDays >= 3) return 1.25;
-  return 1.0;
-}
-
-// Calculate points for a single activity with streak multiplier applied
-export function calculatePoints(
-  activityType: keyof typeof POINTS,
-  streakDays: number,
-): number {
-  const base = POINTS[activityType];
-  const multiplier = getStreakMultiplier(streakDays);
-  return Math.round(base * multiplier);
-}
-
-// Calculate total points from daily achievements
-export function calculateDailyTotal(
-  achievements: {
-    steps_achieved: boolean;
-    workout_achieved: boolean;
-    calories_achieved: boolean;
-    water_achieved: boolean;
-  },
-  streakDays: number,
-): number {
-  const multiplier = getStreakMultiplier(streakDays);
-  let total = 0;
-  if (achievements.steps_achieved) total += POINTS.steps;
-  if (achievements.workout_achieved) total += POINTS.workout;
-  if (achievements.calories_achieved) total += POINTS.calories;
-  if (achievements.water_achieved) total += POINTS.water;
-  return Math.round(total * multiplier);
-}

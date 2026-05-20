@@ -3,11 +3,11 @@
 // These activities upsert daily_scores directly since there is no separate log table.
 
 import { supabase } from "./supabase";
-import { POINTS, WORKOUT_MAX_DAILY, workoutPoints, getStreakMultiplier } from "./scoring";
+import { WORKOUT_MAX_DAILY } from "./scoring";
 import { computeStreakForRun } from "./computeStreak";
 import { notifyPackMembers } from "./notifications";
-import { detectAndSendThreatNotifications } from "./threatNotifications";
-import { detectAndRecordTookLead, type CrossingEvent } from "./competitiveDetection";
+import { type CrossingEvent } from "./competitiveDetection";
+import { detectAndSendCategoryThreats, type Category } from "./threatNotifications";
 import { packToday } from "./packDates";
 import { analytics } from "./analytics";
 import type { ActivityCategory } from "./activityCategoryMap";
@@ -85,7 +85,6 @@ export async function syncManualActivityToDailyScores(
         .eq("score_date", today)
         .maybeSingle();
       const prevStreakDays = existing?.streak_days ?? 0;
-      const oldTotalPoints = existing?.total_points ?? 0;
 
       // F.2: source-isolated counters. Manual writes go to manual_*_count;
       // HK writes go to hk_*_count; daily_scores.steps_count and
@@ -127,14 +126,6 @@ export async function syncManualActivityToDailyScores(
 
       const anyAchieved = steps_achieved || workout_achieved || calories_achieved || water_achieved;
       const streakDays = await computeStreakForRun(userId, run.id, today, anyAchieved, packTz);
-      const multiplier = getStreakMultiplier(streakDays);
-
-      const newTotalPoints = Math.round(
-        ((steps_achieved   ? POINTS.steps   : 0) +
-         workoutPoints(newWorkoutCount) +
-         (calories_achieved ? POINTS.calories : 0) +
-         (water_achieved   ? POINTS.water    : 0)) * multiplier,
-      );
 
       // Only send fields that changed — avoids clearing streak or other fields
       // that daily_scores may have set via HealthKit sync
@@ -142,9 +133,7 @@ export async function syncManualActivityToDailyScores(
         run_id: run.id,
         user_id: userId,
         score_date: today,
-        total_points: newTotalPoints,
         streak_days: streakDays,
-        streak_multiplier: multiplier,
         updated_at: new Date().toISOString(),
       };
 
@@ -172,10 +161,35 @@ export async function syncManualActivityToDailyScores(
         continue;
       }
 
-      const todayDelta = newTotalPoints - (existing?.total_points ?? 0);
-      if (todayDelta > 0) {
-        detectAndSendThreatNotifications(userId, pack.id, run.id, todayDelta).catch(() => {});
-      }
+      // Categories pivot (Stage 2C): per-category passed_you / tied_you
+      // threats. One CategoryDelta per call — this path logs one activity
+      // type. Workouts has no separate HK lane in the manual logger;
+      // workout_count is the unified before/after value.
+      const threatCategory: Category =
+        activityType === "steps"
+          ? "steps"
+          : activityType === "workout"
+            ? "workouts"
+            : "calories";
+      const threatBefore =
+        activityType === "steps"
+          ? (existing?.manual_steps_count ?? 0) + prevHkSteps
+          : activityType === "workout"
+            ? (existing?.workout_count ?? 0)
+            : (existing?.manual_calories_count ?? 0) + prevHkCalories;
+      const threatAfter =
+        activityType === "steps"
+          ? newManualSteps + prevHkSteps
+          : activityType === "workout"
+            ? newWorkoutCount
+            : newManualCalories + prevHkCalories;
+      detectAndSendCategoryThreats(userId, pack.id, run.id, packTz, [
+        {
+          category: threatCategory,
+          beforeValue: threatBefore,
+          afterValue: threatAfter,
+        },
+      ]).catch(() => {});
 
       // Feed event: once per day per pack, only when goal is newly crossed
       const nowAchieved =
@@ -189,25 +203,15 @@ export async function syncManualActivityToDailyScores(
       // wasAchievedBefore / nowAchieved already encode that transition for
       // the current activity_type.
       if (nowAchieved && !wasAchievedBefore) {
-        let isFirstEver = false;
-        if (oldTotalPoints === 0 && newTotalPoints > 0) {
-          const { count } = await supabase
-            .from("daily_scores")
-            .select("id", { count: "exact", head: true })
-            .eq("user_id", userId)
-            .gt("total_points", 0);
-          isFirstEver = (count ?? 0) <= 1;
-        }
         const goalHitToday = steps_achieved || workout_achieved || calories_achieved || water_achieved;
-        const pointsForActivity =
-          activityType === "steps"   ? POINTS.steps :
-          activityType === "workout" ? POINTS.workout :
-                                       POINTS.calories;
+        // Stage 2A: points_earned hard-zeroed and is_first_ever degraded to
+        // false — the points-based first-ever gate is gone with the POINTS
+        // table. A later sub-stage rebuilds is_first_ever on categories data.
         analytics.activityLogged({
           activity_type: activityType,
           source: "manual",
-          points_earned: Math.round(pointsForActivity * multiplier),
-          is_first_ever: isFirstEver,
+          points_earned: 0,
+          is_first_ever: false,
           streak_days_after: streakDays,
           goal_hit_today: goalHitToday,
         });
@@ -235,11 +239,6 @@ export async function syncManualActivityToDailyScores(
       // still capped at WORKOUT_MAX_DAILY (product-intentional);
       // steps/calories produce a row on every call. Index narrowing
       // in migration 20260513b ensures no 23505 from the dedup index.
-      const basePoints =
-        activityType === "steps"   ? POINTS.steps :
-        activityType === "workout" ? POINTS.workout :
-                                     POINTS.calories;
-      const pointsEarned = Math.round(basePoints * multiplier);
       // value stores the per-action delta — what the user just added in
       // THIS call — not the cumulative manual total. The cumulative total
       // lives in daily_scores.manual_*_count (the additive write target).
@@ -280,7 +279,7 @@ export async function syncManualActivityToDailyScores(
             user_id: userId,
             activity_type: activityType,
             value,
-            points_earned: pointsEarned,
+            points_earned: 0,
             entry_method: "manual",
             score_date: today,
             category: activityType === "workout" ? (category ?? "other") : null,
@@ -298,22 +297,15 @@ export async function syncManualActivityToDailyScores(
             packTimezone: packTz,
             feedItemId: insertedRows[0].id,
             activityType,
-            pointsEarned,
+            pointsEarned: 0,
             scoreDate: today,
           });
           notifyPackMembers(userId, pack.id, {
             kind: "goal",
             activityType,
-            pointsEarned,
           }).catch(() => {});
         }
       }
-
-      // Pass 25-followup-E.2.a.ii: lib-side took_lead detection runs per
-      // pack after the upsert. Coexists with fetchFeedback's INSERT in
-      // LogSheet (partial unique index dedups). Resolves HK silence and
-      // prevRank-within-session via 23505-based dedup.
-      detectAndRecordTookLead(userId, pack.id, run.id, packTz).catch(() => {});
     }
   } catch (err) {
     console.error("[logActivity] syncManualActivityToDailyScores error:", err);

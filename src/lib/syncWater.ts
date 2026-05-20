@@ -1,10 +1,9 @@
 import { supabase } from "./supabase";
-import { POINTS, WORKOUT_MAX_DAILY, getStreakMultiplier } from "./scoring";
 import { computeStreakForRun } from "./computeStreak";
 import { packToday, deviceLocalToday } from "./packDates";
 import { notifyPackMembers } from "./notifications";
-import { detectAndSendThreatNotifications } from "./threatNotifications";
-import { detectAndRecordTookLead, type CrossingEvent } from "./competitiveDetection";
+import { type CrossingEvent } from "./competitiveDetection";
+import { detectAndSendCategoryThreats } from "./threatNotifications";
 import { analytics } from "./analytics";
 
 export async function syncWaterToDailyScores(userId: string): Promise<CrossingEvent[]> {
@@ -68,7 +67,7 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
       const { data: existing } = await supabase
         .from("daily_scores")
         .select(
-          "total_points, water_achieved, steps_achieved, workout_achieved, workout_count, calories_achieved, streak_days",
+          "total_points, water_achieved, steps_achieved, workout_achieved, workout_count, calories_achieved, streak_days, manual_water_count, hk_water_count",
         )
         .eq("run_id", run.id)
         .eq("user_id", userId)
@@ -76,7 +75,6 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
         .single();
       const prevStreakDays = existing?.streak_days ?? 0;
       const prevWaterAchieved = existing?.water_achieved ?? false;
-      const oldTotalPoints = existing?.total_points ?? 0;
 
       const anyAchieved =
         water_achieved ||
@@ -84,17 +82,6 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
         (existing?.workout_achieved ?? false) ||
         (existing?.calories_achieved ?? false);
       const streakDays = await computeStreakForRun(userId, run.id, today, anyAchieved, packTz);
-      const multiplier = getStreakMultiplier(streakDays);
-
-      const wCount = existing?.workout_count ?? 0;
-      const basePointsWithoutWater =
-        (existing?.steps_achieved ? POINTS.steps : 0) +
-        Math.min(wCount, WORKOUT_MAX_DAILY) * POINTS.workout +
-        (existing?.calories_achieved ? POINTS.calories : 0);
-      const waterPoints = water_achieved ? POINTS.water : 0;
-      const newTotalPoints = Math.round(
-        (basePointsWithoutWater + waterPoints) * multiplier,
-      );
 
       const { error: upsertError } = await supabase.from("daily_scores").upsert(
         {
@@ -103,9 +90,7 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
           score_date: today,
           water_achieved,
           manual_water_count: Math.round(trueTotalOz),
-          total_points: newTotalPoints,
           streak_days: streakDays,
-          streak_multiplier: multiplier,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "run_id,user_id,score_date" },
@@ -115,33 +100,30 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
         console.error("[LogSheet] daily_scores upsert error:", upsertError);
       }
 
-      // Pass 25-followup-E.1-fix-2: mirror logActivity.ts:159-162 so water
-      // logs trigger the same server-side push pipeline as steps/workout/
-      // calories. Covers took_lead + passed_you + tied_you + one_action_away
-      // for water-only crossings — previously silent because water flowed
-      // only through fetchFeedback's (now-removed) client-side push.
-      const todayDelta = newTotalPoints - oldTotalPoints;
-      if (todayDelta > 0) {
-        detectAndSendThreatNotifications(userId, pack.id, run.id, todayDelta).catch(() => {});
-      }
+      // Categories pivot (Stage 2C): per-category passed_you / tied_you
+      // threats. Water's before value is the prior manual + hk lanes; the
+      // after value swaps the manual lane for this sync's trueTotalOz.
+      const oldManualWater = existing?.manual_water_count ?? 0;
+      const currentHkWater = existing?.hk_water_count ?? 0;
+      detectAndSendCategoryThreats(userId, pack.id, run.id, packTz, [
+        {
+          category: "water",
+          beforeValue: oldManualWater + currentHkWater,
+          afterValue: Math.round(trueTotalOz) + currentHkWater,
+        },
+      ]).catch(() => {});
 
       // ── Pass 9 funnel: activity_logged (water) + streak_milestone ──
       // Transition gate uses `existing` (fresh DB read above), never in-memory.
+      // Stage 2A: points_earned hard-zeroed and is_first_ever degraded to
+      // false — the points-based first-ever gate is gone with the POINTS
+      // table. A later sub-stage rebuilds is_first_ever on categories data.
       if (water_achieved && !prevWaterAchieved) {
-        let isFirstEver = false;
-        if (oldTotalPoints === 0 && newTotalPoints > 0) {
-          const { count } = await supabase
-            .from("daily_scores")
-            .select("id", { count: "exact", head: true })
-            .eq("user_id", userId)
-            .gt("total_points", 0);
-          isFirstEver = (count ?? 0) <= 1;
-        }
         analytics.activityLogged({
           activity_type: "water",
           source: "manual",
-          points_earned: Math.round(POINTS.water * multiplier),
-          is_first_ever: isFirstEver,
+          points_earned: 0,
+          is_first_ever: false,
           streak_days_after: streakDays,
           goal_hit_today: anyAchieved,
         });
@@ -163,8 +145,6 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
       }
 
       if (water_achieved) {
-        const wPoints = Math.round(POINTS.water * multiplier);
-
         // ── activity_feed idempotent insert — race-safe via 23505 catch ────
         //
         // ANCHOR EXPLANATION (referenced by 4 other call sites in
@@ -217,7 +197,7 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
             user_id: userId,
             activity_type: "water",
             value: Math.round(trueTotalOz),
-            points_earned: wPoints,
+            points_earned: 0,
             entry_method: "manual",
             score_date: today,
           })
@@ -237,21 +217,16 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
             packTimezone: packTz,
             feedItemId: insertedRows[0].id,
             activityType: "water",
-            pointsEarned: wPoints,
+            pointsEarned: 0,
             scoreDate: today,
           });
           notifyPackMembers(userId, pack.id, {
             kind: "goal",
             activityType: "water",
-            pointsEarned: wPoints,
           }).catch(() => {});
         }
       }
 
-      // Pass 25-followup-E.2.a.ii: lib-side took_lead detection per pack.
-      // Mirrors logActivity.ts pattern; HK silence + prevRank-within-session
-      // resolved by 23505-based dedup.
-      detectAndRecordTookLead(userId, pack.id, run.id, packTz).catch(() => {});
     }
   } catch (err) {
     console.error("[LogSheet] syncWaterToDailyScores error:", err);

@@ -24,7 +24,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuthStore } from "../stores/authStore";
 import { useScoreStore } from "../stores/scoreStore";
 import { supabase } from "../lib/supabase";
-import { POINTS, WORKOUT_MAX_DAILY } from "../lib/scoring";
 import { syncManualActivityToDailyScores } from "../lib/logActivity";
 import { packToday, deviceLocalToday } from "../lib/packDates";
 import {
@@ -687,7 +686,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     if (hookData.packRun && hookData.localScore) {
       patchMyScore(hookData.packRun.packId, {
         ...hookData.localScore,
-        weekly_points: hookData.localWeeklyPoints,
       });
     }
   }, [hookData]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1021,23 +1019,11 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     // fresh-day-start (when packRun resolves null until run is fetched)
     // doesn't lose the optimistic UI update. patchMyScore alone stays
     // gated since it requires packRun.packId.
-    const base = localScore ?? EMPTY_LOCAL_SCORE;
-    const newTotalPoints = Math.round(
-      ((base.steps_achieved ? POINTS.steps : 0) +
-        Math.min(newWorkoutCount, WORKOUT_MAX_DAILY) * POINTS.workout +
-        (base.calories_achieved ? POINTS.calories : 0) +
-        (base.water_achieved ? POINTS.water : 0)) *
-        (base.streak_multiplier ?? 1),
-    );
-    const pointsDelta = newTotalPoints - (localScore?.total_points ?? 0);
-    const newWeeklyPoints = localWeeklyPoints + pointsDelta;
-    setLocalWeeklyPoints(newWeeklyPoints);
-
+    // Stage 2A: the optimistic points computation is gone with the POINTS
+    // table. The patch carries only count/achievement fields now.
     const patch = {
-      weekly_points: newWeeklyPoints,
       workout_achieved: true,
       workout_count: newWorkoutCount,
-      total_points: newTotalPoints,
     };
     setLocalScore((prev) => ({ ...(prev ?? EMPTY_LOCAL_SCORE), ...patch }));
     if (packRun) {
@@ -1070,10 +1056,8 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
       }));
       if (packRun && localScore) {
         patchMyScore(packRun.packId, {
-          weekly_points: localWeeklyPoints,
           workout_achieved: localScore.workout_achieved,
           workout_count: localScore.workout_count,
-          total_points: localScore.total_points,
         });
       }
     } finally {

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../lib/supabase";
 import { subscribeToAchievementInserts } from "../lib/realtimeSubscriptions";
-import { isCurrentlyLeading } from "../lib/competitiveDetection";
 
 // Pass 25-followup-E.2.b.iii: generalized from useUnpostedWins (daily_winner-
 // only) to query all achievement kinds within the 2-day posting window. The
@@ -99,74 +98,16 @@ export function useUnpostedAchievements(userId: string | undefined): {
       return;
     }
 
-    // Pass 25-followup-E.2.b.iii-fix-2: batched runs lookup for took_lead
-    // candidates. Banner gating (isCurrentlyLeading) needs run_id per pack
-    // but activity_feed → runs has no direct FK. One query for all
-    // took_lead candidate packIds builds the lookup map; per-row check
-    // reads from it. N+1 avoided.
-    const tookLeadPackIds = data
-      .filter((r) => r.activity_type === "took_lead")
-      .map((r) => r.pack_id);
-    let runIdByPack: Record<string, string> = {};
-    if (tookLeadPackIds.length > 0) {
-      const { data: runs } = await supabase
-        .from("runs")
-        .select("id, pack_id")
-        .in("pack_id", tookLeadPackIds)
-        .eq("status", "active");
-      for (const r of runs ?? []) {
-        runIdByPack[r.pack_id] = r.id;
-      }
-    }
-
     const result: UnpostedAchievement[] = [];
     for (const row of data) {
       const pack = row.packs as unknown as { name: string; timezone: string } | null;
       const tz = pack?.timezone ?? "UTC";
       const kind = row.activity_type as UnpostedAchievementKind;
       if (!passesDateFilter(kind, row.score_date, tz)) continue;
-      // took_lead-only: drop the row if the user is no longer #1 in the
-      // pack's active run. The banner is a "share NOW" affordance — once
-      // the lead is lost, the moment has passed (historic chat row remains).
-      // daily_winner / all_goals don't need this gate (yesterday-snapshot
-      // and event-emit semantics respectively).
-      let leadGap: number | undefined;
-      let opponentName: string | undefined;
-      if (kind === "took_lead") {
-        const runId = runIdByPack[row.pack_id];
-        if (!runId) continue;
-        const leading = await isCurrentlyLeading(userId, runId);
-        if (!leading) continue;
-
-        // Resolve opponent name from current leaderboard. Best-effort —
-        // fallback to undefined renders bare-gap subtitle.
-        try {
-          const { data: scoreRows } = await supabase
-            .from("daily_scores")
-            .select("user_id, total_points")
-            .eq("run_id", runId);
-          const weekly: Record<string, number> = {};
-          for (const r of scoreRows ?? []) {
-            weekly[r.user_id] = (weekly[r.user_id] ?? 0) + r.total_points;
-          }
-          const sorted = Object.entries(weekly)
-            .map(([uid, pts]) => ({ uid, pts }))
-            .sort((a, b) => b.pts - a.pts);
-          const opponentId = sorted[1]?.uid;
-          if (opponentId && (sorted[1]?.pts ?? 0) > 0) {
-            const { data: u } = await supabase
-              .from("users")
-              .select("display_name")
-              .eq("id", opponentId)
-              .maybeSingle();
-            opponentName = u?.display_name ?? undefined;
-          }
-          leadGap = typeof row.value === "number" ? row.value : undefined;
-        } catch (e) {
-          // Best-effort. Subtitle falls back to bare-gap or missing-gap render.
-          console.warn("[useUnpostedAchievements] opponent resolve failed", e);
-        }
-      }
+      // Categories pivot (Stage 2B): took_lead is dropped — the
+      // isCurrentlyLeading gate + points-based opponent/leadGap resolution
+      // are gone. Surviving took_lead rows are historical; they fall
+      // through as plain achievements with no leadGap/opponentName.
       result.push({
         feedItemId: row.id,
         kind,
@@ -175,7 +116,6 @@ export function useUnpostedAchievements(userId: string | undefined): {
         scoreDate: row.score_date,
         pointsEarned: row.points_earned,
         createdAt: row.created_at,
-        ...(kind === "took_lead" ? { leadGap, opponentName } : {}),
       });
     }
 

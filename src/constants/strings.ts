@@ -313,7 +313,6 @@ export const activity = {
     dayOf: "Day {current} of {total}",
     inDanger: "{hours} hours left on the trail",
     broken: "Off the trail. Get back on.",
-    multiplier: "{multiplier}× points",
   },
 } as const;
 
@@ -340,9 +339,10 @@ export const recap = {
   },
 
   subtitle: {
-    // Winner name comes from the headline above; subtitle is just margin.
-    margin: "Won by {pts} pts.",
-    soloPts: "{pts} pts on the trail.",
+    // Categories pivot: point margins no longer exist. Placeholder copy —
+    // voice review to refine. {pts} template token removed (no source data).
+    margin: "Most category wins.",
+    soloPts: "Solo on the trail.",
   },
 } as const;
 
@@ -458,7 +458,6 @@ export const userProfile = {
     // Legacy — kept as orphans for old-client compat during rollout.
     // Mirrors the queueHint orphan precedent from Pass 20e.
     streakLabel: "Streak",
-    pointsLabel: "Points",
     packsInCommonLabel: "Packs in common",
     // Self-view variant — when the caller is viewing their own profile.
     packsInCommonSelfLabel: "In packs",

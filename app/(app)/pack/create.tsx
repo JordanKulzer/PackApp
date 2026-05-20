@@ -20,7 +20,6 @@ import { supabase } from "../../../src/lib/supabase";
 import { useIsPro } from "../../../src/hooks/useIsPro";
 import { analytics } from "../../../src/lib/analytics";
 import { colors } from "../../../src/theme/colors";
-import { POINTS } from "../../../src/lib/scoring";
 import { getDeviceTimezone } from "../../../src/lib/packDates";
 import { onboarding } from "../../../src/constants/strings";
 import { ActivityToggleRow } from "../../../src/components/profile/ActivityToggleRow";
@@ -55,11 +54,6 @@ export default function CreatePack() {
   const [stepTarget, setStepTarget] = useState("10000");
   const [calorieTarget, setCalorieTarget] = useState("500");
   const [waterTarget, setWaterTarget] = useState("64");
-  const [stepPoints, setStepPoints] = useState(String(POINTS.steps));
-  const [workoutPoints, setWorkoutPoints] = useState(String(POINTS.workout));
-  const [caloriePoints, setCaloriePoints] = useState(String(POINTS.calories));
-  const [waterPoints, setWaterPoints] = useState(String(POINTS.water));
-  const [editingPoints, setEditingPoints] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [showScoringInfo, setShowScoringInfo] = useState(false);
 
@@ -179,52 +173,6 @@ export default function CreatePack() {
     }
   };
 
-  const clampPoints = (val: string) => {
-    const n = parseInt(val, 10);
-    if (isNaN(n)) return val;
-    return String(Math.min(50, Math.max(1, n)));
-  };
-
-  // Inline points-edit affordance for Pro users (steps/workouts/calories/water).
-  // Renders inside ActivityToggleRow's `expanded` slot below the optional
-  // target input. Editing state is managed by the parent (single
-  // editingPoints string keyed by activity name).
-  const renderPointsEditor = (
-    key: string,
-    value: string,
-    setValue: (v: string) => void,
-  ) => {
-    if (!isPro) return null;
-    if (editingPoints === key) {
-      return (
-        <View style={styles.pointsRow}>
-          <Text style={styles.pointsLabel}>Points:</Text>
-          <TextInput
-            style={styles.pointsInput}
-            keyboardType="number-pad"
-            value={value}
-            onChangeText={setValue}
-            onBlur={() => {
-              setValue(clampPoints(value));
-              setEditingPoints(null);
-            }}
-            autoFocus
-            maxLength={2}
-          />
-          <Text style={styles.pointsRange}>(1–50)</Text>
-        </View>
-      );
-    }
-    return (
-      <TouchableOpacity
-        style={styles.editPointsBtn}
-        onPress={() => setEditingPoints(key)}
-      >
-        <Text style={styles.editPointsText}>Edit points (+{value} pts)</Text>
-      </TouchableOpacity>
-    );
-  };
-
   return (
     <KeyboardAvoidingView
       style={styles.flex}
@@ -328,82 +276,60 @@ export default function CreatePack() {
 
           <ActivityToggleRow
             label="Steps"
-            description={`Target: ${stepTarget} steps (+${stepPoints} pts)`}
+            description={`Target: ${stepTarget} steps`}
             value={stepsEnabled}
             onValueChange={setStepsEnabled}
             expanded={
-              <>
-                <TextInput
-                  style={styles.inlineInput}
-                  placeholder="Step target"
-                  placeholderTextColor={C.textTertiary}
-                  keyboardType="number-pad"
-                  value={stepTarget}
-                  onChangeText={setStepTarget}
-                />
-                {renderPointsEditor("steps", stepPoints, setStepPoints)}
-              </>
+              <TextInput
+                style={styles.inlineInput}
+                placeholder="Step target"
+                placeholderTextColor={C.textTertiary}
+                keyboardType="number-pad"
+                value={stepTarget}
+                onChangeText={setStepTarget}
+              />
             }
           />
 
           <ActivityToggleRow
             label="Workouts"
-            description={`Any workout logged (+${workoutPoints} pts)`}
+            description="Any workout logged"
             value={workoutsEnabled}
             onValueChange={setWorkoutsEnabled}
-            expanded={
-              <>
-                {renderPointsEditor(
-                  "workouts",
-                  workoutPoints,
-                  setWorkoutPoints,
-                )}
-              </>
-            }
           />
 
           <ActivityToggleRow
             label="Active Calories"
-            description={`Target: ${calorieTarget} cal (+${caloriePoints} pts)`}
+            description={`Target: ${calorieTarget} cal`}
             value={caloriesEnabled}
             onValueChange={setCaloriesEnabled}
             expanded={
-              <>
-                <TextInput
-                  style={styles.inlineInput}
-                  placeholder="Calorie target"
-                  placeholderTextColor={C.textTertiary}
-                  keyboardType="number-pad"
-                  value={calorieTarget}
-                  onChangeText={setCalorieTarget}
-                />
-                {renderPointsEditor(
-                  "calories",
-                  caloriePoints,
-                  setCaloriePoints,
-                )}
-              </>
+              <TextInput
+                style={styles.inlineInput}
+                placeholder="Calorie target"
+                placeholderTextColor={C.textTertiary}
+                keyboardType="number-pad"
+                value={calorieTarget}
+                onChangeText={setCalorieTarget}
+              />
             }
           />
 
           <ActivityToggleRow
             label="Water"
-            description={`Target: ${waterTarget} oz (+${waterPoints} pts)`}
+            description={`Target: ${waterTarget} oz`}
             value={waterEnabled}
             onValueChange={setWaterEnabled}
             isLast
             expanded={
-              <>
-                <TextInput
-                  style={styles.inlineInput}
-                  placeholder="Water target (oz)"
-                  placeholderTextColor={C.textTertiary}
-                  keyboardType="number-pad"
-                  value={waterTarget}
-                  onChangeText={setWaterTarget}
-                />
-                {renderPointsEditor("water", waterPoints, setWaterPoints)}
-              </>
+              <TextInput
+                style={styles.inlineInput}
+                placeholder="Water target (oz)"
+                placeholderTextColor={C.textTertiary}
+                keyboardType="number-pad"
+                value={waterTarget}
+                onChangeText={setWaterTarget}
+              />
             }
           />
 
@@ -569,31 +495,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: "transparent",
   },
-  editPointsBtn: {
-    paddingVertical: 4,
-  },
-  editPointsText: { fontSize: 12, color: C.accent },
-  pointsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 4,
-    gap: 8,
-  },
-  pointsLabel: { fontSize: 13, color: C.textSecondary },
-  pointsInput: {
-    width: 52,
-    borderWidth: 1,
-    borderColor: C.accent,
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    fontSize: 14,
-    color: C.textPrimary,
-    backgroundColor: "transparent",
-    textAlign: "center",
-  },
-  pointsRange: { fontSize: 11, color: C.textTertiary },
-
   // Scoring — Pass 26-followup-3-followup-2: whole-row Pressable wraps the
   // teaser text + trailing info icon. flex: 1 on scoringText pushes the
   // icon to the row's trailing edge regardless of text length and lets

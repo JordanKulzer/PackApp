@@ -13,9 +13,8 @@ import { supabase } from "./supabase";
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type PackNotificationEvent =
-  | { kind: "goal"; activityType: "steps" | "workout" | "calories" | "water"; pointsEarned: number }
-  | { kind: "took_lead" }
-  | { kind: "all_goals"; totalPoints: number }
+  | { kind: "goal"; activityType: "steps" | "workout" | "calories" | "water" }
+  | { kind: "all_goals" }
   | { kind: "ownership_transferred"; newOwnerName: string }
   | { kind: "new_comment"; bodyPreview: string }
   // Fired from the Edit Pack save flow when goal targets change (Pass 20d,

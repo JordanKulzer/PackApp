@@ -9,11 +9,11 @@ import {
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "./supabase";
-import { POINTS, WORKOUT_MAX_DAILY, workoutPoints, getStreakMultiplier } from "./scoring";
+import { WORKOUT_MAX_DAILY } from "./scoring";
 import { computeStreakForRun } from "./computeStreak";
 import { notifyPackMembers } from "./notifications";
-import { detectAndSendThreatNotifications } from "./threatNotifications";
-import { detectAndRecordTookLead, type CrossingEvent } from "./competitiveDetection";
+import { type CrossingEvent } from "./competitiveDetection";
+import { detectAndSendCategoryThreats, type CategoryDelta } from "./threatNotifications";
 import { packToday, packDateRangeUTC } from "./packDates";
 import { getCategoryFromHKType } from "./activityCategoryMap";
 import { analytics } from "./analytics";
@@ -339,7 +339,6 @@ export async function syncHealthDataToSupabase(
     .eq("score_date", today)
     .maybeSingle();
 
-  const oldTodayScore = priorRow?.total_points ?? 0;
   const prevManualSteps = priorRow?.manual_steps_count ?? 0;
   const prevManualCalories = priorRow?.manual_calories_count ?? 0;
   const prevWorkoutCount = priorRow?.workout_count ?? 0;
@@ -377,21 +376,10 @@ export async function syncHealthDataToSupabase(
   const calories_achieved = pack.calories_enabled && totalCalories >= pack.calorie_target;
   const water_achieved = pack.water_enabled && waterOz >= pack.water_target_oz;
 
-  // Step 4: Base points (before multiplier)
-  const basePoints =
-    (steps_achieved ? POINTS.steps : 0) +
-    (pack.workouts_enabled ? workoutPoints(newWorkoutCount) : 0) +
-    (calories_achieved ? POINTS.calories : 0) +
-    (water_achieved ? POINTS.water : 0);
-
   // Step 5: Calculate streak via shared utility
   const anyToday =
     steps_achieved || workout_achieved || calories_achieved || water_achieved;
   const streakDays = await computeStreakForRun(userId, runId, today, anyToday, packTz);
-
-  // Step 6: Apply multiplier
-  const streakMultiplier = getStreakMultiplier(streakDays);
-  const total_points = Math.round(basePoints * streakMultiplier);
 
   // Step 7: Upsert to daily_scores
   const { error: upsertError } = await supabase.from("daily_scores").upsert(
@@ -399,9 +387,7 @@ export async function syncHealthDataToSupabase(
       run_id: runId,
       user_id: userId,
       score_date: today,
-      total_points,
       streak_days: streakDays,
-      streak_multiplier: streakMultiplier,
       steps_achieved,
       workout_achieved,
       calories_achieved,
@@ -424,11 +410,6 @@ export async function syncHealthDataToSupabase(
     throw upsertError;
   }
 
-  const todayDelta = total_points - oldTodayScore;
-  if (todayDelta > 0 && mode === "today") {
-    detectAndSendThreatNotifications(userId, packId, runId, todayDelta).catch(() => {});
-  }
-
   // ── Pass 9 funnel: activity_logged (B-style transition gating) + streak_milestone
   //
   // Fires only on newly-crossed achievement transitions (priorRow_X_achieved
@@ -437,34 +418,23 @@ export async function syncHealthDataToSupabase(
   // mode === "backfill" suppresses both events — these are user-action funnel
   // signals, not historical data fills.
   if (mode === "today") {
-    // is_first_ever shortcut: if priorRow had points, definitely not first.
-    // Otherwise run a single COUNT to verify across all runs/days. The
-    // post-upsert count includes the just-written row, so ≤1 means it's the
-    // only achievement row this user has ever produced.
-    let isFirstEver = false;
-    if (oldTodayScore === 0 && total_points > 0) {
-      const { count } = await supabase
-        .from("daily_scores")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", userId)
-        .gt("total_points", 0);
-      isFirstEver = (count ?? 0) <= 1;
-    }
-
+    // Stage 2A: points_earned hard-zeroed and is_first_ever degraded to
+    // false — the points-based first-ever gate is gone with the POINTS
+    // table. A later sub-stage rebuilds is_first_ever on categories data.
     const goalHitToday = steps_achieved || workout_achieved || calories_achieved || water_achieved;
     type TransitionedType = "steps" | "workout" | "calories" | "water";
-    const transitions: Array<{ type: TransitionedType; pointsEarned: number }> = [];
-    if (!prevStepsAchieved    && steps_achieved)    transitions.push({ type: "steps",    pointsEarned: Math.round(POINTS.steps    * streakMultiplier) });
-    if (!prevCaloriesAchieved && calories_achieved) transitions.push({ type: "calories", pointsEarned: Math.round(POINTS.calories * streakMultiplier) });
-    if (!prevWorkoutAchieved  && workout_achieved)  transitions.push({ type: "workout",  pointsEarned: Math.round(POINTS.workout  * streakMultiplier) });
-    if (!prevWaterAchieved    && water_achieved)    transitions.push({ type: "water",    pointsEarned: Math.round(POINTS.water    * streakMultiplier) });
+    const transitions: Array<{ type: TransitionedType }> = [];
+    if (!prevStepsAchieved    && steps_achieved)    transitions.push({ type: "steps" });
+    if (!prevCaloriesAchieved && calories_achieved) transitions.push({ type: "calories" });
+    if (!prevWorkoutAchieved  && workout_achieved)  transitions.push({ type: "workout" });
+    if (!prevWaterAchieved    && water_achieved)    transitions.push({ type: "water" });
 
     for (const t of transitions) {
       analytics.activityLogged({
         activity_type: t.type,
         source: "healthkit",
-        points_earned: t.pointsEarned,
-        is_first_ever: isFirstEver,
+        points_earned: 0,
+        is_first_ever: false,
         streak_days_after: streakDays,
         goal_hit_today: goalHitToday,
       });
@@ -487,6 +457,33 @@ export async function syncHealthDataToSupabase(
         prior_milestone_days: priorMilestone,
       });
     }
+
+    // Categories pivot (Stage 2C): per-category passed_you / tied_you
+    // threats. mode==="today" only (this whole block) — backfill must not
+    // surface stale crossings as live notifications. Workouts is handled
+    // by syncWorkoutsToSupabase; water is not HK-sourced for Pack.
+    const oldHkSteps = priorRow?.hk_steps_count ?? 0;
+    const oldHkCalories = priorRow?.hk_calories_count ?? 0;
+    const threatChanges: CategoryDelta[] = [];
+    if (newHkSteps !== oldHkSteps) {
+      threatChanges.push({
+        category: "steps",
+        beforeValue: oldHkSteps + prevManualSteps,
+        afterValue: newHkSteps + prevManualSteps,
+      });
+    }
+    if (newHkCalories !== oldHkCalories) {
+      threatChanges.push({
+        category: "calories",
+        beforeValue: oldHkCalories + prevManualCalories,
+        afterValue: newHkCalories + prevManualCalories,
+      });
+    }
+    if (threatChanges.length > 0) {
+      detectAndSendCategoryThreats(userId, packId, runId, packTz, threatChanges).catch(
+        () => {},
+      );
+    }
   }
 
   // Step 7: Log individual achieved activities to activity_logs
@@ -503,7 +500,7 @@ export async function syncHealthDataToSupabase(
     idempotentRows.push({
       user_id: userId,
       activity_type: "steps",
-      points_earned: Math.round(POINTS.steps * streakMultiplier),
+      points_earned: 0,
       activity_date: today,
       healthkit_data: { raw_value: Math.round(steps) },
     });
@@ -512,7 +509,7 @@ export async function syncHealthDataToSupabase(
     idempotentRows.push({
       user_id: userId,
       activity_type: "calories",
-      points_earned: Math.round(POINTS.calories * streakMultiplier),
+      points_earned: 0,
       activity_date: today,
       healthkit_data: { raw_value: Math.round(calories) },
     });
@@ -521,7 +518,7 @@ export async function syncHealthDataToSupabase(
     idempotentRows.push({
       user_id: userId,
       activity_type: "water",
-      points_earned: Math.round(POINTS.water * streakMultiplier),
+      points_earned: 0,
       activity_date: today,
       healthkit_data: { raw_value: Math.round(waterOz) },
     });
@@ -553,7 +550,7 @@ export async function syncHealthDataToSupabase(
       await supabase.from("activity_logs").insert({
         user_id: userId,
         activity_type: "workout",
-        points_earned: Math.round(POINTS.workout * streakMultiplier),
+        points_earned: 0,
         activity_date: today,
         healthkit_data: { raw_value: cappedWorkouts, synced_workout_ids: [] },
       });
@@ -580,11 +577,11 @@ export async function syncHealthDataToSupabase(
   // The streak benefit lands silently — exactly the right shape for
   // recovering missed activity without surfacing stale events.
   // ──────────────────────────────────────────────────────────────────────
-  const achievedTypes: Array<{ type: string; points: number }> = [];
-  if (steps_achieved)    achievedTypes.push({ type: "steps",    points: Math.round(POINTS.steps    * streakMultiplier) });
-  if (workout_achieved)  achievedTypes.push({ type: "workout",  points: Math.round(POINTS.workout  * streakMultiplier) });
-  if (calories_achieved) achievedTypes.push({ type: "calories", points: Math.round(POINTS.calories * streakMultiplier) });
-  if (water_achieved)    achievedTypes.push({ type: "water",    points: Math.round(POINTS.water    * streakMultiplier) });
+  const achievedTypes: Array<{ type: string }> = [];
+  if (steps_achieved)    achievedTypes.push({ type: "steps" });
+  if (workout_achieved)  achievedTypes.push({ type: "workout" });
+  if (calories_achieved) achievedTypes.push({ type: "calories" });
+  if (water_achieved)    achievedTypes.push({ type: "water" });
 
   const rawValues: Record<string, number> = {
     steps: totalSteps,
@@ -594,7 +591,7 @@ export async function syncHealthDataToSupabase(
   };
 
   if (mode === "today") {
-    for (const { type, points } of achievedTypes) {
+    for (const { type } of achievedTypes) {
       // Workouts are owned by syncWorkoutsToSupabase, which tracks per-sample
       // HealthKit UUIDs and inserts one feed row per credited sample. Skipping
       // here avoids the redundant + race-prone count-based path that was the
@@ -612,7 +609,7 @@ export async function syncHealthDataToSupabase(
           user_id: userId,
           activity_type: type,
           value: rawValues[type] ?? 0,
-          points_earned: points,
+          points_earned: 0,
           entry_method: "healthkit",
           score_date: today,
         })
@@ -629,13 +626,12 @@ export async function syncHealthDataToSupabase(
           packTimezone: packTz,
           feedItemId: insertedRows[0].id,
           activityType: type as "steps" | "calories" | "water",
-          pointsEarned: points,
+          pointsEarned: 0,
           scoreDate: today,
         });
         notifyPackMembers(userId, packId, {
           kind: "goal",
           activityType: type as "steps" | "calories" | "water",
-          pointsEarned: points,
         }).catch(() => {});
       }
     }
@@ -659,7 +655,7 @@ export async function syncHealthDataToSupabase(
           user_id: userId,
           activity_type: "all_goals",
           value: enabledGoalCount,
-          points_earned: total_points,
+          points_earned: 0,
           entry_method: "healthkit",
           score_date: today,
         })
@@ -676,21 +672,14 @@ export async function syncHealthDataToSupabase(
           packTimezone: packTz,
           feedItemId: insertedAllGoals[0].id,
           activityType: "all_goals",
-          pointsEarned: total_points,
+          pointsEarned: 0,
           scoreDate: today,
         });
         notifyPackMembers(userId, packId, {
           kind: "all_goals",
-          totalPoints: total_points,
         }).catch(() => {});
       }
     }
-
-    // Pass 25-followup-E.2.a.ii: lib-side took_lead detection per pack.
-    // Skipped on backfill mode — past-day score changes shouldn't surface
-    // as live took_lead events. Matches the backfill suppression rationale
-    // documented in the activity_feed-insert section above.
-    detectAndRecordTookLead(userId, packId, runId, packTz).catch(() => {});
   }
 
   console.log("[HealthKit Sync] Success:", {
@@ -707,9 +696,7 @@ export async function syncHealthDataToSupabase(
     workout_achieved,
     calories_achieved,
     water_achieved,
-    total_points,
     streakDays,
-    streakMultiplier,
   });
 
   return crossings;
@@ -806,7 +793,7 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEv
       // Get current workout_count for this date/run
       const { data: scoreRow } = await supabase
         .from("daily_scores")
-        .select("workout_count, total_points, steps_achieved, calories_achieved, water_achieved, streak_multiplier, hk_workout_count")
+        .select("workout_count, steps_achieved, calories_achieved, water_achieved, hk_workout_count")
         .eq("run_id", run.id)
         .eq("user_id", userId)
         .eq("score_date", date)
@@ -820,11 +807,7 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEv
       const newCount = currentCount + toCredit.length;
       const newSyncedIds = [...syncedIds, ...toCredit.map((s) => s.identifier)];
 
-      const streakMultiplier = scoreRow?.streak_multiplier ?? 1;
-      const pointsDelta = toCredit.length * Math.round(POINTS.workout * streakMultiplier);
-      const newTotalPoints = (scoreRow?.total_points ?? 0) + pointsDelta;
-
-      // Upsert daily_scores with new workout count and updated total
+      // Upsert daily_scores with new workout count
       await supabase.from("daily_scores").upsert(
         {
           run_id: run.id,
@@ -833,11 +816,20 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEv
           workout_count: newCount,
           hk_workout_count: (scoreRow?.hk_workout_count ?? 0) + toCredit.length,
           workout_achieved: newCount >= 1,
-          total_points: newTotalPoints,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "run_id,user_id,score_date" },
       );
+
+      // Categories pivot (Stage 2C): workout threats. Today only — this
+      // path also credits yesterday's workouts, but detectAndSendCategoryThreats
+      // compares against today's daily_scores, so a yesterday delta would
+      // mismatch. workout_count is the unified before/after value.
+      if (date === todayStr && newCount !== currentCount) {
+        detectAndSendCategoryThreats(userId, pack_id, run.id, packTz, [
+          { category: "workouts", beforeValue: currentCount, afterValue: newCount },
+        ]).catch(() => {});
+      }
 
       // Update activity_logs — write synced_workout_ids back to the tracking row.
       // The row was already read as logRow above; update it if it exists, insert if not.
@@ -846,14 +838,14 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEv
           .from("activity_logs")
           .update({
             healthkit_data: { raw_value: newCount, synced_workout_ids: newSyncedIds },
-            points_earned: Math.round(POINTS.workout * streakMultiplier),
+            points_earned: 0,
           })
           .eq("id", logRow.id);
       } else {
         await supabase.from("activity_logs").insert({
           user_id: userId,
           activity_type: "workout",
-          points_earned: Math.round(POINTS.workout * streakMultiplier),
+          points_earned: 0,
           activity_date: date,
           healthkit_data: { raw_value: newCount, synced_workout_ids: newSyncedIds },
         });
@@ -896,7 +888,7 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEv
             user_id: userId,
             activity_type: "workout",
             value: newCount,
-            points_earned: Math.round(POINTS.workout * streakMultiplier),
+            points_earned: 0,
             entry_method: "healthkit",
             score_date: date,
             healthkit_uuid: sample.identifier,
@@ -920,24 +912,18 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEv
             packTimezone: packTz,
             feedItemId: insertedRows[0].id,
             activityType: "workout",
-            pointsEarned: Math.round(POINTS.workout * streakMultiplier),
+            pointsEarned: 0,
             scoreDate: date,
           });
           notifyPackMembers(userId, pack_id, {
             kind: "goal",
             activityType: "workout",
-            pointsEarned: Math.round(POINTS.workout * streakMultiplier),
           }).catch(() => {});
         }
       }
 
       console.log(`[WorkoutSync] credited ${toCredit.length} new workout(s) for ${date} in pack ${pack_id}`);
     }
-
-    // Pass 25-followup-E.2.a.ii: lib-side took_lead detection per pack.
-    // Fires after per-day workout iterations finish for this pack so the
-    // detection sees the latest daily_scores state.
-    detectAndRecordTookLead(userId, pack_id, run.id, packTz).catch(() => {});
   }
   return crossings;
 }

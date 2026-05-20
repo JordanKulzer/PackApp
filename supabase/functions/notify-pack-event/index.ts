@@ -31,9 +31,8 @@ type ActivityType = "steps" | "workout" | "calories" | "water";
 
 type NotificationEvent =
   // Broadcast (no recipients[] required)
-  | { kind: "goal"; activityType: ActivityType; pointsEarned: number }
-  | { kind: "all_goals"; totalPoints: number }
-  | { kind: "took_lead" }
+  | { kind: "goal"; activityType: ActivityType }
+  | { kind: "all_goals" }
   | { kind: "new_member"; newMemberName: string; packName: string }
   | { kind: "goals_updated"; nextRunStart: string }
   | { kind: "pack_renamed"; newName: string }
@@ -42,7 +41,14 @@ type NotificationEvent =
   | { kind: "tied_you"; rankAfter: number }
   | { kind: "one_action_away"; actionLabel: string }
   | { kind: "new_comment"; bodyPreview: string }
-  | { kind: "ownership_transferred"; newOwnerName: string };
+  | { kind: "ownership_transferred"; newOwnerName: string }
+  | {
+      kind: "category_threat";
+      actorName: string;
+      victimId: string;
+      threatKind: "passed_you" | "tied_you";
+      category: "steps" | "workouts" | "calories" | "water";
+    };
 
 interface RequestBody {
   packId: string;
@@ -53,7 +59,6 @@ interface RequestBody {
 const BROADCAST_KINDS = new Set([
   "goal",
   "all_goals",
-  "took_lead",
   "new_member",
   "goals_updated",
   "pack_renamed",
@@ -69,10 +74,10 @@ function prefKeyForEvent(kind: NotificationEvent["kind"]): string {
     case "goal":
     case "all_goals":
       return "goal_completed";
-    case "took_lead":
     case "passed_you":
     case "tied_you":
     case "one_action_away":
+    case "category_threat":
       return "overtaken";
     case "new_member":
     case "ownership_transferred":
@@ -121,17 +126,12 @@ function buildCopy(
         event.activityType === "workout"  ? "a workout" :
         event.activityType === "calories" ? "their calorie goal" :
                                             "their water goal";
-      return { title: actorName, body: `completed ${label} (+${event.pointsEarned} pts)` };
+      return { title: actorName, body: `completed ${label}` };
     }
     // TODO(7b): brand voice — currently uses generic register with 🔥 emoji.
     // See strings.ts push.* for wolf-voice patterns when authoring replacement.
     case "all_goals":
-      return { title: actorName, body: `completed all goals today 🔥 (${event.totalPoints} pts)` };
-    // TODO(7b): brand voice — currently uses generic competitive register
-    // with 👑 emoji. See strings.ts push.* for wolf-voice patterns when
-    // authoring replacement.
-    case "took_lead":
-      return { title: "👑 Lead Change", body: `${actorName} took the lead` };
+      return { title: actorName, body: `completed all goals today 🔥` };
     // TODO(7b): brand voice — currently uses generic competitive register
     // with 📉 emoji. See strings.ts push.* for wolf-voice patterns when
     // authoring replacement.
@@ -147,6 +147,18 @@ function buildCopy(
     // authoring replacement.
     case "one_action_away":
       return { title: "⚠️ Closing In", body: `${actorName} is ${event.actionLabel} away from passing you` };
+    // Categories pivot (Stage 2C): per-category passed_you / tied_you.
+    case "category_threat": {
+      const categoryLabel = {
+        steps: "Steps",
+        workouts: "Workouts",
+        calories: "Calories",
+        water: "Water",
+      }[event.category];
+      const verb =
+        event.threatKind === "passed_you" ? "passed you in" : "tied you in";
+      return { title: event.actorName, body: `${verb} ${categoryLabel}` };
+    }
     // Migrated to push.newMemberJoined (Pass 7a). Currently scaffolded but
     // disconnected — no firing site exists yet. When join-ping wiring lands,
     // the brand voice is already in place.

@@ -1,5 +1,4 @@
 import { View, Text, StyleSheet } from "react-native";
-import { getStreakMultiplier } from "../lib/scoring";
 
 interface StreakBadgeProps {
   days: number;
@@ -16,7 +15,6 @@ function getStreakColor(days: number): string {
 export function StreakBadge({ days, size = "md" }: StreakBadgeProps) {
   if (days === 0) return null;
 
-  const multiplier = getStreakMultiplier(days);
   const color = getStreakColor(days);
   const isSmall = size === "sm";
   const isLarge = size === "lg";
@@ -29,11 +27,6 @@ export function StreakBadge({ days, size = "md" }: StreakBadgeProps) {
       <Text style={[styles.days, isSmall && styles.daysSmall, isLarge && styles.daysLarge]}>
         {days}d
       </Text>
-      {multiplier > 1 && (
-        <Text style={[styles.multiplier, isSmall && styles.multiplierSmall]}>
-          {multiplier}x
-        </Text>
-      )}
     </View>
   );
 }
@@ -76,14 +69,5 @@ const styles = StyleSheet.create({
   },
   daysLarge: {
     fontSize: 17,
-  },
-  multiplier: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "rgba(255,255,255,0.85)",
-    marginLeft: 1,
-  },
-  multiplierSmall: {
-    fontSize: 9,
   },
 });

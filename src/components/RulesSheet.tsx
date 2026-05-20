@@ -132,33 +132,10 @@ export function RulesSheet({ visible, onClose, pack }: RulesSheetProps) {
                       ) : null}
                     </View>
                     <View style={s.activityRight}>
-                      <Text
-                        style={[s.activityPoints, !a.enabled && s.dim]}
-                      >
-                        {a.enabled ? `${a.pointValue} pts` : "Off"}
-                      </Text>
                       {a.enabled ? (
                         <Text style={s.activityGoal}>{a.goalDisplay}</Text>
                       ) : null}
                     </View>
-                  </View>
-                  {!isLast && <View style={s.divider} />}
-                </View>
-              );
-            })}
-
-            {/* Section 2 — Streak multipliers */}
-            <Text style={s.sectionTitle}>Streak multipliers</Text>
-            <Text style={s.sectionSubtitle}>
-              Keep your streak going to multiply points
-            </Text>
-            {rules.multiplierThresholds.map((tier, i) => {
-              const isLast = i === rules.multiplierThresholds.length - 1;
-              return (
-                <View key={tier.minDays}>
-                  <View style={s.activityRow}>
-                    <Text style={s.activityLabel}>{tier.label}</Text>
-                    <Text style={s.activityPoints}>{tier.mult}×</Text>
                   </View>
                   {!isLast && <View style={s.divider} />}
                 </View>
