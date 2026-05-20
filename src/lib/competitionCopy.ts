@@ -122,54 +122,6 @@ export function buildRankStatus(
   return `You're #${myRank} · ${gap} pts behind`;
 }
 
-// ─── Gap + today context line ──────────────────────────────────────────────────
-// Secondary line beneath the status headline.
-// Handles leading, tied-for-lead, behind, and tied-with-person-ahead cases.
-// Returns null for solo packs with no today points (caller shows nothing).
-// Accepts plain RankedEntry[] or pre-ranked RankedWithTiebreaker<>[] arrays.
-export function buildGapLine(
-  members: RankedEntry[],
-  myUserId: string | undefined,
-  todayPts: number,
-): string | null {
-  if (!myUserId || members.length === 0) return null;
-
-  const ranked = (members[0] as RankedWithTiebreaker<RankedEntry>).rank !== undefined
-    ? (members as RankedWithTiebreaker<RankedEntry>[])
-    : rankWithTiebreakers(members);
-
-  const myIndex = ranked.findIndex((r) => r.user_id === myUserId);
-  if (myIndex < 0) return null;
-
-  const me = ranked[myIndex];
-  const todaySuffix = todayPts > 0 ? ` · +${todayPts} today` : " · no points today";
-
-  // Solo pack
-  if (ranked.length === 1) return todayPts > 0 ? `+${todayPts} pts today` : null;
-
-  if (me.rank === 1) {
-    if (me.isTied) return `Tied for the lead${todaySuffix}`;
-    if (me.tiebreaker === "streak") return `Ahead by streak${todaySuffix}`;
-    if (me.tiebreaker === "time") return `Got there first${todaySuffix}`;
-    const lead = me.weekly_points - ranked[1].weekly_points;
-    if (lead === 0) return `Tied for the lead${todaySuffix}`;
-    return `${lead} pt lead${todaySuffix}`;
-  }
-
-  const ahead = ranked[myIndex - 1];
-  const gap = ahead.weekly_points - me.weekly_points;
-  const aheadName = formatName(ahead.display_name, ahead.rank);
-
-  if (gap === 0) {
-    if (me.isTied) return `Tied with ${aheadName}${todaySuffix}`;
-    if (ahead.tiebreaker === "streak") return `${aheadName} leads by streak${todaySuffix}`;
-    if (ahead.tiebreaker === "time") return `${aheadName} got there first${todaySuffix}`;
-    return `Tied with ${aheadName}${todaySuffix}`;
-  }
-
-  return `${gap} pts behind ${aheadName}${todaySuffix}`;
-}
-
 // ─── Urgency hint ─────────────────────────────────────────────────────────────
 // Contextual nudge beneath the status line on Home cards.
 // "One strong day could take the lead" only fires when the gap to #1 is
@@ -222,26 +174,5 @@ export function buildUrgencyHint(
     return "One strong day could move you up";
   }
 
-  return null;
-}
-
-// ─── Gain consequence text ────────────────────────────────────────────────────
-// Returns a formatted action string describing what earning `gain` pts achieves.
-// Compares gain against BOTH gapToFirst and gapToAhead so "take the lead" is
-// never shown when the gain would only advance a rank without reaching #1.
-// Returns null when gain cannot close either gap — caller uses a generic fallback.
-export function gainConsequenceText(
-  gain: number,
-  gapToAhead: number,
-  gapToFirst: number,
-  aheadName: string,
-  activityLabel: string,
-): string | null {
-  // Check gapToFirst before gapToAhead — when myRank===2 they are equal and
-  // the "take the lead" / "tie for #1" outcomes are preferred over "pass X".
-  if (gain > gapToFirst) return `${activityLabel} to take the lead`;
-  if (gain === gapToFirst) return `${activityLabel} to tie for #1`;
-  if (gain > gapToAhead) return `${activityLabel} to pass ${aheadName}`;
-  if (gain === gapToAhead) return `${activityLabel} to tie ${aheadName}`;
   return null;
 }
