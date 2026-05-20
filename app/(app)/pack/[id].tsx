@@ -34,7 +34,11 @@ import { showToast } from "../../../src/lib/toast";
 import { packToday } from "../../../src/lib/packDates";
 import { useAuthStore } from "../../../src/stores/authStore";
 import { usePack } from "../../../src/hooks/usePack";
-import { usePackRunHistory } from "../../../src/hooks/usePackRunHistory";
+import {
+  usePackRunHistory,
+  type RunMemberStanding,
+  type RunCategoryWinner,
+} from "../../../src/hooks/usePackRunHistory";
 import { useIsPro } from "../../../src/hooks/useIsPro";
 import {
   FREE_HISTORY_WEEKS,
@@ -69,10 +73,14 @@ import {
   type PackCategoryStandings,
 } from "../../../src/hooks/usePackCategoryStandings";
 import { Crown } from "lucide-react-native";
-import { CATEGORIES, type Category } from "../../../src/lib/categories";
+import {
+  CATEGORIES,
+  CATEGORY_LABELS,
+  type Category,
+} from "../../../src/lib/categories";
 import { useCurrentUser } from "../../../src/context/CurrentUserContext";
 import { useRefreshCurrentUserOnFocus } from "../../../src/hooks/useRefreshCurrentUserOnFocus";
-import { den, packs as packsCopy, packEdit, t } from "../../../src/constants/strings";
+import { den, packEdit, t } from "../../../src/constants/strings";
 import { subscribeToRunScores } from "../../../src/lib/realtimeSubscriptions";
 
 if (
@@ -264,7 +272,6 @@ function formatRunRange(startedAt: string, endedAt: string): string {
 interface DayMemberScore {
   userId: string;
   displayName: string;
-  totalPoints: number;
   stepsCount: number;
   caloriesCount: number;
   waterOzCount: number;
@@ -282,13 +289,13 @@ interface WeekDetailEntry {
   startedAt: string;
   endedAt: string;
   isActive: boolean;
-  // Active run: current rankings from the Compete tab. Caller passes the
-  // output of rankWithTiebreakers, so each entry already carries its
-  // tie-aware competition rank — consume e.rank directly, don't re-number.
-  activeRanked?: (WeeklyEntry & { rank: number })[];
-  // Completed run: final snapshot from usePackRunHistory
-  winner?: { userId: string; displayName: string; totalPoints: number };
-  completedStandings?: import("../../../src/hooks/usePackRunHistory").RunMemberStanding[];
+  // Unified standings — RunMemberStanding[] for both active and completed
+  // runs. Active: the caller derives it from categoryStandings. Completed:
+  // run.standings from usePackRunHistory.
+  standings: RunMemberStanding[];
+  // Per-category run winners — completed runs only (run.categoryWinners
+  // from usePackRunHistory). undefined for active runs.
+  categoryWinners?: RunCategoryWinner[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -328,6 +335,21 @@ function parseDayLabel(isoDate: string): { dayName: string; dateNum: number } {
   return { dayName: WEEK_DAY_SHORT[d.getDay()], dateNum: d.getDate() };
 }
 
+// A DayMemberScore's metric value for a category — used to compute an
+// active run's still-unsettled today winners live from daily_scores.
+function dayCategoryValue(s: DayMemberScore, category: Category): number {
+  switch (category) {
+    case "steps":
+      return s.stepsCount;
+    case "workouts":
+      return s.workoutCount;
+    case "calories":
+      return s.caloriesCount;
+    case "water":
+      return s.waterOzCount;
+  }
+}
+
 // ── Week Detail Sheet — full-screen modal with standings + day-level drill-down
 
 function WeekDetailSheet({
@@ -350,6 +372,11 @@ function WeekDetailSheet({
   const [dayLoading, setDayLoading] = useState(false);
   const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
   const [activeDates, setActiveDates] = useState<Set<string>>(new Set());
+  // Settled per-day-per-category winners for the run: score_date → category
+  // → winner user ids. A still-unsettled today (active run) has no entry.
+  const [dayWinners, setDayWinners] = useState<
+    Record<string, Record<string, string[]>>
+  >({});
 
   const toggleMember = useCallback((userId: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -389,30 +416,27 @@ function WeekDetailSheet({
       const { data } = await supabase
         .from("daily_scores")
         .select(
-          "user_id, total_points, steps_count, calories_count, water_oz_count, workout_count, steps_achieved, calories_achieved, water_achieved, workout_achieved, manual_steps_count, manual_calories_count",
+          "user_id, steps_count, calories_count, water_oz_count, workout_count, steps_achieved, calories_achieved, water_achieved, workout_achieved, manual_steps_count, manual_calories_count",
         )
         .eq("run_id", entry.runId)
         .eq("score_date", selectedDay);
 
       if (cancelled) return;
 
-      const scores: DayMemberScore[] = (data ?? [])
-        .map((row) => ({
-          userId: row.user_id,
-          displayName: memberNameMap.get(row.user_id) ?? "Member",
-          totalPoints: row.total_points,
-          stepsCount: row.steps_count ?? 0,
-          caloriesCount: row.calories_count ?? 0,
-          waterOzCount: row.water_oz_count ?? 0,
-          workoutCount: row.workout_count ?? 0,
-          stepsAchieved: row.steps_achieved,
-          caloriesAchieved: row.calories_achieved,
-          waterAchieved: row.water_achieved,
-          workoutAchieved: row.workout_achieved,
-          manualStepsCount: row.manual_steps_count ?? 0,
-          manualCaloriesCount: row.manual_calories_count ?? 0,
-        }))
-        .sort((a, b) => b.totalPoints - a.totalPoints);
+      const scores: DayMemberScore[] = (data ?? []).map((row) => ({
+        userId: row.user_id,
+        displayName: memberNameMap.get(row.user_id) ?? "Member",
+        stepsCount: row.steps_count ?? 0,
+        caloriesCount: row.calories_count ?? 0,
+        waterOzCount: row.water_oz_count ?? 0,
+        workoutCount: row.workout_count ?? 0,
+        stepsAchieved: row.steps_achieved,
+        caloriesAchieved: row.calories_achieved,
+        waterAchieved: row.water_achieved,
+        workoutAchieved: row.workout_achieved,
+        manualStepsCount: row.manual_steps_count ?? 0,
+        manualCaloriesCount: row.manual_calories_count ?? 0,
+      }));
 
       setDayScores(scores);
       setDayLoading(false);
@@ -423,22 +447,32 @@ function WeekDetailSheet({
     };
   }, [selectedDay, entry?.runId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch which days in this run had ANY pack-member activity. The day
-  // picker's underline indicator reflects pack-wide activity so that quiet
-  // days read clearly even if the current user logged that day alone.
+  // Fetch every settled per-day-per-category winner for this run. Drives
+  // the daily-breakdown badges and the day-picker activity underline (a
+  // day "had activity" if it has any daily_winners row). One query.
   useEffect(() => {
     if (!entry?.runId) return;
     let cancelled = false;
 
     (async () => {
       const { data } = await supabase
-        .from("daily_scores")
-        .select("score_date")
+        .from("daily_winners")
+        .select("score_date, category, winner_user_ids")
         .eq("run_id", entry.runId)
-        .gt("total_points", 0);
+        .neq("category", "legacy");
 
       if (cancelled) return;
-      setActiveDates(new Set((data ?? []).map((r) => r.score_date)));
+      const byDate: Record<string, Record<string, string[]>> = {};
+      for (const row of (data ?? []) as {
+        score_date: string;
+        category: string;
+        winner_user_ids: string[];
+      }[]) {
+        if (!byDate[row.score_date]) byDate[row.score_date] = {};
+        byDate[row.score_date][row.category] = row.winner_user_ids;
+      }
+      setDayWinners(byDate);
+      setActiveDates(new Set(Object.keys(byDate)));
     })();
 
     return () => {
@@ -446,17 +480,11 @@ function WeekDetailSheet({
     };
   }, [entry?.runId]);
 
-  // Build summary standings for the sheet header section. activeRanked
-  // already carries tie-aware competition ranks from rankWithTiebreakers
-  // — pass e.rank through verbatim, don't re-number by index.
-  const summaryStandings = entry?.isActive
-    ? (entry.activeRanked ?? []).map((e) => ({
-        userId: e.user_id,
-        displayName: e.display_name,
-        totalPoints: e.weekly_points,
-        rank: e.rank,
-      }))
-    : (entry?.completedStandings ?? []);
+  // Unified standings — RunMemberStanding[] for both active and completed
+  // runs (the caller builds the active one off categoryStandings).
+  const summaryStandings = entry?.standings ?? [];
+  // Per-category run winners — populated for completed runs only.
+  const categoryWinners = entry?.categoryWinners ?? [];
 
   const enabledCount = [
     pack.steps_enabled,
@@ -465,13 +493,33 @@ function WeekDetailSheet({
     pack.water_enabled,
   ].filter(Boolean).length;
 
-  // Merge all pack members with fetched day scores, then attach a dense
-  // competition rank — same totalPoints share the same rank, next rank
-  // skips appropriately. Members without a score row appear at the bottom
-  // with zeros and tie with any with-data member also at zero.
+  // Per-category winners for the selected day: settled days come from
+  // daily_winners; an active run's still-unsettled today is computed live
+  // (the member(s) at the max of each category column "won" provisionally).
+  // Then merge all pack members with the day's scores and order by
+  // categories-won desc, then name — a day has no overall points ranking.
   const allMemberScores = React.useMemo<
-    (DayMemberScore & { hasNoData: boolean; rank: number })[]
+    (DayMemberScore & { hasNoData: boolean; categoriesWon: Category[] })[]
   >(() => {
+    const winners = {} as Record<Category, string[]>;
+    const settled = selectedDay ? dayWinners[selectedDay] : undefined;
+    for (const c of CATEGORIES) {
+      if (settled) {
+        winners[c] = settled[c] ?? [];
+      } else {
+        let max = 0;
+        for (const s of dayScores) {
+          max = Math.max(max, dayCategoryValue(s, c));
+        }
+        winners[c] =
+          max > 0
+            ? dayScores
+                .filter((s) => dayCategoryValue(s, c) === max)
+                .map((s) => s.userId)
+            : [];
+      }
+    }
+
     const scoredIds = new Set(dayScores.map((s) => s.userId));
     const withData = dayScores.map((s) => ({ ...s, hasNoData: false }));
     const noData: (DayMemberScore & { hasNoData: boolean })[] = [];
@@ -480,7 +528,6 @@ function WeekDetailSheet({
         noData.push({
           userId,
           displayName,
-          totalPoints: 0,
           stepsCount: 0,
           caloriesCount: 0,
           waterOzCount: 0,
@@ -495,18 +542,18 @@ function WeekDetailSheet({
         });
       }
     });
-    // Walk the merged list (already sorted by totalPoints desc — dayScores
-    // sort + noData zeros at end) and attach rank. Index advances every row,
-    // but rank only increments when totalPoints changes from the previous.
-    let prevPts = -1;
-    let prevRank = 0;
-    return [...withData, ...noData].map((s, i) => {
-      const rank = s.totalPoints === prevPts ? prevRank : i + 1;
-      prevPts = s.totalPoints;
-      prevRank = rank;
-      return { ...s, rank };
-    });
-  }, [dayScores, memberNameMap]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    return [...withData, ...noData]
+      .map((s) => ({
+        ...s,
+        categoriesWon: CATEGORIES.filter((c) => winners[c].includes(s.userId)),
+      }))
+      .sort((a, b) =>
+        b.categoriesWon.length !== a.categoriesWon.length
+          ? b.categoriesWon.length - a.categoriesWon.length
+          : a.displayName.localeCompare(b.displayName),
+      );
+  }, [dayScores, memberNameMap, selectedDay, dayWinners]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Modal visible={!!entry} animationType="slide" onRequestClose={onClose}>
@@ -539,7 +586,7 @@ function WeekDetailSheet({
             </Text>
 
             {summaryStandings.length === 0 ? (
-              <Text style={wdS.emptyHint}>{packsCopy.packCard.quietWeek}</Text>
+              <Text style={wdS.emptyHint}>No wins yet</Text>
             ) : (
               summaryStandings.map((standing) => {
                 const isFirst = standing.rank === 1;
@@ -564,13 +611,52 @@ function WeekDetailSheet({
                       )}
                     </Text>
                     <Text style={[wdS.sPts, isFirst && wdS.sPtsGold]}>
-                      {standing.totalPoints} pts
+                      {standing.totalWins}{" "}
+                      {standing.totalWins === 1 ? "win" : "wins"}
                     </Text>
                   </View>
                 );
               })
             )}
           </View>
+
+          {/* Category champions — completed runs only (per-category run
+              winners + days-won). Active runs carry no settled
+              categoryWinners, so the section is omitted for them. */}
+          {categoryWinners.length > 0 && (
+            <View style={wdS.section}>
+              <Text style={wdS.sectionLabel}>CATEGORY CHAMPIONS</Text>
+              {CATEGORIES.map((category) => {
+                const cw = categoryWinners.find((c) => c.category === category);
+                if (!cw) return null;
+                const names = cw.winnerUserIds.map((uid) =>
+                  formatName(memberNameMap.get(uid) ?? null, 1),
+                );
+                const namesLabel =
+                  names.length === 1
+                    ? names[0]
+                    : names.length === 2
+                      ? `${names[0]} & ${names[1]}`
+                      : `${names[0]} & ${names.length - 1} others`;
+                return (
+                  <View key={category} style={wdS.champRow}>
+                    <Text style={wdS.champCategory}>
+                      {CATEGORY_LABELS[category]}
+                    </Text>
+                    <View style={wdS.champWinner}>
+                      <Crown size={14} color={colors.leader} strokeWidth={2} />
+                      <Text style={wdS.champName} numberOfLines={1}>
+                        {namesLabel}
+                      </Text>
+                    </View>
+                    <Text style={wdS.champDays}>
+                      {cw.totalDaysWon} {cw.totalDaysWon === 1 ? "day" : "days"}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
+          )}
 
           {/* Daily breakdown — day picker + selected day's per-member results */}
           {days.length > 0 && (
@@ -648,7 +734,6 @@ function WeekDetailSheet({
                 ) : (
                   allMemberScores.map((score) => {
                     const isMe = score.userId === currentUserId;
-                    const isFirst = score.rank === 1 && !score.hasNoData;
                     const doneCount = [
                       pack.steps_enabled && score.stepsAchieved,
                       pack.workouts_enabled && score.workoutAchieved,
@@ -668,16 +753,11 @@ function WeekDetailSheet({
                         onPress={() => toggleMember(score.userId)}
                         activeOpacity={0.75}
                       >
-                        {/* Header row: rank + name + pts + chevron.
-                            hasNoData rows render dimmed with no chevron and
-                            an em-dash in place of "+0 pts" so the row reads
-                            as "muted but present." */}
+                        {/* Header row: name + the categories this member won
+                            that day (badges) + chevron. A day has no overall
+                            ranking under the categories model. hasNoData rows
+                            render dimmed with no badges and no chevron. */}
                         <View style={wdS.memberHeaderRow}>
-                          <Text
-                            style={[wdS.dayRank, isFirst && wdS.dayRankFirst]}
-                          >
-                            #{score.rank}
-                          </Text>
                           <Text
                             style={[wdS.dayName, isMe && wdS.dayNameMe]}
                             numberOfLines={1}
@@ -686,14 +766,22 @@ function WeekDetailSheet({
                               isMe && currentUser
                                 ? currentUser.displayName
                                 : score.displayName,
-                              score.rank,
                             )}
                           </Text>
-                          <Text
-                            style={[wdS.dayPts, isFirst && wdS.dayPtsFirst]}
-                          >
-                            {score.hasNoData ? "—" : `+${score.totalPoints} pts`}
-                          </Text>
+                          <View style={wdS.dayBadges}>
+                            {score.categoriesWon.map((c) => (
+                              <View key={c} style={wdS.dayBadge}>
+                                <Crown
+                                  size={11}
+                                  color={colors.leader}
+                                  strokeWidth={2}
+                                />
+                                <Text style={wdS.dayBadgeText}>
+                                  {CATEGORY_LABELS[c]}
+                                </Text>
+                              </View>
+                            ))}
+                          </View>
                           {!score.hasNoData && (
                             <Ionicons
                               name={isExpanded ? "chevron-up" : "chevron-down"}
@@ -879,6 +967,57 @@ const wdS = StyleSheet.create({
   sNameMe: { color: C.accent, fontWeight: "600" },
   sPts: { fontSize: 13, fontWeight: "600", color: C.textTertiary },
   sPtsGold: { color: colors.leader },
+  // Category Champions (completed runs)
+  champRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 8,
+    gap: 8,
+  },
+  champCategory: {
+    width: 84,
+    fontSize: 13,
+    fontWeight: "600",
+    color: C.textSecondary,
+  },
+  champWinner: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  champName: {
+    flexShrink: 1,
+    fontSize: 14,
+    fontWeight: "600",
+    color: C.textPrimary,
+  },
+  champDays: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: C.textTertiary,
+  },
+  // Daily-breakdown per-member category-won badges
+  dayBadges: {
+    flex: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 4,
+  },
+  dayBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: C.surfaceRaised,
+  },
+  dayBadgeText: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: colors.leader,
+  },
   // Day picker
   dayPickerRow: { flexDirection: "row", gap: 6, paddingBottom: 14 },
   dayBtn: {
@@ -952,7 +1091,7 @@ const wdS = StyleSheet.create({
     color: C.textTertiary,
   },
   dayRankFirst: { color: colors.leader },
-  dayName: { flex: 1, fontSize: 14, fontWeight: "600", color: C.textPrimary },
+  dayName: { flexShrink: 1, fontSize: 14, fontWeight: "600", color: C.textPrimary },
   dayNameMe: { color: C.accent },
   dayGoals: { fontSize: 11, color: C.textTertiary, marginLeft: 34 },
   dayPts: { fontSize: 13, fontWeight: "600", color: C.textSecondary },
@@ -1026,9 +1165,6 @@ function PastRunsSection({
   const period = pack.competition_window === "monthly" ? "month" : "week";
 
   // "This Week" card leading copy, from the live category standings.
-  // activeRanked still feeds WeekDetailSheet's CURRENT STANDINGS (3f-core-3
-  // scope) so it stays threaded into setDetailEntry below — only this
-  // visible copy line moves off it.
   const thisWeekLine = (() => {
     const ranked = categoryStandings?.rankedMembers ?? [];
     if (ranked.length === 0 || ranked.every((r) => r.totalWins === 0)) {
@@ -1047,6 +1183,32 @@ function PastRunsSection({
       1,
     );
     return `${leaderName} is leading · ${winsLabel}`;
+  })();
+
+  // Active-run CURRENT STANDINGS for WeekDetailSheet — RunMemberStanding[]
+  // derived from the live category standings: displayName from the roster
+  // map, dense competition rank by total wins (same pattern as
+  // usePackRunHistory's completed-run standings).
+  const activeStandings: RunMemberStanding[] = (() => {
+    const sorted = (categoryStandings?.rankedMembers ?? [])
+      .map((m) => ({
+        userId: m.userId,
+        displayName: memberNameMap.get(m.userId) ?? "Member",
+        totalWins: m.totalWins,
+      }))
+      .sort((a, b) =>
+        b.totalWins !== a.totalWins
+          ? b.totalWins - a.totalWins
+          : a.displayName.localeCompare(b.displayName),
+      );
+    let prevWins = -1;
+    let prevRank = 0;
+    return sorted.map((m, i) => {
+      const rank = m.totalWins === prevWins ? prevRank : i + 1;
+      prevWins = m.totalWins;
+      prevRank = rank;
+      return { ...m, rank };
+    });
   })();
 
   const handleLockedRun = () => {
@@ -1081,7 +1243,7 @@ function PastRunsSection({
                   startedAt: activeRun.start_date,
                   endedAt: activeRun.end_date,
                   isActive: true,
-                  activeRanked,
+                  standings: activeStandings,
                 })
               }
               activeOpacity={0.8}
@@ -1139,7 +1301,8 @@ function PastRunsSection({
                     startedAt: run.startedAt,
                     endedAt: run.endedAt,
                     isActive: false,
-                    completedStandings: run.standings,
+                    standings: run.standings,
+                    categoryWinners: run.categoryWinners,
                   })
                 }
                 activeOpacity={0.8}
