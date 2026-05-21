@@ -453,8 +453,6 @@ function DarkPackCard({
   const hasActivity = members.length > 0;
 
   // Status line — inline category-wins copy derived from standings.
-  // TODO(3c): extract to competitionCopy.ts once categories copy
-  // semantics are finalized.
   const statusLine = (() => {
     if (!standings) return "";
     const ranked = standings.rankedMembers;

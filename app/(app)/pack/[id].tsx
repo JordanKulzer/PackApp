@@ -2675,7 +2675,7 @@ export default function PackScreen() {
       <ConfirmDialog
         visible={showLeaveConfirm}
         title="Leave this pack?"
-        message="You'll stop earning points and no longer see this pack's feed. Your history stays if you rejoin later."
+        message="You'll stop competing in this pack and no longer see this pack's feed. Your history stays if you rejoin later."
         confirmLabel="Leave"
         confirmDestructive
         onConfirm={async () => {
@@ -2757,7 +2757,7 @@ export default function PackScreen() {
       <ConfirmDialog
         visible={showDeleteConfirm}
         title="Delete this pack?"
-        message="This permanently deletes the pack for everyone. All activity, scores, and photos will be lost. This cannot be undone."
+        message="This permanently deletes the pack for everyone. All activity, wins, and photos will be lost. This cannot be undone."
         confirmLabel="Delete"
         confirmDestructive
         onConfirm={async () => {

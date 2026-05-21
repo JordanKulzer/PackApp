@@ -58,7 +58,7 @@ const PREFS: PrefRow[] = [
   {
     key: "daily_summary",
     label: "Daily Summary",
-    desc: "Points summary each evening",
+    desc: "Daily wins summary each evening",
     // TODO: add time picker for delivery time (default 8pm local)
   },
 ];

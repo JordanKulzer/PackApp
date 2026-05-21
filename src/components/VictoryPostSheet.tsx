@@ -77,11 +77,11 @@ const HEADER_COPY: Record<
   AchievementKind,
   { title: string; subtitleTemplate: string }
 > = {
-  daily_winner: { title: "You won the day",  subtitleTemplate: "{packName} · {points} pts · Yesterday" },
-  took_lead:    { title: "You took the lead", subtitleTemplate: "{packName} · +{leadGap} pts{opponentSuffix}" },
+  daily_winner: { title: "You won the day",  subtitleTemplate: "{packName} · Yesterday" },
+  took_lead:    { title: "You took the lead", subtitleTemplate: "{packName}{opponentSuffix}" },
   all_goals:    { title: "All goals hit",     subtitleTemplate: "{packName} · {date}" },
   steps:        { title: "Steps goal hit",    subtitleTemplate: "{packName} · {value} steps" },
-  workout:      { title: "Workout logged",    subtitleTemplate: "{packName} · {points} pts" },
+  workout:      { title: "Workout logged",    subtitleTemplate: "{packName}" },
   calories:     { title: "Calories goal hit", subtitleTemplate: "{packName} · {value} cal" },
   water:        { title: "Water goal hit",    subtitleTemplate: "{packName} · {value} oz" },
 };

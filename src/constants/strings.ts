@@ -96,7 +96,7 @@ export const onboarding = {
       "Pack uses notifications to keep you in the loop on what your friends are doing.",
     rows: {
       movementLabel: "Pack movement",
-      movementDesc: "When friends hit goals, take the lead, or pass you.",
+      movementDesc: "When friends hit goals or take a category lead.",
       streakLabel: "Streak alerts",
       streakDesc: "A heads-up before your streak breaks.",
       chatLabel: "Replies & reactions",

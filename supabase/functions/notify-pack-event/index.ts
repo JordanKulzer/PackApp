@@ -37,9 +37,6 @@ type NotificationEvent =
   | { kind: "goals_updated"; nextRunStart: string }
   | { kind: "pack_renamed"; newName: string }
   // Targeted (recipients[] required)
-  | { kind: "passed_you"; rankAfter: number }
-  | { kind: "tied_you"; rankAfter: number }
-  | { kind: "one_action_away"; actionLabel: string }
   | { kind: "new_comment"; bodyPreview: string }
   | { kind: "ownership_transferred"; newOwnerName: string }
   | {
@@ -74,9 +71,6 @@ function prefKeyForEvent(kind: NotificationEvent["kind"]): string {
     case "goal":
     case "all_goals":
       return "goal_completed";
-    case "passed_you":
-    case "tied_you":
-    case "one_action_away":
     case "category_threat":
       return "overtaken";
     case "new_member":
@@ -132,21 +126,6 @@ function buildCopy(
     // See strings.ts push.* for wolf-voice patterns when authoring replacement.
     case "all_goals":
       return { title: actorName, body: `completed all goals today 🔥` };
-    // TODO(7b): brand voice — currently uses generic competitive register
-    // with 📉 emoji. See strings.ts push.* for wolf-voice patterns when
-    // authoring replacement.
-    case "passed_you":
-      return { title: "📉 You Dropped", body: `${actorName} passed you — you're now #${event.rankAfter}` };
-    // TODO(7b): brand voice — currently uses generic competitive register
-    // with ⚡ emoji. See strings.ts push.* for wolf-voice patterns when
-    // authoring replacement.
-    case "tied_you":
-      return { title: "⚡ Tied Up", body: `${actorName} tied you for #${event.rankAfter}` };
-    // TODO(7b): brand voice — currently uses generic competitive register
-    // with ⚠️ emoji. See strings.ts push.* for wolf-voice patterns when
-    // authoring replacement.
-    case "one_action_away":
-      return { title: "⚠️ Closing In", body: `${actorName} is ${event.actionLabel} away from passing you` };
     // Categories pivot (Stage 2C): per-category passed_you / tied_you.
     case "category_threat": {
       const categoryLabel = {

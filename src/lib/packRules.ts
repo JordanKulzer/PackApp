@@ -87,7 +87,7 @@ export function getPackRules(pack: Pack): PackRules {
       {
         key: "daily_winner",
         name: "Daily winner",
-        description: "Top scorer of the day.",
+        description: "Won the most categories that day.",
         enabled: FEATURE_FLAGS.dailyWinner,
       },
     ],

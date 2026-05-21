@@ -108,10 +108,10 @@ export function RulesSheet({ visible, onClose, pack }: RulesSheetProps) {
             contentContainerStyle={s.scrollContent}
             showsVerticalScrollIndicator={false}
           >
-            {/* Section 1 — How to score */}
-            <Text style={s.sectionTitle}>How to score</Text>
+            {/* Section 1 — How winners work */}
+            <Text style={s.sectionTitle}>How winners work</Text>
             <Text style={s.sectionSubtitle}>
-              Points per activity in this pack
+              Activities tracked in this pack
             </Text>
             {rules.activities.map((a, i) => {
               const isLast = i === rules.activities.length - 1;

@@ -43,7 +43,6 @@ const FEATURES = [
   { icon: "infinite-outline", text: "Unlimited packs" },
   { icon: "people-outline", text: "Up to 25 members per pack" },
   { icon: "calendar-outline", text: "Weekly & monthly competition windows" },
-  { icon: "star-outline", text: "Custom point values per activity" },
   { icon: "bar-chart-outline", text: "Full history & trends" },
 ];
 
