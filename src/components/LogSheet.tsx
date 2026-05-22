@@ -3,6 +3,7 @@ import {
   Animated,
   Easing,
   Keyboard,
+  Linking,
   Modal,
   PanResponder,
   Platform,
@@ -320,6 +321,18 @@ const ar = StyleSheet.create({
   entryAmount: { fontSize: 14, fontWeight: "500", color: C.textPrimary },
   entryTime: { fontSize: 14, color: C.textSecondary },
   moreText: { fontSize: 12, color: C.textTertiary, marginTop: 4 },
+  // Part D: HealthKit auto-fill affordance in the manual detail screens.
+  connectHealthRow: {
+    marginTop: 4,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: C.border,
+    borderRadius: 8,
+    gap: 2,
+  },
+  connectHealthLabel: { fontSize: 14, fontWeight: "600", color: C.accent },
+  connectHealthHint: { fontSize: 12, color: C.textTertiary },
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -722,10 +735,9 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     try {
       const granted = await requestHealthKitPermissions();
       if (!granted) return;
-      await supabase
-        .from("users")
-        .update({ healthkit_authorized: true })
-        .eq("id", userId);
+      // Part E: no longer writes users.healthkit_authorized. The real iOS
+      // status (getHealthKitAuthStatus, read in useLogActivitySheetData) is
+      // the source of truth; the DB column is not an auth source.
       invalidateLogActivitySheetCache();
       setHkAuthorized(true);
       const [steps, cal] = await Promise.all([
@@ -837,7 +849,8 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     try {
       await syncManualActivityToDailyScores(userId, "workout", 1, category);
       invalidateLogActivitySheetCache();
-      bumpLogVersion();    } catch (err) {
+      bumpLogVersion();
+    } catch (err) {
       // Rollback optimistic update on error
       setWorkoutLogs((prev) => prev.slice(0, -1));
       console.error("[LogSheet] handleLogWorkout error:", err);
@@ -883,7 +896,8 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     try {
       await syncManualActivityToDailyScores(userId, "steps", delta);
       invalidateLogActivitySheetCache();
-      bumpLogVersion();    } catch (err) {
+      bumpLogVersion();
+    } catch (err) {
       console.error("[LogSheet] handleManualSteps error:", err);
     } finally {
       setManualStepsSaving(false);
@@ -911,7 +925,8 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     try {
       await syncManualActivityToDailyScores(userId, "calories", delta);
       invalidateLogActivitySheetCache();
-      bumpLogVersion();    } catch (err) {
+      bumpLogVersion();
+    } catch (err) {
       console.error("[LogSheet] handleManualCalories error:", err);
     } finally {
       setManualCalSaving(false);
@@ -999,7 +1014,8 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
 
       await syncWaterToDailyScores(userId);
       invalidateLogActivitySheetCache();
-      bumpLogVersion();    } catch (err) {
+      bumpLogVersion();
+    } catch (err) {
       console.error("[LogSheet] handleAddWater error:", err);
       setEntries((prev) => prev.filter((e) => e !== newEntry));
       setTotalOz((prev) => prev - amount);
@@ -1075,6 +1091,49 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
         </View>
         <HealthSourceBadge style={s.rowCaption} />
       </View>
+    );
+  }
+
+  // Part D: HealthKit auto-fill affordance inside the manual detail screens.
+  // HealthKit is optional auto-fill, never a gate — the manual input above
+  // always works. Shown only on HK-capable devices. When iOS reports the
+  // prompt has not been answered, offer to connect; once answered, the app
+  // can neither re-prompt nor know grant-vs-deny, so it only points the
+  // user to the Apple Health app.
+  function renderHealthConnectRow(category: "steps" | "calories") {
+    if (!hkAvailable) return null;
+    if (hkAuthorized) {
+      // Already asked: iOS shows the HealthKit prompt only once per data
+      // type, ever — requestHealthKitPermissions() would be a silent no-op.
+      // Send the user to this app's iOS Settings page (where Health access
+      // lives) via the documented Linking.openSettings() API instead.
+      return (
+        <TouchableOpacity
+          style={ar.connectHealthRow}
+          onPress={() => Linking.openSettings()}
+          activeOpacity={0.7}
+        >
+          <Text style={ar.connectHealthLabel}>
+            Want to auto-fill your {category} from Apple Health?
+          </Text>
+          <Text style={ar.connectHealthHint}>
+            Open Settings and navigate to Apple Health to allow Pack to
+            auto-fill your {category}.
+          </Text>
+        </TouchableOpacity>
+      );
+    }
+    return (
+      <TouchableOpacity
+        style={ar.connectHealthRow}
+        onPress={handleConnectHealthKit}
+        activeOpacity={0.7}
+      >
+        <Text style={ar.connectHealthLabel}>Connect Apple Health</Text>
+        <Text style={ar.connectHealthHint}>
+          Auto-fills your {category} from Apple Health when available.
+        </Text>
+      </TouchableOpacity>
     );
   }
 
@@ -1170,16 +1229,9 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                           : "—"}
                       </Animated.Text>
                     }
-                    showChevron={hkAvailable && hkAuthorized}
+                    showChevron
                     isExpanded={false}
-                    onPress={() => {
-                      if (!hkAvailable) return;
-                      if (!hkAuthorized) {
-                        handleConnectHealthKit();
-                        return;
-                      }
-                      goToDetail("steps");
-                    }}
+                    onPress={() => goToDetail("steps")}
                   />
 
                   <View style={s.rowDivider} />
@@ -1213,16 +1265,9 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                           : "—"}
                       </Animated.Text>
                     }
-                    showChevron={hkAvailable && hkAuthorized}
+                    showChevron
                     isExpanded={false}
-                    onPress={() => {
-                      if (!hkAvailable) return;
-                      if (!hkAuthorized) {
-                        handleConnectHealthKit();
-                        return;
-                      }
-                      goToDetail("calories");
-                    }}
+                    onPress={() => goToDetail("calories")}
                   />
 
                   <View style={s.rowDivider} />
@@ -1289,6 +1334,8 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                       </Text>
                     </TouchableOpacity>
                   </View>
+
+                  {renderHealthConnectRow("steps")}
 
                   {(localScore?.manual_steps_count ?? 0) > 0 && (
                     <View>
@@ -1406,6 +1453,8 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                       </Text>
                     </TouchableOpacity>
                   </View>
+
+                  {renderHealthConnectRow("calories")}
 
                   {(localScore?.manual_calories_count ?? 0) > 0 && (
                     <View>

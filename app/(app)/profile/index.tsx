@@ -207,7 +207,11 @@ const modal = StyleSheet.create({
 export default function Profile() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
-  const { applyLocal, refresh: refreshCurrentUser, user: currentUser } = useCurrentUser();
+  const {
+    applyLocal,
+    refresh: refreshCurrentUser,
+    user: currentUser,
+  } = useCurrentUser();
   const { signOut } = useAuth();
   const {
     isAuthorized,
@@ -229,18 +233,30 @@ export default function Profile() {
     if (!user) return;
     const hasAvatar = !!profile?.avatar_url;
 
-    const doUpload = async (picker: () => Promise<{ uri: string; width: number; height: number } | null>) => {
+    const doUpload = async (
+      picker: () => Promise<{
+        uri: string;
+        width: number;
+        height: number;
+      } | null>,
+    ) => {
       const photo = await picker();
       if (!photo) return;
       setAvatarUploading(true);
       try {
         const newUrl = await uploadAvatar(user.id, photo);
-        await supabase.from("users").update({ avatar_url: newUrl }).eq("id", user.id);
+        await supabase
+          .from("users")
+          .update({ avatar_url: newUrl })
+          .eq("id", user.id);
         applyLocal({ avatarUrl: newUrl });
         await refreshCurrentUser();
         showToast({ message: "Profile photo updated", kind: "success" });
       } catch (e) {
-        showToast({ message: (e as Error).message ?? "Upload failed", kind: "error" });
+        showToast({
+          message: (e as Error).message ?? "Upload failed",
+          kind: "error",
+        });
       } finally {
         setAvatarUploading(false);
       }
@@ -251,12 +267,18 @@ export default function Profile() {
       setAvatarUploading(true);
       try {
         await deleteAvatar(user.id);
-        await supabase.from("users").update({ avatar_url: null }).eq("id", user.id);
+        await supabase
+          .from("users")
+          .update({ avatar_url: null })
+          .eq("id", user.id);
         applyLocal({ avatarUrl: null });
         await refreshCurrentUser();
         showToast({ message: "Profile photo removed", kind: "success" });
       } catch (e) {
-        showToast({ message: (e as Error).message ?? "Remove failed", kind: "error" });
+        showToast({
+          message: (e as Error).message ?? "Remove failed",
+          kind: "error",
+        });
       } finally {
         setAvatarUploading(false);
       }
@@ -270,7 +292,11 @@ export default function Profile() {
         "Cancel",
       ];
       ActionSheetIOS.showActionSheetWithOptions(
-        { options, cancelButtonIndex: options.length - 1, destructiveButtonIndex: hasAvatar ? 2 : undefined },
+        {
+          options,
+          cancelButtonIndex: options.length - 1,
+          destructiveButtonIndex: hasAvatar ? 2 : undefined,
+        },
         (idx) => {
           if (idx === 0) doUpload(takeAvatarPhoto);
           else if (idx === 1) doUpload(pickAvatarFromLibrary);
@@ -281,8 +307,19 @@ export default function Profile() {
       // Android fallback — simple Alert
       const buttons: Parameters<typeof Alert.alert>[2] = [
         { text: "Take Photo", onPress: () => doUpload(takeAvatarPhoto) },
-        { text: "Choose from Library", onPress: () => doUpload(pickAvatarFromLibrary) },
-        ...(hasAvatar ? [{ text: "Remove Photo", style: "destructive" as const, onPress: doRemove }] : []),
+        {
+          text: "Choose from Library",
+          onPress: () => doUpload(pickAvatarFromLibrary),
+        },
+        ...(hasAvatar
+          ? [
+              {
+                text: "Remove Photo",
+                style: "destructive" as const,
+                onPress: doRemove,
+              },
+            ]
+          : []),
         { text: "Cancel", style: "cancel" as const },
       ];
       Alert.alert("Profile Photo", undefined, buttons);
@@ -388,7 +425,8 @@ export default function Profile() {
 
   const handleSignOut = () => setShowSignOutConfirm(true);
 
-  const handleDeleteAccount = () => router.push("/(app)/profile/delete-account");
+  const handleDeleteAccount = () =>
+    router.push("/(app)/profile/delete-account");
 
   const handleHealthKit = async () => {
     if (isAuthorized || hkRequesting) return;
@@ -453,7 +491,9 @@ export default function Profile() {
             activeOpacity={0.7}
           >
             <Text style={styles.displayName}>
-              {normalizeDisplayName(currentUser?.displayName ?? profile?.display_name ?? "") || "—"}
+              {normalizeDisplayName(
+                currentUser?.displayName ?? profile?.display_name ?? "",
+              ) || "—"}
             </Text>
             <Text style={styles.editHint}>Edit</Text>
           </TouchableOpacity>
@@ -487,7 +527,9 @@ export default function Profile() {
             bestStreak={stats.longestStreak}
           />
         ) : stats ? (
-          <Text style={styles.emptyStatsHint}>{profileCopy.emptyStatsHint}</Text>
+          <Text style={styles.emptyStatsHint}>
+            {profileCopy.emptyStatsHint}
+          </Text>
         ) : null}
 
         {/* ── Lifetime stat-sheet (Pass 22) ────────────────────────────────
@@ -496,10 +538,16 @@ export default function Profile() {
             reserved for competitive signal elsewhere.                 */}
         {stats && stats.totalDaysLogged > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>{userProfile.section.lifetime}</Text>
+            <Text style={styles.sectionTitle}>
+              {userProfile.section.lifetime}
+            </Text>
             <StatSheetRow
               icon={
-                <Ionicons name="calendar-outline" size={18} color={C.textSecondary} />
+                <Ionicons
+                  name="calendar-outline"
+                  size={18}
+                  color={C.textSecondary}
+                />
               }
               label={userProfile.lifetime.daysLogged}
               value={formatStatNumber(stats.totalDaysLogged)}
@@ -556,23 +604,18 @@ export default function Profile() {
               hkSyncing
                 ? "Syncing…"
                 : isAuthorized
-                  ? "Connected"
-                  : "Connect to sync steps & workouts"
+                  ? "Click here and navigate to Apple Health to allow Pack to auto-fill your activity"
+                  : "Auto-fills steps & workouts when available"
             }
-            onPress={isAuthorized ? undefined : handleHealthKit}
+            onPress={
+              isAuthorized ? () => Linking.openSettings() : handleHealthKit
+            }
             disabled={hkRequesting || hkSyncing}
             trailing={
               hkRequesting || hkSyncing ? (
                 <ActivityIndicator size="small" color={C.textSecondary} />
-              ) : (
-                <Text
-                  style={[
-                    styles.integrationStatus,
-                    isAuthorized && styles.integrationStatusSuccess,
-                  ]}
-                >
-                  {isAuthorized ? "✓" : "Connect"}
-                </Text>
+              ) : isAuthorized ? undefined : (
+                <Text style={styles.integrationStatus}>Set up</Text>
               )
             }
           />
@@ -655,11 +698,7 @@ export default function Profile() {
           </Text>
           <NavRow
             icon={
-              <Ionicons
-                name="construct-outline"
-                size={22}
-                color={C.warning}
-              />
+              <Ionicons name="construct-outline" size={22} color={C.warning} />
             }
             label="Test Pro Features"
             subtitle="TESTING ONLY — overrides Pro state for testing. Will be removed before public launch."
@@ -701,9 +740,7 @@ export default function Profile() {
               panic-box (red-bordered CTA) is gone; the destination
               screen is the actual safeguard. */}
           <NavRow
-            icon={
-              <Ionicons name="trash-outline" size={22} color={C.danger} />
-            }
+            icon={<Ionicons name="trash-outline" size={22} color={C.danger} />}
             label="Delete Account"
             onPress={handleDeleteAccount}
             dangerous
@@ -743,7 +780,6 @@ export default function Profile() {
         }}
         onCancel={() => setShowSignOutConfirm(false)}
       />
-
     </>
   );
 }
@@ -811,10 +847,10 @@ const styles = StyleSheet.create({
   devSectionTitle: { color: C.warning },
 
   // Integration trailing status text (used inside NavRow's `trailing` slot
-  // for "Connect" / "✓" / "Soon"). The connected `✓` flips to success green;
-  // the rest stay accent for affordance / secondary for "coming soon".
+  // for "Set up" / "Soon"). Accent for affordance / secondary for
+  // "coming soon". No connected/verified state — the app cannot verify a
+  // HealthKit connection (read access grant vs deny is opaque on iOS).
   integrationStatus: { fontSize: 14, color: C.accent, fontWeight: "600" },
-  integrationStatusSuccess: { color: C.success },
 
   version: {
     fontSize: 12,

@@ -4,6 +4,7 @@ import { supabase } from "../lib/supabase";
 import {
   getTodaySteps,
   getTodayActiveCalories,
+  getHealthKitAuthStatus,
   isHealthKitAvailable,
 } from "../lib/healthkit";
 import { packToday, packTodayStartUTC, deviceLocalToday } from "../lib/packDates";
@@ -99,8 +100,16 @@ export function useLogActivitySheetData(
       // Device-local today for water_logs display (water is logged with device-local date)
       const deviceToday = deviceLocalToday();
 
-      // Round 1: all independent sources in parallel, including HealthKit reads
-      const [logsResult, memberResult, userResult, hkValues] = await Promise.all([
+      // Part C: real iOS authorization-request status is the source of
+      // truth — the users.healthkit_authorized DB column went stale across
+      // rebuilds. Gating the HealthKit reads on this mirrors
+      // syncHealthDataForUser's Gate 0: never query HealthKit blind, which
+      // spams "Code=5" when the prompt has not been answered.
+      const hkAuthorized = hkAvailable ? await getHealthKitAuthStatus() : false;
+
+      // Round 1: all independent sources in parallel. The HealthKit reads
+      // run only when iOS reports the prompt has been answered.
+      const [logsResult, memberResult, hkValues] = await Promise.all([
         supabase
           .from("water_logs")
           .select("amount_oz, logged_at")
@@ -114,12 +123,7 @@ export function useLogActivitySheetData(
           .eq("is_active", true)
           .limit(1)
           .maybeSingle(),
-        supabase
-          .from("users")
-          .select("healthkit_authorized")
-          .eq("id", userId!)
-          .maybeSingle(),
-        hkAvailable
+        hkAvailable && hkAuthorized
           ? (Promise.all([getTodaySteps(), getTodayActiveCalories()]) as Promise<[number, number]>)
           : (Promise.resolve([0, 0]) as Promise<[number, number]>),
       ]);
@@ -132,7 +136,6 @@ export function useLogActivitySheetData(
         packs: { timezone: string } | null;
       } | null;
 
-      const hkAuthorized = userResult.data?.healthkit_authorized ?? false;
       const [stepsRaw, calsRaw] = hkValues;
       const stepsToday = hkAvailable && hkAuthorized ? stepsRaw : null;
       const caloriesToday = hkAvailable && hkAuthorized ? calsRaw : null;
