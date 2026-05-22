@@ -14,6 +14,7 @@ import {
   Platform,
   UIManager,
   Pressable,
+  RefreshControl,
   useWindowDimensions,
 } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
@@ -2125,12 +2126,13 @@ export default function PackScreen() {
   const { syncNow } = useHealthKit(user?.id ?? null);
 
   // Categories-pivot standings (Stage 3d) — feeds PackGridView's GridEntry[].
-  const { data: categoryStandings } = usePackCategoryStandings(
-    packData?.pack.id ?? "",
-    packData?.activeRun?.id ?? null,
-    packData?.pack.timezone ?? "UTC",
-    (packData?.members ?? []).map((m) => m.user_id),
-  );
+  const { data: categoryStandings, refetch: refetchCategoryStandings } =
+    usePackCategoryStandings(
+      packData?.pack.id ?? "",
+      packData?.activeRun?.id ?? null,
+      packData?.pack.timezone ?? "UTC",
+      (packData?.members ?? []).map((m) => m.user_id),
+    );
 
   const { width: screenWidth } = useWindowDimensions();
   const { top: topInset } = useSafeAreaInsets();
@@ -2292,6 +2294,25 @@ export default function PackScreen() {
       fetchWeekly(packData.activeRun.id);
     }
   }, [logVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Pull-to-refresh ───────────────────────────────────────────────────
+  // Refreshes BOTH surfaces the screen shows: the categories standings hook
+  // (powers PackGridView's category bars) and today's scores (streak /
+  // counts). refetchCategoryStandings() only bumps the hook's internal key,
+  // so it can't be awaited — fire it, then await fetchWeekly to resolve the
+  // spinner.
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      refetchCategoryStandings();
+      if (packData?.activeRun) {
+        await fetchWeekly(packData.activeRun.id);
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetchCategoryStandings, fetchWeekly, packData?.activeRun]);
 
   // ── Handlers ──────────────────────────────────────────────────────────
 
@@ -2516,6 +2537,13 @@ export default function PackScreen() {
           style={{ width: screenWidth }}
           contentContainerStyle={s.content}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={C.textTertiary}
+            />
+          }
         >
           {scoresLoading ? (
             <View style={s.loadingBox}>
@@ -2546,6 +2574,13 @@ export default function PackScreen() {
           style={{ width: screenWidth }}
           contentContainerStyle={s.content}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={C.textTertiary}
+            />
+          }
         >
           <PastRunsSection
             packId={pack.id}

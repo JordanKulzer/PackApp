@@ -317,32 +317,27 @@ export const activity = {
 } as const;
 
 /* ============================================================
- * Pack recap — high-emotion week-end surface. Headline is
- * branched on run shape; subtitle adds margin context.
+ * Pack recap — end-of-run celebration. Headlines are
+ * viewer-adaptive (3g-core): the recap screen picks a key by the
+ * viewer's result, then interpolates {period}/{place}/{categories}/
+ * {winner}. Provisional copy — voice review pending.
  * ============================================================ */
 export const recap = {
-  liveCta: "This week's hunt is on →",
-
-  // Branched headline. Caller computes which key to render based on
-  // run shape. fullPackHit branch is reserved for Pass 7 (achievement
-  // wiring) — once daily_scores is denormalized into a per-run flag,
-  // the recap can read it directly.
-  // TODO(Pass 7): wire fullPackHit branch once pack_runs.full_pack_hit
-  //   denormalization or equivalent flag exists.
+  cta: "Back to your pack →",
   headline: {
-    fullPackHit: "The whole pack ate this week.",
-    runaway: "{winner} ran away with it.",
-    photoFinish: "Decided in the last day.",
-    tiedAtTop: "Two-way tie at the top.",
-    solo: "You ran solo this week.",
-    default: "{winner} took the trail this week.",
+    youWon: "You won the {period}",
+    youPodium: "You finished {place}",
+    youCategory: "You owned {categories} this {period}",
+    winnerWon: "{winner} won the {period}",
+    quietRun: "A quiet {period}",
   },
-
-  subtitle: {
-    // Categories pivot: point margins no longer exist. Placeholder copy —
-    // voice review to refine. {pts} template token removed (no source data).
-    margin: "Most category wins.",
-    soloPts: "Solo on the trail.",
+  // Hero subtitle — run-shape flavor, branched on the wins margin.
+  flavor: {
+    solo: "You had the trail to yourself.",
+    tie: "A dead heat at the top.",
+    runaway: "A clear run from the front.",
+    close: "Decided by a single day.",
+    standard: "Every category was contested.",
   },
 } as const;
 

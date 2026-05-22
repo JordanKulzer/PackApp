@@ -20,6 +20,7 @@ import {
   CATEGORY_DAILY_SCORE_COLUMN,
 } from "../lib/categories";
 import { packToday } from "../lib/packDates";
+import { useScoreStore } from "../stores/scoreStore";
 
 export type CategoryStanding = {
   category: Category;
@@ -62,6 +63,10 @@ function emptyWinsByCategory(): Record<Category, number> {
   return { steps: 0, workouts: 0, calories: 0, water: 0 };
 }
 
+// Monotonic counter — gives each realtime channel a globally-unique name
+// so concurrent hook instances / effect re-runs never share a channel.
+let channelSeq = 0;
+
 export function usePackCategoryStandings(
   packId: string,
   runId: string | null,
@@ -81,6 +86,13 @@ export function usePackCategoryStandings(
   const refetch = useCallback(() => {
     setRefetchKey((k) => k + 1);
   }, []);
+
+  // Same-device "just logged" signal. bumpLogVersion() fires after every
+  // local activity log (steps/water/etc.); folding logVersion into the
+  // fetch effect's deps gives this hook a deterministic refresh that does
+  // NOT depend on realtime delivery — mirrors pack/[id].tsx's existing
+  // logVersion → fetchWeekly pattern.
+  const logVersion = useScoreStore((s) => s.logVersion);
 
   // memberIds is a fresh array each render — key off its joined form so the
   // effect only re-runs when the actual member set changes.
@@ -199,10 +211,30 @@ export function usePackCategoryStandings(
       }
     })();
 
-    // ── Realtime: refetch on any daily_winners / daily_scores change for
-    // this run. Mirrors usePackTimeline's channel pattern.
-    const channel = supabase
-      .channel(`pack-category-standings-${packId}-${runId}`)
+    return () => {
+      cancelled = true;
+    };
+  }, [packId, runId, packTimezone, memberKey, refetchKey, logVersion]);
+
+  // ── Realtime: refetch on any daily_winners / daily_scores change for
+  // this run. Its own effect, keyed on [packId, runId] only (NOT
+  // refetchKey) — the channel is created once per run, not torn down and
+  // rebuilt on every refetch. The callbacks bump refetchKey, which re-runs
+  // the data-fetch effect above.
+  useEffect(() => {
+    if (!runId) return;
+
+    // One postgres_changes binding per channel — the app's proven pattern
+    // (see subscribeToRunScores). Multiple bindings on a single channel is
+    // a fragile supabase-js path, so daily_winners and daily_scores each
+    // get their own channel. The two daily_scores INSERT/UPDATE bindings
+    // collapse into a single event:"*" binding.
+    //
+    // Unique names per subscription — two concurrent hook instances for the
+    // same pack (e.g. Home's pack card + the Pack Detail screen, both
+    // mounted) must not collide on one channel name.
+    const winnersChannel = supabase
+      .channel(`pack-cat-standings-winners-${packId}-${runId}-${++channelSeq}`)
       .on(
         "postgres_changes",
         {
@@ -213,20 +245,14 @@ export function usePackCategoryStandings(
         },
         () => setRefetchKey((k) => k + 1),
       )
+      .subscribe();
+
+    const scoresChannel = supabase
+      .channel(`pack-cat-standings-scores-${packId}-${runId}-${++channelSeq}`)
       .on(
         "postgres_changes",
         {
-          event: "INSERT",
-          schema: "public",
-          table: "daily_scores",
-          filter: `run_id=eq.${runId}`,
-        },
-        () => setRefetchKey((k) => k + 1),
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
+          event: "*",
           schema: "public",
           table: "daily_scores",
           filter: `run_id=eq.${runId}`,
@@ -236,10 +262,10 @@ export function usePackCategoryStandings(
       .subscribe();
 
     return () => {
-      cancelled = true;
-      supabase.removeChannel(channel);
+      supabase.removeChannel(winnersChannel);
+      supabase.removeChannel(scoresChannel);
     };
-  }, [packId, runId, packTimezone, memberKey, refetchKey]);
+  }, [packId, runId]);
 
   return { data, isLoading, error, refetch };
 }
