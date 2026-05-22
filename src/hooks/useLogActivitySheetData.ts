@@ -19,6 +19,13 @@ export interface WorkoutLogEntry {
   entry_method: string | null;
 }
 
+// An individual manual steps/calories log — one activity_feed row per
+// "Add" tap. value = the per-action amount; created_at = its timestamp.
+export interface ManualLogEntry {
+  value: number;
+  created_at: string;
+}
+
 export interface DailyScoreSnapshot {
   total_points: number;
   steps_achieved: boolean;
@@ -40,6 +47,10 @@ export interface DailyScoreSnapshot {
 export interface LogActivitySheetData {
   entries: LogEntry[];
   workoutLogs: WorkoutLogEntry[];
+  // Today's individual manual steps/calories entries, single-pack-scoped
+  // (activity_feed is pack-scoped — see the fetch in load()).
+  stepsEntries: ManualLogEntry[];
+  caloriesEntries: ManualLogEntry[];
   totalOz: number;
   hkAuthorized: boolean;
   stepsToday: number | null;
@@ -148,6 +159,7 @@ export function useLogActivitySheetData(
       if (!packId) {
         return {
           entries, workoutLogs: [], totalOz,
+          stepsEntries: [], caloriesEntries: [],
           hkAuthorized, stepsToday, caloriesToday,
           packRun: null, localScore: null, localWeeklyPoints: 0,
         };
@@ -164,6 +176,7 @@ export function useLogActivitySheetData(
       if (!run) {
         return {
           entries, workoutLogs: [], totalOz,
+          stepsEntries: [], caloriesEntries: [],
           hkAuthorized, stepsToday, caloriesToday,
           packRun: null, localScore: null, localWeeklyPoints: 0,
         };
@@ -171,8 +184,8 @@ export function useLogActivitySheetData(
 
       const todayStart = packTodayStartUTC(packTimezone);
 
-      // Round 3: daily score rows + today's workout feed entries in parallel
-      const [scoreResult, weeklyResult, workoutFeedResult] = await Promise.all([
+      // Round 3: daily score rows + workout feed + manual steps/calories feed
+      const [scoreResult, weeklyResult, workoutFeedResult, manualFeedResult] = await Promise.all([
         supabase
           .from("daily_scores")
           .select(
@@ -195,6 +208,19 @@ export function useLogActivitySheetData(
           .eq("activity_type", "workout")
           .gte("created_at", todayStart.toISOString())
           .order("created_at", { ascending: true }),
+        // Change 1: today's individual manual steps/calories entries.
+        // Single-pack-scoped via .eq("pack_id", packId) — the same
+        // first-pack pick the workout fetch above uses — so a user in N
+        // packs sees each Add once, not N times.
+        supabase
+          .from("activity_feed")
+          .select("value, created_at, activity_type")
+          .eq("pack_id", packId)
+          .eq("user_id", userId!)
+          .eq("entry_method", "manual")
+          .in("activity_type", ["steps", "calories"])
+          .eq("score_date", today)
+          .order("created_at", { ascending: false }),
       ]);
 
       const localScore = (scoreResult.data as DailyScoreSnapshot | null) ?? null;
@@ -206,8 +232,22 @@ export function useLogActivitySheetData(
         (r) => ({ logged_at: r.created_at, entry_method: r.entry_method }),
       );
 
+      // Split the manual feed rows into per-category lists.
+      const manualRows = (manualFeedResult.data ?? []) as Array<{
+        value: number;
+        created_at: string;
+        activity_type: string;
+      }>;
+      const stepsEntries: ManualLogEntry[] = manualRows
+        .filter((r) => r.activity_type === "steps")
+        .map((r) => ({ value: r.value, created_at: r.created_at }));
+      const caloriesEntries: ManualLogEntry[] = manualRows
+        .filter((r) => r.activity_type === "calories")
+        .map((r) => ({ value: r.value, created_at: r.created_at }));
+
       return {
         entries, workoutLogs, totalOz,
+        stepsEntries, caloriesEntries,
         hkAuthorized, stepsToday, caloriesToday,
         packRun: { runId: run.id, packId, packTimezone },
         localScore,

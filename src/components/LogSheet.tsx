@@ -40,6 +40,7 @@ import {
 import type {
   LogEntry,
   WorkoutLogEntry,
+  ManualLogEntry,
 } from "../hooks/useLogActivitySheetData";
 import { colors } from "../theme/colors";
 import { syncWaterToDailyScores } from "../lib/syncWater";
@@ -245,11 +246,13 @@ const ar = StyleSheet.create({
   // target = no goal-progress denominator). Caption (HealthSourceBadge
   // sub-text) stays.
   caption: { fontSize: 12, color: C.textTertiary },
-  // Manual entry row
+  // Manual entry row. Tier 2 spacing: 32px large gap below separates this
+  // input zone from the today total / review zone.
   inputRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+    marginBottom: 32,
   },
   // Pass 25: subtle-box treatment matching New Pack's nameInput. Transparent
   // background avoids the recessed-well look once the boxed card wrapper is
@@ -285,10 +288,12 @@ const ar = StyleSheet.create({
   },
   workoutBtnDisabled: { opacity: 0.5 },
   workoutBtnText: { fontSize: 15, fontWeight: "600", color: C.textPrimary },
-  // Water chips
+  // Water chips. Tier 1 spacing: 32px large gap below separates the
+  // quick-add zone from the TODAY review zone (act vs review).
   chipRow: {
     flexDirection: "row",
     gap: 10,
+    marginBottom: 32,
   },
   chip: {
     flex: 1,
@@ -321,18 +326,29 @@ const ar = StyleSheet.create({
   entryAmount: { fontSize: 14, fontWeight: "500", color: C.textPrimary },
   entryTime: { fontSize: 14, color: C.textSecondary },
   moreText: { fontSize: 12, color: C.textTertiary, marginTop: 4 },
+  // Tier 2 Change 2: the combined manual + HealthKit daily total — the
+  // prominent focal number on the Steps / Calories detail screens.
+  todayTotal: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: C.textPrimary,
+    marginBottom: 12,
+  },
+  // Tier 2 Change 4: quiet reconciling note — the HealthKit-contributed
+  // portion of the total (the manual list cannot show it; HK has no
+  // per-entry rows). A footnote, not a focal point.
+  hkPortionLine: { fontSize: 12, color: C.textTertiary, marginTop: 8 },
   // Part D: HealthKit auto-fill affordance in the manual detail screens.
+  // Tier 2 Change 5: de-emphasized — a quiet secondary action at the foot
+  // of the screen (no border box, smaller/lighter text). Tier 2 spacing:
+  // 32px above separates it from the today / review zone.
   connectHealthRow: {
-    marginTop: 4,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: C.border,
-    borderRadius: 8,
+    marginTop: 32,
+    paddingVertical: 8,
     gap: 2,
   },
-  connectHealthLabel: { fontSize: 14, fontWeight: "600", color: C.accent },
-  connectHealthHint: { fontSize: 12, color: C.textTertiary },
+  connectHealthLabel: { fontSize: 13, fontWeight: "500", color: C.accent },
+  connectHealthHint: { fontSize: 11, color: C.textTertiary },
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -456,6 +472,8 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
   // ── Water state ───────────────────────────────────────────────────────────
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [workoutLogs, setWorkoutLogs] = useState<WorkoutLogEntry[]>([]);
+  const [stepsEntries, setStepsEntries] = useState<ManualLogEntry[]>([]);
+  const [caloriesEntries, setCaloriesEntries] = useState<ManualLogEntry[]>([]);
   const [totalOz, setTotalOz] = useState(0);
   const [saving, setSaving] = useState(false);
 
@@ -626,6 +644,8 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     if (!hookData) return;
     setEntries(hookData.entries);
     setWorkoutLogs(hookData.workoutLogs);
+    setStepsEntries(hookData.stepsEntries);
+    setCaloriesEntries(hookData.caloriesEntries);
     setTotalOz(hookData.totalOz);
     setHkAuthorized(hookData.hkAuthorized);
     setStepsToday(hookData.stepsToday);
@@ -1034,6 +1054,10 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
 
   const displayedEntries = entries.slice(0, 5);
   const moreCount = entries.length - 5;
+  const displayedStepsEntries = stepsEntries.slice(0, 5);
+  const stepsMoreCount = stepsEntries.length - 5;
+  const displayedCaloriesEntries = caloriesEntries.slice(0, 5);
+  const caloriesMoreCount = caloriesEntries.length - 5;
 
   // Prefer the DB-backed localScore count (includes manual entries) over the raw
   // HealthKit value, which never reflects manual additions.
@@ -1335,28 +1359,61 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                     </TouchableOpacity>
                   </View>
 
-                  {renderHealthConnectRow("steps")}
+                  {/* Change 2: combined manual + HealthKit total */}
+                  <Text style={ar.todayTotal}>
+                    Today: {(localScore?.steps_count ?? 0).toLocaleString()}{" "}
+                    steps
+                  </Text>
 
-                  {(localScore?.manual_steps_count ?? 0) > 0 && (
+                  {/* Change 3: today's individual manual entries */}
+                  {displayedStepsEntries.length > 0 && (
                     <View>
                       <Text style={ar.entriesLabel}>TODAY</Text>
-                      <View style={ar.entryRow}>
-                        <Text style={ar.entryAmount}>
-                          Manual:{" "}
-                          {(
-                            localScore?.manual_steps_count ?? 0
-                          ).toLocaleString()}{" "}
-                          steps
-                        </Text>
-                      </View>
+                      {displayedStepsEntries.map((entry, i) => (
+                        <View
+                          key={`${entry.created_at}-${i}`}
+                          style={[
+                            ar.entryRow,
+                            i < displayedStepsEntries.length - 1 &&
+                              ar.entryBorder,
+                          ]}
+                        >
+                          <Text style={ar.entryAmount}>
+                            +{entry.value.toLocaleString()} steps
+                          </Text>
+                          <Text style={ar.entryTime}>
+                            {formatTime(entry.created_at)}
+                          </Text>
+                        </View>
+                      ))}
+                      {stepsMoreCount > 0 && (
+                        <Text style={ar.moreText}>+ {stepsMoreCount} more</Text>
+                      )}
                     </View>
                   )}
+
+                  {/* Change 4: HealthKit reconciling line */}
+                  {(localScore?.steps_count ?? 0) -
+                    (localScore?.manual_steps_count ?? 0) >
+                    0 && (
+                    <Text style={ar.hkPortionLine}>
+                      {(
+                        (localScore?.steps_count ?? 0) -
+                        (localScore?.manual_steps_count ?? 0)
+                      ).toLocaleString()}{" "}
+                      from Apple Health
+                    </Text>
+                  )}
+
+                  {/* Change 5: de-emphasized HealthKit affordance */}
+                  {renderHealthConnectRow("steps")}
                 </>
               )}
 
               {/* Workout Detail */}
               {currentPage === "workout" && (
                 <>
+                  <Text style={ar.entriesLabel}>YOUR WORKOUTS</Text>
                   <View style={qs.grid}>
                     {visibleChips.map((cat, idx) => (
                       <View key={`chip-${idx}`} style={qs.cell}>
@@ -1386,8 +1443,9 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                   <TouchableOpacity
                     onPress={() => openSeeMore("browse")}
                     activeOpacity={0.7}
+                    style={{ paddingVertical: 4 }}
                   >
-                    <Text style={qs.seeMoreLink}>See more categories →</Text>
+                    <Text style={qs.seeMoreLink}>See all categories →</Text>
                   </TouchableOpacity>
 
                   {workoutLogs.length > 0 && (
@@ -1454,22 +1512,56 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                     </TouchableOpacity>
                   </View>
 
-                  {renderHealthConnectRow("calories")}
+                  {/* Change 2: combined manual + HealthKit total */}
+                  <Text style={ar.todayTotal}>
+                    Today:{" "}
+                    {(localScore?.calories_count ?? 0).toLocaleString()} cal
+                  </Text>
 
-                  {(localScore?.manual_calories_count ?? 0) > 0 && (
+                  {/* Change 3: today's individual manual entries */}
+                  {displayedCaloriesEntries.length > 0 && (
                     <View>
                       <Text style={ar.entriesLabel}>TODAY</Text>
-                      <View style={ar.entryRow}>
-                        <Text style={ar.entryAmount}>
-                          Manual:{" "}
-                          {(
-                            localScore?.manual_calories_count ?? 0
-                          ).toLocaleString()}{" "}
-                          cal
+                      {displayedCaloriesEntries.map((entry, i) => (
+                        <View
+                          key={`${entry.created_at}-${i}`}
+                          style={[
+                            ar.entryRow,
+                            i < displayedCaloriesEntries.length - 1 &&
+                              ar.entryBorder,
+                          ]}
+                        >
+                          <Text style={ar.entryAmount}>
+                            +{entry.value.toLocaleString()} cal
+                          </Text>
+                          <Text style={ar.entryTime}>
+                            {formatTime(entry.created_at)}
+                          </Text>
+                        </View>
+                      ))}
+                      {caloriesMoreCount > 0 && (
+                        <Text style={ar.moreText}>
+                          + {caloriesMoreCount} more
                         </Text>
-                      </View>
+                      )}
                     </View>
                   )}
+
+                  {/* Change 4: HealthKit reconciling line */}
+                  {(localScore?.calories_count ?? 0) -
+                    (localScore?.manual_calories_count ?? 0) >
+                    0 && (
+                    <Text style={ar.hkPortionLine}>
+                      {(
+                        (localScore?.calories_count ?? 0) -
+                        (localScore?.manual_calories_count ?? 0)
+                      ).toLocaleString()}{" "}
+                      from Apple Health
+                    </Text>
+                  )}
+
+                  {/* Change 5: de-emphasized HealthKit affordance */}
+                  {renderHealthConnectRow("calories")}
                 </>
               )}
 
@@ -1629,35 +1721,54 @@ const s = StyleSheet.create({
     backgroundColor: C.surface,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    height: 420,
+    // Single FIXED height for every internal page — the sheet never
+    // resizes between pages. 480 keeps the combined total + first few
+    // TODAY entries above the fold while still reading as a bottom sheet
+    // on small devices; taller content scrolls within the page ScrollView.
+    height: 480,
+    // Clip residual overflow cleanly to the rounded sheet rather than
+    // letting it bleed off-screen.
+    overflow: "hidden",
   },
   scrollContent: {
     paddingHorizontal: 16,
     paddingBottom: 40,
   },
+  // Tier 1 spacing: a real top inset on every detail page. With the
+  // shared header's 16px paddingBottom this gives ~32px below the title.
   scrollContentDetail: {
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: 16,
     paddingBottom: 40,
   },
+  // Tier 1 spacing: the tight caption group (Apple Health badge + M-line
+  // stay together as one unit); the page paddingTop owns the gap above,
+  // and 16px medium gap below leads into the input zone.
   captionBlock: {
-    marginTop: 12,
-    marginBottom: 12,
+    marginBottom: 16,
+    gap: 4,
   },
   pagesTrack: {
     flexDirection: "row",
     width: "200%",
+    // flex: 1 bounds the track to (sheet height − handle − header). The
+    // page ScrollView children inherit that bound (row alignItems
+    // defaults to stretch) and become genuinely scrollable.
+    flex: 1,
   },
   page: {
     width: "50%",
   },
+  // Tier 1 spacing: the title breathes — 16px below it on every page
+  // (this header is shared by the overview + all detail pages). Horizontal
+  // padding aligned to 16 to match the content edges (rowDivider / ar.header).
   headerDetail: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingTop: 8,
-    paddingBottom: 0,
+    paddingBottom: 16,
   },
   handleWrap: { alignItems: "center", paddingTop: 14, paddingBottom: 10 },
   handle: {
