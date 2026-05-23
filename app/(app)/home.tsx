@@ -19,6 +19,7 @@ import {
   usePackCategoryStandings,
   type MemberWinsCount,
 } from "../../src/hooks/usePackCategoryStandings";
+import { usePackRunHistory } from "../../src/hooks/usePackRunHistory";
 import { supabase } from "../../src/lib/supabase";
 import { formatName } from "../../src/lib/displayName";
 import { PackMemberDisplay } from "../../src/components/PackMemberDisplay";
@@ -82,7 +83,12 @@ interface MiniRingEntry {
   avatar_url: string | null;
   total_wins: number;
   rank: number; // competition rank by total_wins (1,1,3,…)
-  isWinsLeader: boolean; // rank 1 with > 0 wins — gets the crown
+  // True iff this member was in the rank-1 group of the most recent
+  // COMPLETED run (last week for weekly packs, last month for monthly).
+  // Matches the Compete tab's wonPreviousRun on GridEntry — one Crown
+  // semantic across the app. Ties are first-class (multiple crowns
+  // possible iff multiple members genuinely tied the previous run).
+  wonPreviousRun: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,37 +154,58 @@ function MemberCard({
   const avatarUrl =
     isMe && currentUser ? currentUser.avatarUrl : entry.avatar_url;
   const nameColor = isMe ? colors.self : colors.member;
+  // Rank badge overlays the avatar's top-left. Gold for #1, neutral for
+  // everyone else — echoes the Compete tab's #N treatment, sized down
+  // for the avatar overlay. PackMemberDisplay's built-in below-ring pill
+  // stays suppressed (showRank={false}) — this overlay replaces it at a
+  // new position.
+  const isFirst = entry.rank === 1;
   return (
     <View style={miniRingS.memberCard}>
-      <TouchableOpacity
-        onPress={() => {
-          router.push(`/user/${entry.user_id}` as any);
-        }}
-        activeOpacity={0.7}
-        // Pass 25-followup-E.2.a-home-polish-3-fix: delay press-in capture
-        // so the parent horizontal ScrollView's pan detector wins on
-        // swipe gestures. Without this, the avatar TouchableOpacity locks
-        // touches immediately and horizontal scroll fails until a long-
-        // press first releases the touch. Genuine taps (~200-300ms total)
-        // still fire on release; horizontal pan resolves before 150ms.
-        delayPressIn={150}
-      >
-        <PackMemberDisplay
-          userId={entry.user_id}
-          displayName={displayName}
-          progressPct={pct}
-          rank={entry.rank}
-          currentUserId={currentUserId}
-          leaderId={leaderId}
-          size={MEMBER_RING_SIZE}
-          strokeWidth={MEMBER_RING_STROKE}
-          avatarUrl={avatarUrl}
-          showName={false}
-          showRank={false}
-        />
-      </TouchableOpacity>
+      <View style={miniRingS.avatarWrap}>
+        <TouchableOpacity
+          onPress={() => {
+            router.push(`/user/${entry.user_id}` as any);
+          }}
+          activeOpacity={0.7}
+          // Pass 25-followup-E.2.a-home-polish-3-fix: delay press-in capture
+          // so the parent horizontal ScrollView's pan detector wins on
+          // swipe gestures. Without this, the avatar TouchableOpacity locks
+          // touches immediately and horizontal scroll fails until a long-
+          // press first releases the touch. Genuine taps (~200-300ms total)
+          // still fire on release; horizontal pan resolves before 150ms.
+          delayPressIn={150}
+        >
+          <PackMemberDisplay
+            userId={entry.user_id}
+            displayName={displayName}
+            progressPct={pct}
+            rank={entry.rank}
+            currentUserId={currentUserId}
+            leaderId={leaderId}
+            size={MEMBER_RING_SIZE}
+            strokeWidth={MEMBER_RING_STROKE}
+            avatarUrl={avatarUrl}
+            showName={false}
+            showRank={false}
+          />
+        </TouchableOpacity>
+        <View
+          pointerEvents="none"
+          style={[miniRingS.rankBadge, isFirst && miniRingS.rankBadgeFirst]}
+        >
+          <Text
+            style={[
+              miniRingS.rankBadgeText,
+              isFirst && miniRingS.rankBadgeTextFirst,
+            ]}
+          >
+            #{entry.rank}
+          </Text>
+        </View>
+      </View>
       <View style={miniRingS.nameLine}>
-        {entry.isWinsLeader && (
+        {entry.wonPreviousRun && (
           <Crown
             size={12}
             color={colors.leader}
@@ -203,11 +230,13 @@ function MemberCard({
 function MiniRings({
   members,
   rankedMembers,
+  previousRunWinnerIds,
   runStart,
   currentUserId,
 }: {
   members: HomeMember[];
   rankedMembers: MemberWinsCount[];
+  previousRunWinnerIds: string[];
   runStart: string;
   currentUserId: string | undefined;
 }) {
@@ -216,10 +245,13 @@ function MiniRings({
   // rankedMembers is wins-desc; join each to its roster row for display.
   // Filtered to the current roster — the standings hook also counts
   // ex-members who won days, but those shouldn't appear as ghost avatars.
-  // Competition ranks (1,1,3,…) by total_wins; the crown shows on rank-1
-  // members with > 0 wins (at 0 wins everyone is "rank 1" — meaningless).
+  // Competition ranks (1,1,3,…) by total_wins. Crown semantic = the
+  // overall pack winner(s) of the PREVIOUS completed run — same as the
+  // Compete tab. previousRunWinnerIds is the rank-1 group of
+  // completedRuns[0] derived in DarkPackCard.
   const memberById = new Map(members.map((m) => [m.user_id, m]));
   const rankedRoster = rankedMembers.filter((rm) => memberById.has(rm.userId));
+  const winnerIdSet = new Set(previousRunWinnerIds);
   const entries: MiniRingEntry[] = [];
   for (let i = 0; i < rankedRoster.length; i++) {
     const rm = rankedRoster[i];
@@ -234,7 +266,7 @@ function MiniRings({
       avatar_url: m.avatar_url,
       total_wins: rm.totalWins,
       rank,
-      isWinsLeader: rank === 1 && rm.totalWins > 0,
+      wonPreviousRun: winnerIdSet.has(rm.userId),
     });
   }
 
@@ -305,6 +337,41 @@ const miniRingS = StyleSheet.create({
     // text below it.
     width: 110,
     gap: 6,
+  },
+  // Wrapper for the avatar + the absolutely-positioned rank badge. Width
+  // matches the ring so the badge anchors to the ring's top-left corner
+  // regardless of the card's overall `alignItems: "center"`.
+  avatarWrap: {
+    position: "relative",
+    width: MEMBER_RING_SIZE,
+    height: MEMBER_RING_SIZE,
+  },
+  // Rank badge — small pill sitting on the avatar's top-left curve.
+  // Token family mirrors PackMemberDisplay's built-in badge (which the
+  // card explicitly suppresses) so the overlay reads as native to the
+  // app. Dark pill bg keeps the badge legible over any avatar photo.
+  rankBadge: {
+    position: "absolute",
+    top: -2,
+    left: -2,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+    borderWidth: 0.5,
+    backgroundColor: C.surface,
+    borderColor: C.border,
+  },
+  rankBadgeFirst: {
+    backgroundColor: colors.leaderBg,
+    borderColor: colors.leaderBorder,
+  },
+  rankBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: C.textSecondary,
+  },
+  rankBadgeTextFirst: {
+    color: colors.leader,
   },
   nameLine: {
     flexDirection: "row",
@@ -449,6 +516,15 @@ function DarkPackCard({
     (data?.members ?? []).map((m) => m.user_id),
   );
 
+  // Completed-run history — used to identify the previous run's pack
+  // winner(s) for the Crown signal on each member card. Mirrors the
+  // Compete tab's derivation (pack/[id].tsx → wonPreviousRun on
+  // GridEntry) so the two surfaces agree.
+  const { completedRuns } = usePackRunHistory(pack.id);
+  const previousRunWinnerIds = (completedRuns[0]?.standings ?? [])
+    .filter((s) => s.rank === 1)
+    .map((s) => s.userId);
+
   const members = data?.members ?? [];
   const hasActivity = members.length > 0;
 
@@ -497,6 +573,7 @@ function DarkPackCard({
           <MiniRings
             members={members}
             rankedMembers={standings?.rankedMembers ?? []}
+            previousRunWinnerIds={previousRunWinnerIds}
             runStart={data.runStart}
             currentUserId={currentUserId}
           />

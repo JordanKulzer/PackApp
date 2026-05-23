@@ -26,9 +26,9 @@ import type { Pack, Run } from "../types/database";
 import {
   CATEGORIES,
   CATEGORY_LABELS,
-  CATEGORY_ICON,
   type Category,
 } from "../lib/categories";
+import { CategoryIcon } from "./CategoryIcon";
 import { colors } from "../theme/colors";
 import { den } from "../constants/strings";
 import { formatName } from "../lib/displayName";
@@ -82,36 +82,6 @@ function ringFillPct(totalWins: number, run: Run): number {
   return Math.min(100, Math.max(0, (totalWins / daysElapsed) * 100));
 }
 
-// Renders the category icon from the centralized CATEGORY_ICON map
-// (single source of truth in src/lib/categories.ts). Branches on the
-// map's `lib` field to pick the right @expo/vector-icons family. Used
-// inline on the member row's per-category wins line; intentionally
-// small (default size 14, textSecondary) so it sits as supporting
-// information next to its count, not as a focal point.
-function CategoryIcon({
-  category,
-  size = 14,
-  color,
-}: {
-  category: Category;
-  size?: number;
-  color: string;
-}) {
-  const meta = CATEGORY_ICON[category];
-  if (meta.lib === "Ionicons") {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return <Ionicons name={meta.name as any} size={size} color={color} />;
-  }
-  return (
-    <MaterialCommunityIcons
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      name={meta.name as any}
-      size={size}
-      color={color}
-    />
-  );
-}
-
 // pack enable-flags aren't keyed by Category — map explicitly. The exhaustive
 // switch means adding a Category surfaces a compile error here.
 function categoryEnabled(pack: Pack, category: Category): boolean {
@@ -139,6 +109,12 @@ export interface GridEntry {
   today_values: Record<Category, number>;
   is_today_leader_in: Category[];
   streak_days: number;
+  // True iff this member was in the rank-1 group of the most recent
+  // COMPLETED run (last week for weekly packs, last month for monthly).
+  // Drives the Crown icon on the row — see RankRow. Computed in the
+  // parent (pack/[id].tsx) from usePackRunHistory; the view is dumb and
+  // just renders the boolean.
+  wonPreviousRun: boolean;
 }
 
 interface RankGroup {
@@ -316,8 +292,6 @@ function RankRow({
   const ringStroke = 7;
   // Ring fill is the member's wins-share of the run so far (see ringFillPct).
   const pct = ringFillPct(entry.total_wins, activeRun);
-  // Crown = leading any category today. One crown regardless of how many.
-  const isTodayLeader = entry.is_today_leader_in.length > 0;
   const router = useRouter();
   return (
     <TouchableOpacity
@@ -363,10 +337,14 @@ function RankRow({
         />
       </TouchableOpacity>
       <View style={s.rowCenter}>
-        {/* Line 1: name (with the leader-only crown when the member is
-            leading any category TODAY). */}
+        {/* Line 1: name (with the crown when this member is the overall
+            pack winner of the PREVIOUS completed run — i.e. last week
+            for weekly packs, last month for monthly). One Crown semantic
+            across the app; the per-category "today's leader" signal is
+            preserved separately via is_today_leader_in / today_values
+            on the expanded card. */}
         <View style={s.rowNameLine}>
-          {isTodayLeader && (
+          {entry.wonPreviousRun && (
             <Crown
               size={14}
               color={colors.leader}

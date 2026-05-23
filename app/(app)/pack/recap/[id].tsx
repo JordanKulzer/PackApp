@@ -10,7 +10,7 @@ import {
   Easing,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Crown } from "lucide-react-native";
+import { CategoryIcon } from "../../../../src/components/CategoryIcon";
 import { useAuthStore } from "../../../../src/stores/authStore";
 import { supabase } from "../../../../src/lib/supabase";
 import {
@@ -359,7 +359,16 @@ export default function RecapScreen() {
             const isMe = !!userId && cw.winnerUserIds.includes(userId);
             return (
               <View key={category} style={[s.champRow, isMe && s.rowMe]}>
-                <Crown size={15} color={colors.leader} strokeWidth={2} />
+                {/* Per-category icon (was a Crown). Crown is reserved for
+                    overall winners now; this site labels WHICH category
+                    was won. Neutral colors.member — the surrounding
+                    CATEGORY CHAMPIONS header + gold isMe row treatment
+                    still carry the winner semantics. */}
+                <CategoryIcon
+                  category={category}
+                  size={15}
+                  color={colors.member}
+                />
                 <Text style={s.champCategory}>
                   {CATEGORY_LABELS[category]}
                 </Text>

@@ -78,6 +78,7 @@ import {
   CATEGORY_LABELS,
   type Category,
 } from "../../../src/lib/categories";
+import { CategoryIcon } from "../../../src/components/CategoryIcon";
 import { useCurrentUser } from "../../../src/context/CurrentUserContext";
 import { useRefreshCurrentUserOnFocus } from "../../../src/hooks/useRefreshCurrentUserOnFocus";
 import { den, packEdit, t } from "../../../src/constants/strings";
@@ -626,7 +627,16 @@ function WeekDetailSheet({
                       {CATEGORY_LABELS[category]}
                     </Text>
                     <View style={wdS.champWinner}>
-                      <Crown size={14} color={colors.leader} strokeWidth={2} />
+                      {/* Per-category icon (was a Crown). Crown is reserved
+                          for overall winners now; this site labels WHICH
+                          category was won. Neutral textSecondary — the
+                          surrounding section header + gold "Days" carry
+                          the winner semantics. */}
+                      <CategoryIcon
+                        category={category}
+                        size={14}
+                        color={C.textSecondary}
+                      />
                       <Text style={wdS.champName} numberOfLines={1}>
                         {namesLabel}
                       </Text>
@@ -753,10 +763,15 @@ function WeekDetailSheet({
                           <View style={wdS.dayBadges}>
                             {score.categoriesWon.map((c) => (
                               <View key={c} style={wdS.dayBadge}>
-                                <Crown
-                                  size={11}
-                                  color={colors.leader}
-                                  strokeWidth={2}
+                                {/* Per-category icon (was a Crown). Bumped
+                                    size 11 → 12 since MCI shoe-print can
+                                    read muddy at 11. Neutral color — the
+                                    pill bg + gold dayBadgeText carry the
+                                    win meaning. */}
+                                <CategoryIcon
+                                  category={c}
+                                  size={12}
+                                  color={C.textSecondary}
                                 />
                                 <Text style={wdS.dayBadgeText}>
                                   {CATEGORY_LABELS[c]}
@@ -2134,6 +2149,15 @@ export default function PackScreen() {
       (packData?.members ?? []).map((m) => m.user_id),
     );
 
+  // Completed-run history — used here to identify the previous run's
+  // overall pack winner(s) for the Crown signal on each gridEntry. The
+  // separate PastRunsSection has its own usePackRunHistory call; the
+  // hook is cheap (read-only, cached on packId) so the duplication is
+  // intentional rather than threading the same data down two paths.
+  const { completedRuns: completedRunsForCrown } = usePackRunHistory(
+    packData?.pack.id ?? "",
+  );
+
   const { width: screenWidth } = useWindowDimensions();
   const { top: topInset } = useSafeAreaInsets();
   const pageScrollRef = React.useRef<ScrollView>(null);
@@ -2362,6 +2386,16 @@ export default function PackScreen() {
   // Ranking is inlined: total_wins desc, streak_days desc, display_name
   // asc. Competition
   // ranks — genuine ties share a rank and the next rank skips (1,1,3,3).
+  //
+  // wonPreviousRun: derived from completedRunsForCrown (usePackRunHistory
+  // call near the top of PackScreen). The rank-1 GROUP (filter, not [0])
+  // of the most recent completed run — ties are first-class, both/all
+  // rank-1 members hold the crown.
+  const previousRunWinnerIds = new Set(
+    (completedRunsForCrown[0]?.standings ?? [])
+      .filter((s) => s.rank === 1)
+      .map((s) => s.userId),
+  );
   let gridEntries: GridEntry[] = [];
   if (categoryStandings) {
     const winsById = new Map(
@@ -2393,6 +2427,7 @@ export default function PackScreen() {
         today_values,
         is_today_leader_in,
         streak_days: scoreById.get(m.user_id)?.streak_days ?? 0,
+        wonPreviousRun: previousRunWinnerIds.has(m.user_id),
       };
     });
 
