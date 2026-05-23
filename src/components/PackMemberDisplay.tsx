@@ -66,8 +66,10 @@ interface PackMemberDisplayProps {
 // Not an identity color — just a layout signal for zero-progress state.
 const RING_EMPTY_COLOR = "#484F58";
 
-// Dark-theme surface colors shared across ring slot backgrounds.
-const TRACK_LEADER = "#3A4150";
+// Dark-theme surface color for the ring track. Every row uses the same
+// track now — the prior TRACK_LEADER lighter shade was an extra "#1"
+// emphasis that survived the gold-arc removal and made the leader's
+// avatar still read as different from #3/#4.
 const TRACK_OTHER = "#30363D";
 const BADGE_BG = "#1C2333";
 const BADGE_BORDER = "#30363D";
@@ -95,7 +97,6 @@ export function PackMemberDisplay({
   const cy = size / 2;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
-  const trackColor = isFirst ? TRACK_LEADER : TRACK_OTHER;
   const initialFontSize = Math.round(size * 0.27);
   const nameFontSize = size >= 90 ? 13 : size >= 65 ? 12 : 10;
   const nameFontWeight: "700" | "600" = isFirst ? "700" : "600";
@@ -123,7 +124,7 @@ export function PackMemberDisplay({
             cx={cx}
             cy={cy}
             r={radius}
-            stroke={trackColor}
+            stroke={TRACK_OTHER}
             strokeWidth={strokeWidth}
             fill="none"
           />

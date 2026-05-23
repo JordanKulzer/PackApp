@@ -145,7 +145,6 @@ interface RankGroup {
   rank: number;
   members: GridEntry[];
   isTied: boolean;
-  winsBehindLeader: number;
 }
 
 interface Props {
@@ -172,17 +171,11 @@ export function PackGridView({
     setExpandedUserId((cur) => (cur === userId ? null : userId));
   }, []);
   const totalMembers = entries.length;
-  const leaderId = useMemo(
-    () => entries.find((e) => e.rank === 1)?.user_id,
-    [entries],
-  );
 
   // Group all entries by rank for the unified vertical list. Every member,
-  // including rank 1, renders in this list.
-  // winsBehindLeader = leader's wins (entries[0]) − this group's wins.
-  // Members within a group are sorted alphabetically (mirrors tie order).
+  // including rank 1, renders in this list. Members within a group are
+  // sorted alphabetically (mirrors tie order).
   const rankGroups = useMemo<RankGroup[]>(() => {
-    const leaderWins = entries.length > 0 ? entries[0].total_wins : 0;
     const grouped: Record<number, GridEntry[]> = {};
     entries.forEach((entry) => {
       if (!grouped[entry.rank]) grouped[entry.rank] = [];
@@ -201,7 +194,6 @@ export function PackGridView({
           rank,
           members,
           isTied: members.length > 1,
-          winsBehindLeader: leaderWins - members[0].total_wins,
         };
       });
   }, [entries]);
@@ -240,7 +232,6 @@ export function PackGridView({
               <RankGroupHeader
                 isTied={group.isTied}
                 memberCount={group.members.length}
-                winsBehindLeader={group.winsBehindLeader}
               />
               {group.members.map((entry) => (
                 <View key={entry.user_id}>
@@ -248,7 +239,6 @@ export function PackGridView({
                     entry={entry}
                     activeRun={activeRun}
                     currentUserId={currentUserId}
-                    leaderId={leaderId}
                     isExpanded={expandedUserId === entry.user_id}
                     onPress={() => toggleExpand(entry.user_id)}
                   />
@@ -272,17 +262,14 @@ export function PackGridView({
 // ── Rank group header ──────────────────────────────────────────────────────
 // Renders above each group of rows ONLY when the group is tied. Solo ranks
 // have no header — the row's own #X cell speaks for itself. Tied groups
-// show "TIED · N way" on the left and "{gap} wins behind" on the right when
-// not the leader group.
+// show "TIED · N way" (or just "TIED" for a 2-way tie).
 
 function RankGroupHeader({
   isTied,
   memberCount,
-  winsBehindLeader,
 }: {
   isTied: boolean;
   memberCount: number;
-  winsBehindLeader: number;
 }) {
   // Solo rank = no header. The row's prominent #X cell carries the rank.
   if (!isTied) return null;
@@ -290,11 +277,6 @@ function RankGroupHeader({
   return (
     <View style={s.groupHeader}>
       <Text style={s.groupHeaderText}>{tieLabel}</Text>
-      {winsBehindLeader > 0 && (
-        <Text style={s.groupHeaderGap}>
-          {winsBehindLeader} {winsBehindLeader === 1 ? "win" : "wins"} behind
-        </Text>
-      )}
     </View>
   );
 }
@@ -310,14 +292,12 @@ function RankRow({
   entry,
   activeRun,
   currentUserId,
-  leaderId,
   isExpanded,
   onPress,
 }: {
   entry: GridEntry;
   activeRun: Run;
   currentUserId: string | undefined;
-  leaderId: string | undefined;
   isExpanded: boolean;
   onPress: () => void;
 }) {
@@ -372,7 +352,10 @@ function RankRow({
           // The row's #X cell carries the rank.
           rank={4}
           currentUserId={currentUserId}
-          leaderId={leaderId}
+          // Change 1: leader avatar uses the same neutral ring as every
+          // other member. Gold #1 rank text + gold left accent bar still
+          // identify the leader; this avatar ring no longer doubles up.
+          leaderId={undefined}
           size={ringSize}
           strokeWidth={ringStroke}
           showName={false}
@@ -724,11 +707,6 @@ const s = StyleSheet.create({
   // row context.
   nameSelf: {
     color: C.accent,
-  },
-  groupHeaderGap: {
-    fontSize: 12,
-    color: C.textSecondary,
-    marginLeft: "auto",
   },
 
   // Member row
