@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   View,
   Text,
@@ -10,14 +16,19 @@ import {
   Animated,
   Easing,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { Crown } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import { PackMemberDisplay } from "./PackMemberDisplay";
 import { showToast } from "../lib/toast";
 import type { Pack, Run } from "../types/database";
-import { CATEGORIES, CATEGORY_LABELS, type Category } from "../lib/categories";
+import {
+  CATEGORIES,
+  CATEGORY_LABELS,
+  CATEGORY_ICON,
+  type Category,
+} from "../lib/categories";
 import { colors } from "../theme/colors";
 import { den } from "../constants/strings";
 import { formatName } from "../lib/displayName";
@@ -69,6 +80,36 @@ function ringFillPct(totalWins: number, run: Run): number {
   const rawDays = Math.floor((Date.now() - start) / msPerDay) + 1;
   const daysElapsed = Math.min(7, Math.max(1, rawDays));
   return Math.min(100, Math.max(0, (totalWins / daysElapsed) * 100));
+}
+
+// Renders the category icon from the centralized CATEGORY_ICON map
+// (single source of truth in src/lib/categories.ts). Branches on the
+// map's `lib` field to pick the right @expo/vector-icons family. Used
+// inline on the member row's per-category wins line; intentionally
+// small (default size 14, textSecondary) so it sits as supporting
+// information next to its count, not as a focal point.
+function CategoryIcon({
+  category,
+  size = 14,
+  color,
+}: {
+  category: Category;
+  size?: number;
+  color: string;
+}) {
+  const meta = CATEGORY_ICON[category];
+  if (meta.lib === "Ionicons") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return <Ionicons name={meta.name as any} size={size} color={color} />;
+  }
+  return (
+    <MaterialCommunityIcons
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      name={meta.name as any}
+      size={size}
+      color={color}
+    />
+  );
 }
 
 // pack enable-flags aren't keyed by Category — map explicitly. The exhaustive
@@ -181,6 +222,18 @@ export function PackGridView({
     <View style={s.container}>
       {rankGroups.length > 0 && (
         <View style={s.listContainer}>
+          {/* Fix 3: section header above the roster — left-aligned as a
+              proper section title (not a column label trying to sit over
+              the bare-number column). Wording stays dynamic on the
+              pack's competition_window so a monthly pack never reads
+              "weekly" (and vice-versa). */}
+          <View style={s.sectionHeader}>
+            <Text style={s.sectionHeaderText}>
+              {pack.competition_window === "monthly"
+                ? "Monthly stats"
+                : "Weekly stats"}
+            </Text>
+          </View>
           {rankGroups.map((group, groupIdx) => (
             <View key={group.rank}>
               {groupIdx > 0 && <View style={s.groupDivider} />}
@@ -233,8 +286,7 @@ function RankGroupHeader({
 }) {
   // Solo rank = no header. The row's prominent #X cell carries the rank.
   if (!isTied) return null;
-  const tieLabel =
-    memberCount > 2 ? `TIED · ${memberCount} way` : "TIED";
+  const tieLabel = memberCount > 2 ? `TIED · ${memberCount} way` : "TIED";
   return (
     <View style={s.groupHeader}>
       <Text style={s.groupHeaderText}>{tieLabel}</Text>
@@ -276,8 +328,12 @@ function RankRow({
   // gold only when expanded AND rank === 1 AND not self.
   const showBar = isMe || isExpanded;
   const useLeaderBarColor = !isMe && isLeader && isExpanded;
-  const ringSize = isLeader ? 80 : 70;
-  const ringStroke = isLeader ? 8 : 7;
+  // Fix 1: every row uses the same avatar size. The leader's visual
+  // distinction now comes only from the gold ring color + the gold #1
+  // rank text — not from a larger avatar — so the list reads as a
+  // uniform roster instead of one outsized leader.
+  const ringSize = 70;
+  const ringStroke = 7;
   // Ring fill is the member's wins-share of the run so far (see ringFillPct).
   const pct = ringFillPct(entry.total_wins, activeRun);
   // Crown = leading any category today. One crown regardless of how many.
@@ -293,9 +349,7 @@ function RankRow({
       onPress={onPress}
       activeOpacity={0.6}
     >
-      <Text
-        style={[s.rowRank, isLeader ? s.rowRankLeader : s.rowRankNormal]}
-      >
+      <Text style={[s.rowRank, isLeader ? s.rowRankLeader : s.rowRankNormal]}>
         #{entry.rank}
       </Text>
       {/* Avatar is its own tap target — opens the public user profile
@@ -326,8 +380,8 @@ function RankRow({
         />
       </TouchableOpacity>
       <View style={s.rowCenter}>
-        {/* Crown + name on one line; streak badge sits below. The gold
-            crown is a leader-only signal. */}
+        {/* Line 1: name (with the leader-only crown when the member is
+            leading any category TODAY). */}
         <View style={s.rowNameLine}>
           {isTodayLeader && (
             <Crown
@@ -341,13 +395,51 @@ function RankRow({
             {formatName(entry.display_name)}
           </Text>
         </View>
+        {/* Line 2: per-category win counts. All four categories shown
+            (including zeros) so rows align consistently — BUT when the
+            member has no wins at all (total_wins === 0), the four-zero
+            row reads cold/empty, so Fix 4 swaps it for a single muted
+            line. Icons come from CATEGORY_ICON (single source of
+            truth); counts read straight off entry.wins_by_category. */}
+        {entry.total_wins === 0 ? (
+          <Text style={s.rowNoWins}>No category wins yet</Text>
+        ) : (
+          <View style={s.rowCategoryWins}>
+            {CATEGORIES.map((category, i) => (
+              <React.Fragment key={category}>
+                {i > 0 && <Text style={s.rowCategorySep}>·</Text>}
+                <View style={s.rowCategoryItem}>
+                  <CategoryIcon
+                    category={category}
+                    size={14}
+                    color={C.textSecondary}
+                  />
+                  <Text style={s.rowCategoryCount}>
+                    {entry.wins_by_category[category] ?? 0}
+                  </Text>
+                </View>
+              </React.Fragment>
+            ))}
+          </View>
+        )}
+        {/* Line 3: streak — slightly de-emphasized supporting info.
+            Non-flame glyph (MaterialCommunityIcons "lightning-bolt") so
+            it never visually collides with the calories category icon
+            (which is "fire" — the de-facto convention). */}
         {entry.streak_days > 0 && (
-          <Text style={s.rowStreak}>🔥 {entry.streak_days}</Text>
+          <View style={s.rowStreakLine}>
+            <MaterialCommunityIcons
+              name="lightning-bolt"
+              size={11}
+              color={C.streak}
+            />
+            <Text style={s.rowStreak}>{entry.streak_days} day streak</Text>
+          </View>
         )}
       </View>
-      <Text style={s.rowWins}>
-        {entry.total_wins} {entry.total_wins === 1 ? "win" : "wins"}
-      </Text>
+      {/* Right: bare total — just the number. The section header above
+          the list ("Weekly stats" / "Monthly stats") gives context. */}
+      <Text style={s.rowWins}>{entry.total_wins}</Text>
     </TouchableOpacity>
   );
 }
@@ -369,6 +461,9 @@ function CategoryBar({
   leaderValue: number;
   isLeader: boolean;
 }) {
+  // Fill math UNCHANGED — leader fills 100% gold, chasing bars fill
+  // memberValue / leaderValue. Only the displayed ratio TEXT changes
+  // (Fix 3: leader bars no longer hide the denominator).
   const pct = isLeader
     ? 100
     : leaderValue > 0
@@ -390,10 +485,20 @@ function CategoryBar({
     outputRange: ["0%", "100%"],
   });
   const suffix = category === "water" ? " oz" : "";
-  // The category leader has no one above them — show just their value.
-  const ratio = isLeader
-    ? `${memberValue}${suffix}`
-    : `${memberValue} / ${leaderValue}${suffix}`;
+
+  // Fix 5: when nobody in the pack has logged this category today
+  // (leaderValue 0), the prior "0 / 0" ratio read as meaningless.
+  // Render a single muted line in place of the bar + ratio so the row
+  // reads as "nothing happened here yet today" instead of "everyone
+  // is at 0%."
+  if (leaderValue === 0) {
+    return (
+      <View style={s.goalRow}>
+        <Text style={s.goalLabel}>{CATEGORY_LABELS[category]}</Text>
+        <Text style={s.goalEmpty}>No one's logged this yet today</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={s.goalRow}>
@@ -406,8 +511,21 @@ function CategoryBar({
           ]}
         />
       </View>
+      {/* Tight "X / Y" fraction at the end of the row — one Text with
+          a nested Text for the muted "/ Y{suffix}" remainder. Numerator
+          gets the primary text color so the eye lands on the member's
+          own value first. Uniform across all bars (leader bars render
+          e.g. "786 / 786"); the gold bar fill is the only "leader"
+          signal needed. */}
       <View style={s.goalRatioBlock}>
-        <Text style={s.goalRatio}>{ratio}</Text>
+        <Text style={s.goalRatioText}>
+          {memberValue}
+          <Text style={s.goalRatioRest}>
+            {" / "}
+            {leaderValue}
+            {suffix}
+          </Text>
+        </Text>
       </View>
     </View>
   );
@@ -445,6 +563,11 @@ function RankRowExpanded({
     return out;
   }, [entries]);
 
+  // Fix 2: first-name label for the left column header. formatName
+  // normalizes capitalization; split on whitespace to take only the
+  // first token so the label fits cleanly in the narrow header column.
+  const firstName = formatName(entry.display_name).split(/\s+/)[0];
+
   return (
     <View
       style={[
@@ -452,6 +575,23 @@ function RankRowExpanded({
         useLeaderAccent && { borderLeftColor: colors.leader },
       ]}
     >
+      {/* Fix 1: section title. The audit confirmed this card is strictly
+          today's data, so "Daily stats" is accurate. Pairs with the
+          roster-level "Weekly stats" header to make the today-vs-week
+          distinction legible. */}
+      <Text style={s.expandedSectionTitle}>Daily stats</Text>
+
+      {/* Single small right-aligned column label sitting over the
+          ratio at the end of each bar row. One Text — not a grid; the
+          prior aligned-grid attempt mashed the two labels together and
+          starved the bar. Visible " / " separator echoes the "X / Y"
+          fractions below; "Leader" (not "Pack Leader") keeps it short. */}
+      <View style={s.expandedColHeader}>
+        <Text style={s.expandedColHeaderText}>
+          {firstName} / Today's Leader
+        </Text>
+      </View>
+
       {CATEGORIES.map((category) => (
         <CategoryBar
           key={category}
@@ -639,8 +779,39 @@ const s = StyleSheet.create({
     color: C.textPrimary,
     flexShrink: 1, // truncate (numberOfLines=1) rather than push the crown
   },
-  rowStreak: {
+  // Line 2 of the row's middle column — per-category win counts.
+  // All four items always rendered (including zeros) so rows align.
+  rowCategoryWins: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 2,
+  },
+  rowCategoryItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  rowCategoryCount: {
     fontSize: 12,
+    fontWeight: "500",
+    color: C.textSecondary,
+  },
+  rowCategorySep: {
+    fontSize: 12,
+    color: C.textTertiary,
+  },
+  // Line 3 of the row's middle column — streak. Slightly de-emphasized
+  // (smaller than the name + category-icon lines). Non-flame glyph so
+  // it never collides with the calories category icon.
+  rowStreakLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 2,
+  },
+  rowStreak: {
+    fontSize: 11,
     color: C.streak,
   },
   rowWins: {
@@ -648,6 +819,28 @@ const s = StyleSheet.create({
     fontWeight: "600",
     color: C.textPrimary,
     marginLeft: 8,
+  },
+  // Fix 3: section header above the roster — replaces the prior
+  // right-aligned column-label attempt (which never aligned cleanly
+  // over the bare-number column). Left-aligned, weight + secondary
+  // color match other section titles in the app.
+  sectionHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
+  },
+  sectionHeaderText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: C.textSecondary,
+  },
+  // Fix 4: zero-state copy when a member has 0 wins in every category.
+  // Replaces the four-zero icon row so the row doesn't read cold/empty.
+  // Muted text, same vertical rhythm as the four-icon row it replaces.
+  rowNoWins: {
+    fontSize: 12,
+    color: C.textTertiary,
+    marginTop: 2,
   },
 
   // ── Inline expansion (per-member goal breakdown) ──
@@ -688,19 +881,60 @@ const s = StyleSheet.create({
     borderRadius: 3,
     backgroundColor: C.accent,
   },
-  // Right-aligned slot housing the ratio text + (optional) ✓ icon. minWidth
-  // preserves column alignment across rows; justifyContent keeps content
-  // pinned to the right edge regardless of icon presence.
+  // Compact ratio slot at the end of the bar row. `minWidth` (not a
+  // fixed width) preserves column alignment across rows but lets the
+  // bar track keep its full width — the prior fixed-width grid layout
+  // starved the bar. Single child is right-aligned via alignItems.
   goalRatioBlock: {
     minWidth: 80,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-end",
+    alignItems: "flex-end",
   },
-  goalRatio: {
+  // One tight "X / Y" Text. Outer Text carries primary color (the
+  // numerator); the nested Text below renders the "/ Y{suffix}"
+  // remainder in tertiary so the eye lands on the member's own value
+  // first. Rendering as nested Text — not three siblings — keeps the
+  // fraction visually as one piece, with normal letter spacing.
+  goalRatioText: {
     fontSize: 12,
+    fontWeight: "600",
+    color: C.textPrimary,
+  },
+  goalRatioRest: {
+    fontWeight: "400",
+    color: C.textTertiary,
+  },
+  // Empty-state line replacing the bar + ratio when leaderValue is 0
+  // (no one in the pack has logged this category today).
+  goalEmpty: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 12,
+    color: C.textTertiary,
+  },
+  // Section title inside the expanded card — pairs with the
+  // roster-level "Weekly stats" header to make the today-vs-week
+  // distinction legible.
+  expandedSectionTitle: {
+    fontSize: 13,
+    fontWeight: "600",
     color: C.textSecondary,
-    textAlign: "right",
+    marginBottom: 8,
+  },
+  // Single small right-aligned column label above the bars, sitting
+  // over the ratio at the end of each bar row. One Text — NOT a
+  // grid; the prior aligned-grid attempt mashed the two labels and
+  // starved the bar.
+  expandedColHeader: {
+    alignItems: "flex-end",
+    paddingVertical: 4,
+    marginBottom: 4,
+  },
+  expandedColHeaderText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: C.textTertiary,
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
   },
 
   // ── Solo-pack hero ──

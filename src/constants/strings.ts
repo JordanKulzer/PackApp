@@ -274,7 +274,7 @@ export const den = {
   // pack-size, that creates a two-tier brand experience.
   solo: {
     heroTitle: "Build your pack",
-    heroSubtitle: "Invite a friend. Pack runs better in twos.",
+    heroSubtitle: "Invite a friend. Pack runs better with others.",
   },
 
   // Transfer-ownership confirmation dialog body. Brand voice applies to
