@@ -1,5 +1,6 @@
 import { supabase } from "./supabase";
 import { computeStreakForRun } from "./computeStreak";
+import { computeUserStreak } from "./computeUserStreak";
 import { packToday, deviceLocalToday } from "./packDates";
 import { notifyPackMembers } from "./notifications";
 import { type CrossingEvent } from "./competitiveDetection";
@@ -99,6 +100,12 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
       if (upsertError) {
         console.error("[LogSheet] daily_scores upsert error:", upsertError);
       }
+
+      // Stage 2 streak rewrite: recompute the per-user GLOBAL streak after
+      // every successful daily_scores write. computeStreakForRun above
+      // continues to maintain the per-run daily_scores.streak_days value
+      // for legacy Recap / per-pack surfaces. Fire-and-forget; never throws.
+      computeUserStreak(userId).catch(() => {});
 
       // Categories pivot (Stage 2C): per-category passed_you / tied_you
       // threats. Water's before value is the prior manual + hk lanes; the

@@ -16,6 +16,7 @@ import { LogSheet } from "../../src/components/LogSheet";
 import { LogSheetCoachMark } from "../../src/components/LogSheetCoachMark";
 import { Toast } from "../../src/components/Toast";
 import { rolloverExpiredRuns } from "../../src/lib/runRollover";
+import { computeUserStreak } from "../../src/lib/computeUserStreak";
 import { useCurrentUser } from "../../src/context/CurrentUserContext";
 
 const LOGSHEET_HINT_KEY = "pack:logsheet:hint:plus_button";
@@ -192,12 +193,19 @@ export default function AppLayout() {
     rolloverExpiredRuns(user.id).catch((e) =>
       console.warn("[runRollover] launch:", e),
     );
+    // Stage 2 streak rewrite: recompute the per-user GLOBAL streak on
+    // app foreground so a user who hasn't logged in a few days sees the
+    // correct (possibly broken) streak immediately — not a stale value
+    // frozen at their last write. Same fire-and-forget treatment as
+    // rolloverExpiredRuns; failure must not block app bootstrap.
+    computeUserStreak(user.id).catch(() => {});
 
     const sub = AppState.addEventListener("change", (next) => {
       if (appState.current.match(/inactive|background/) && next === "active") {
         rolloverExpiredRuns(user.id!).catch((e) =>
           console.warn("[runRollover] foreground:", e),
         );
+        computeUserStreak(user.id!).catch(() => {});
       }
       appState.current = next;
     });

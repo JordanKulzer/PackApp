@@ -5,6 +5,7 @@
 import { supabase } from "./supabase";
 import { WORKOUT_MAX_DAILY } from "./scoring";
 import { computeStreakForRun } from "./computeStreak";
+import { computeUserStreak } from "./computeUserStreak";
 import { notifyPackMembers } from "./notifications";
 import { type CrossingEvent } from "./competitiveDetection";
 import { detectAndSendCategoryThreats, type Category } from "./threatNotifications";
@@ -160,6 +161,14 @@ export async function syncManualActivityToDailyScores(
         console.error("[logActivity] daily_scores upsert error:", error);
         continue;
       }
+
+      // Stage 2 streak rewrite: recompute the per-user GLOBAL streak after
+      // every successful daily_scores write. computeStreakForRun above
+      // continues to maintain the per-run daily_scores.streak_days value
+      // for legacy Recap / per-pack surfaces (transition strategy — no
+      // regression). Fire-and-forget; the function never throws but we
+      // .catch() defensively so a streak failure never breaks the log.
+      computeUserStreak(userId).catch(() => {});
 
       // Categories pivot (Stage 2C): per-category passed_you / tied_you
       // threats. One CategoryDelta per call — this path logs one activity

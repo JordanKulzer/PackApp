@@ -11,6 +11,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "./supabase";
 import { WORKOUT_MAX_DAILY } from "./scoring";
 import { computeStreakForRun } from "./computeStreak";
+import { computeUserStreak } from "./computeUserStreak";
 import { notifyPackMembers } from "./notifications";
 import { type CrossingEvent } from "./competitiveDetection";
 import { detectAndSendCategoryThreats, type CategoryDelta } from "./threatNotifications";
@@ -409,6 +410,12 @@ export async function syncHealthDataToSupabase(
     console.error("[HealthKit Sync] Supabase upsert error:", upsertError);
     throw upsertError;
   }
+
+  // Stage 2 streak rewrite: recompute the per-user GLOBAL streak after
+  // every successful daily_scores write. computeStreakForRun above
+  // continues to maintain the per-run daily_scores.streak_days value
+  // for legacy Recap / per-pack surfaces. Fire-and-forget; never throws.
+  computeUserStreak(userId).catch(() => {});
 
   // ── Pass 9 funnel: activity_logged (B-style transition gating) + streak_milestone
   //

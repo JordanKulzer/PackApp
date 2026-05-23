@@ -25,6 +25,27 @@ export function deviceLocalToday(): string {
 }
 
 /**
+ * Returns the device-local date `days` ago (negative = future) as a
+ * YYYY-MM-DD string. days=0 → today, days=1 → yesterday, days=365 →
+ * one year ago. Used by the global-streak walk (Stage 2 streak rewrite)
+ * which steps backward day-by-day in device timezone.
+ *
+ * Hermes-safe — same pattern as deviceLocalToday: Date.prototype.setDate
+ * + getFullYear/getMonth/getDate, NOT Intl.DateTimeFormat (which can
+ * leak UTC under Hermes), NOT ms-subtraction (which would mis-align
+ * across DST boundaries since a DST day is 23h or 25h). setDate is
+ * DST-safe per spec — it adjusts wall-clock by calendar days.
+ */
+export function deviceLocalDateOffset(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
  * Returns "today" in the pack's timezone as a YYYY-MM-DD string.
  */
 export function packToday(packTimezone: string): string {
