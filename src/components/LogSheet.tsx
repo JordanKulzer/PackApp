@@ -104,10 +104,6 @@ const QUICK_AMOUNTS = [8, 16, 32] as const;
 // side scoring still writes the canonical daily_scores row per pack.
 const EMPTY_LOCAL_SCORE = {
   total_points: 0,
-  steps_achieved: false,
-  workout_achieved: false,
-  calories_achieved: false,
-  water_achieved: false,
   water_oz_count: 0,
   steps_count: 0,
   calories_count: 0,
@@ -117,6 +113,8 @@ const EMPTY_LOCAL_SCORE = {
   // currentStreakLocal (sourced from users.current_streak via the data
   // hook), not from any per-pack localScore field. streak_multiplier
   // stays (out of scope; still surfaced elsewhere).
+  // Goal-removal Part 3b: *_achieved fields dropped — sync paths no longer
+  // write them and no UI reads them off this shape.
   streak_multiplier: 1,
   manual_steps_count: 0,
   manual_calories_count: 0,
@@ -536,10 +534,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
   const [localWeeklyPoints, setLocalWeeklyPoints] = useState(0);
   const [localScore, setLocalScore] = useState<{
     total_points: number;
-    steps_achieved: boolean;
-    workout_achieved: boolean;
-    calories_achieved: boolean;
-    water_achieved: boolean;
     water_oz_count: number;
     steps_count: number;
     calories_count: number;
@@ -889,9 +883,10 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     // doesn't lose the optimistic UI update. patchMyScore alone stays
     // gated since it requires packRun.packId.
     // Stage 2A: the optimistic points computation is gone with the POINTS
-    // table. The patch carries only count/achievement fields now.
+    // table. Goal-removal Part 3b: workout_achieved no longer in the patch
+    // (the boolean is dropped from OptimisticScore + localScore). The
+    // patch carries only the count.
     const patch = {
-      workout_achieved: true,
       workout_count: newWorkoutCount,
     };
     setLocalScore((prev) => ({ ...(prev ?? EMPTY_LOCAL_SCORE), ...patch }));
@@ -919,8 +914,9 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
         workout_count: currentCount,
       }));
       if (packRun && localScore) {
+        // Goal-removal Part 3b: workout_achieved no longer in the rollback
+        // patch (dropped from OptimisticScore + localScore).
         patchMyScore(packRun.packId, {
-          workout_achieved: localScore.workout_achieved,
           workout_count: localScore.workout_count,
         });
       }

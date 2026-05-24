@@ -129,15 +129,15 @@ const C = {
 // comes from users.current_streak via the pack_members→users join
 // (see memberStreakMap, gridEntries below), not from this per-pack
 // daily_scores row.
+// Goal-removal Part 3b: *_achieved fields dropped — sync paths no
+// longer write them, and (post Stage A) no JSX in this file reads
+// them. The wider `scores` pipeline that carries this shape is
+// already orphaned; per spec the broader cleanup is out of scope.
 interface MemberScore {
   user_id: string;
   display_name: string;
   avatar_url?: string | null;
   updated_at: string | null;
-  steps_achieved: boolean;
-  workout_achieved: boolean;
-  calories_achieved: boolean;
-  water_achieved: boolean;
   steps_count: number;
   calories_count: number;
   water_oz_count: number;
@@ -151,10 +151,6 @@ interface MemberScore {
 type ScoreRow = {
   user_id: string;
   updated_at: string | null;
-  steps_achieved: boolean;
-  workout_achieved: boolean;
-  calories_achieved: boolean;
-  water_achieved: boolean;
   steps_count: number;
   calories_count: number;
   water_oz_count: number;
@@ -175,10 +171,6 @@ function mapRows(
     user_id: row.user_id,
     display_name: nameMap[row.user_id] ?? "",
     updated_at: row.updated_at,
-    steps_achieved: row.steps_achieved,
-    workout_achieved: row.workout_achieved,
-    calories_achieved: row.calories_achieved,
-    water_achieved: row.water_achieved,
     steps_count: row.steps_count ?? 0,
     calories_count: row.calories_count ?? 0,
     water_oz_count: row.water_oz_count ?? 0,
@@ -192,8 +184,9 @@ function mapRows(
 // F.2: SELECT manual_*_count instead of dropped has_manual_* booleans.
 // steps_count/calories_count are DB-generated (manual + hk) and still
 // returned by Postgres; no client-side recompute needed.
+// Goal-removal Part 3b: *_achieved fields dropped from the SELECT.
 const SCORE_SELECT =
-  "user_id, updated_at, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, calories_count, water_oz_count, workout_count, manual_steps_count, manual_calories_count";
+  "user_id, updated_at, steps_count, calories_count, water_oz_count, workout_count, manual_steps_count, manual_calories_count";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Manual badge
@@ -261,10 +254,9 @@ interface DayMemberScore {
   caloriesCount: number;
   waterOzCount: number;
   workoutCount: number;
-  stepsAchieved: boolean;
-  caloriesAchieved: boolean;
-  waterAchieved: boolean;
-  workoutAchieved: boolean;
+  // Goal-removal Part 3b: stepsAchieved / caloriesAchieved / waterAchieved /
+  // workoutAchieved dropped — sync paths no longer write the booleans and
+  // Stage A removed the last JSX reads in the expanded card.
   manualStepsCount: number;
   manualCaloriesCount: number;
 }
@@ -403,10 +395,13 @@ function WeekDetailSheet({
     setExpandedMemberId(null);
 
     (async () => {
+      // Goal-removal Part 3b: *_achieved fields dropped from this SELECT
+      // and the row→DayMemberScore mapping (none of the consumers read
+      // them; the booleans aren't written anymore anyway).
       const { data } = await supabase
         .from("daily_scores")
         .select(
-          "user_id, steps_count, calories_count, water_oz_count, workout_count, steps_achieved, calories_achieved, water_achieved, workout_achieved, manual_steps_count, manual_calories_count",
+          "user_id, steps_count, calories_count, water_oz_count, workout_count, manual_steps_count, manual_calories_count",
         )
         .eq("run_id", entry.runId)
         .eq("score_date", selectedDay);
@@ -420,10 +415,6 @@ function WeekDetailSheet({
         caloriesCount: row.calories_count ?? 0,
         waterOzCount: row.water_oz_count ?? 0,
         workoutCount: row.workout_count ?? 0,
-        stepsAchieved: row.steps_achieved,
-        caloriesAchieved: row.calories_achieved,
-        waterAchieved: row.water_achieved,
-        workoutAchieved: row.workout_achieved,
         manualStepsCount: row.manual_steps_count ?? 0,
         manualCaloriesCount: row.manual_calories_count ?? 0,
       }));
@@ -528,10 +519,6 @@ function WeekDetailSheet({
           caloriesCount: 0,
           waterOzCount: 0,
           workoutCount: 0,
-          stepsAchieved: false,
-          caloriesAchieved: false,
-          waterAchieved: false,
-          workoutAchieved: false,
           manualStepsCount: 0,
           manualCaloriesCount: 0,
           hasNoData: true,

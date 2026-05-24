@@ -70,11 +70,14 @@ export function JoinPackModal({ visible, onClose, onJoined }: JoinPackModalProps
 
       // Step 1: Find pack by invite code
       // F.2: SELECT expanded to feed seedDailyScoresOnJoin — it needs
-      // *_enabled flags and *_target values to compute initial achievement.
+      // Goal-removal Part 3b: step_target / calorie_target /
+      // water_target_oz dropped from the pack SELECT — joinPack.ts no
+      // longer reads them (the *_achieved compute that consumed them is
+      // gone). *_enabled flags are still passed through.
       const { data: pack, error: packError } = await supabase
         .from("packs")
         .select(
-          "id, name, is_active, timezone, steps_enabled, workouts_enabled, calories_enabled, water_enabled, step_target, calorie_target, water_target_oz",
+          "id, name, is_active, timezone, steps_enabled, workouts_enabled, calories_enabled, water_enabled",
         )
         .eq("invite_code", normalizedCode)
         .single();

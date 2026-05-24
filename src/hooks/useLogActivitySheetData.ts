@@ -30,12 +30,10 @@ export interface ManualLogEntry {
 // snapshot. The LogSheet streak headline reads users.current_streak via
 // the currentStreak field on LogActivitySheetData, not from this per-pack
 // daily_scores row. streak_multiplier stays (out of scope).
+// Goal-removal Part 3b: *_achieved fields dropped — sync paths no longer
+// write them and LogSheet never read them off this snapshot.
 export interface DailyScoreSnapshot {
   total_points: number;
-  steps_achieved: boolean;
-  workout_achieved: boolean;
-  calories_achieved: boolean;
-  water_achieved: boolean;
   water_oz_count: number;
   steps_count: number;
   calories_count: number;
@@ -246,7 +244,7 @@ export function useLogActivitySheetData(
         supabase
           .from("daily_scores")
           .select(
-            "total_points, steps_achieved, workout_achieved, calories_achieved, water_achieved, water_oz_count, steps_count, calories_count, workout_count, streak_multiplier, manual_steps_count, manual_calories_count",
+            "total_points, water_oz_count, steps_count, calories_count, workout_count, streak_multiplier, manual_steps_count, manual_calories_count",
           )
           .eq("run_id", run.id)
           .eq("user_id", userId!)

@@ -4,14 +4,11 @@ import { create } from "zustand";
 // minus user_id / display_name which are derived elsewhere.
 //
 // Prompt 1 (streak read-site migration): streak_days dropped — PackScreen's
-// Compete row now reads users.current_streak via the pack_members→users
-// join, not from this optimistic shape. Nothing reads streak_days off
-// OptimisticScore anymore; the field is dead.
+// Compete row reads users.current_streak via the pack_members→users join.
+// Goal-removal Part 3b: *_achieved fields dropped — the booleans are no
+// longer written by the sync paths and were never read off this shape
+// by any UI consumer.
 export interface OptimisticScore {
-  steps_achieved: boolean;
-  workout_achieved: boolean;
-  calories_achieved: boolean;
-  water_achieved: boolean;
   steps_count: number;
   calories_count: number;
   water_oz_count: number;
@@ -20,10 +17,6 @@ export interface OptimisticScore {
 
 export function emptyOptimisticScore(): OptimisticScore {
   return {
-    steps_achieved: false,
-    workout_achieved: false,
-    calories_achieved: false,
-    water_achieved: false,
     steps_count: 0,
     calories_count: 0,
     water_oz_count: 0,

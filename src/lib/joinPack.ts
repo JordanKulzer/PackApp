@@ -19,6 +19,10 @@ import {
 } from "./healthkit";
 import { Platform } from "react-native";
 
+// Goal-removal Part 3b: step_target / calorie_target / water_target_oz
+// dropped — the *_achieved compute that consumed them is gone. The
+// remaining fields are the enable flags (still used by callers) +
+// timezone (used for packToday).
 export interface SeedablePack {
   id: string;
   timezone: string | null;
@@ -26,9 +30,6 @@ export interface SeedablePack {
   workouts_enabled: boolean;
   calories_enabled: boolean;
   water_enabled: boolean;
-  step_target: number;
-  calorie_target: number;
-  water_target_oz: number;
 }
 
 /**
