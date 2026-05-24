@@ -634,10 +634,7 @@ function WeekDetailSheet({
                     <Text style={[wdS.sRank, isFirst && wdS.sRankGold]}>
                       #{standing.rank}
                     </Text>
-                    <Text
-                      style={[wdS.sName, isMe && wdS.sNameMe]}
-                      numberOfLines={1}
-                    >
+                    <Text style={wdS.sName} numberOfLines={1}>
                       {formatName(
                         isMe && currentUser
                           ? currentUser.displayName
@@ -667,10 +664,7 @@ function WeekDetailSheet({
                   style={[wdS.standingRow, isMe && wdS.standingRowMe]}
                 >
                   <Text style={wdS.sRank}>—</Text>
-                  <Text
-                    style={[wdS.sName, isMe && wdS.sNameMe]}
-                    numberOfLines={1}
-                  >
+                  <Text style={wdS.sName} numberOfLines={1}>
                     {formatName(
                       isMe && currentUser
                         ? currentUser.displayName
@@ -831,10 +825,7 @@ function WeekDetailSheet({
                             their expanded card carries plain values or
                             the "No activity logged" message. */}
                         <View style={wdS.memberHeaderRow}>
-                          <Text
-                            style={[wdS.dayName, isMe && wdS.dayNameMe]}
-                            numberOfLines={1}
-                          >
+                          <Text style={wdS.dayName} numberOfLines={1}>
                             {formatName(
                               isMe && currentUser
                                 ? currentUser.displayName
@@ -1025,7 +1016,9 @@ const wdS = StyleSheet.create({
   sRank: { width: 26, fontSize: 12, fontWeight: "600", color: C.textTertiary },
   sRankGold: { color: colors.leader },
   sName: { flex: 1, fontSize: 14, fontWeight: "500", color: C.textSecondary },
-  sNameMe: { color: C.accent, fontWeight: "600" },
+  // Stage D: sNameMe removed. The blue self-tint already lives on
+  // standingRowMe (row background); a redundant blue/bold on the name
+  // was a second self-marker doing the same job.
   sPts: { fontSize: 13, fontWeight: "600", color: C.textTertiary },
   sPtsGold: { color: colors.leader },
   // Category Champions (completed runs)
@@ -1151,7 +1144,9 @@ const wdS = StyleSheet.create({
   },
   dayRankFirst: { color: colors.leader },
   dayName: { flexShrink: 1, fontSize: 14, fontWeight: "600", color: C.textPrimary },
-  dayNameMe: { color: C.accent },
+  // Stage D: dayNameMe removed. memberCardMe (the row background tint)
+  // is the single self-marker; the redundant accent-blue name color
+  // doubled up on the same signal.
   dayPts: { fontSize: 13, fontWeight: "600", color: C.textSecondary },
   dayPtsFirst: { color: colors.leader },
   noActivityText: {
@@ -1239,6 +1234,9 @@ function PastRunsSection({
   const period = pack.competition_window === "monthly" ? "month" : "week";
 
   // "This Week" card leading copy, from the live category standings.
+  // Stage D: no "You" — the self-user reads their own display name, same
+  // as everyone else. The blue self-tint (applied on member ROWS, not
+  // run cards) is the only self-identity marker.
   const thisWeekLine = (() => {
     const ranked = categoryStandings?.rankedMembers ?? [];
     if (ranked.length === 0 || ranked.every((r) => r.totalWins === 0)) {
@@ -1247,10 +1245,8 @@ function PastRunsSection({
     const topWins = ranked[0].totalWins;
     const leaders = ranked.filter((r) => r.totalWins === topWins);
     const winsLabel = `${topWins} ${topWins === 1 ? "win" : "wins"}`;
-    if (leaders.some((r) => r.userId === currentUserId)) {
-      return leaders.length > 1
-        ? `Tied for the lead · ${winsLabel}`
-        : `You're leading · ${winsLabel}`;
+    if (leaders.length > 1) {
+      return `Tied for the lead · ${winsLabel}`;
     }
     const leaderName = formatName(
       memberNameMap.get(ranked[0].userId) ?? null,
@@ -1349,15 +1345,15 @@ function PastRunsSection({
             // rank-sorted; ties share rank 1). Empty standings = nobody
             // won any category-day this run.
             const leaders = run.standings.filter((s) => s.rank === 1);
+            // Stage D: no "You" — self-user reads their own display name,
+            // same path as everyone else. Tie branches already used display
+            // names for all leaders; no change needed there.
             const completedLine = (() => {
               if (leaders.length === 0) return `No winner — quiet ${period}`;
               const topWins = leaders[0].totalWins;
               const winsLabel = `${topWins} ${topWins === 1 ? "win" : "wins"}`;
               if (leaders.length === 1) {
-                const w = leaders[0];
-                return w.userId === currentUserId
-                  ? `You won the ${period} · ${winsLabel}`
-                  : `${formatName(w.displayName, 1)} won the ${period} · ${winsLabel}`;
+                return `${formatName(leaders[0].displayName, 1)} won the ${period} · ${winsLabel}`;
               }
               if (leaders.length === 2) {
                 return `${formatName(leaders[0].displayName, 1)} & ${formatName(leaders[1].displayName, 1)} tied · ${winsLabel}`;
