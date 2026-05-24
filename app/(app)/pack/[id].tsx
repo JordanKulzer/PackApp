@@ -471,12 +471,9 @@ function WeekDetailSheet({
   // Per-category run winners — populated for completed runs only.
   const categoryWinners = entry?.categoryWinners ?? [];
 
-  const enabledCount = [
-    pack.steps_enabled,
-    pack.workouts_enabled,
-    pack.calories_enabled,
-    pack.water_enabled,
-  ].filter(Boolean).length;
+  // Goal-removal Stage A: enabledCount removed (its only consumer was
+  // the "{doneCount}/{enabledCount} goals" line in the expanded card,
+  // which is gone with the goal-hit framing).
 
   // Per-category winners for the selected day: settled days come from
   // daily_winners; an active run's still-unsettled today is computed live
@@ -728,13 +725,10 @@ function WeekDetailSheet({
                 ) : (
                   allMemberScores.map((score) => {
                     const isMe = score.userId === currentUserId;
-                    const doneCount = [
-                      pack.steps_enabled && score.stepsAchieved,
-                      pack.workouts_enabled && score.workoutAchieved,
-                      pack.calories_enabled && score.caloriesAchieved,
-                      pack.water_enabled && score.waterAchieved,
-                    ].filter(Boolean).length;
-
+                    // Goal-removal Stage A: doneCount + the X/Y goal check
+                    // are gone. Expanded card now lists every enabled
+                    // category with its raw value + a "Won" badge for the
+                    // categories this member won that day.
                     const isExpanded = expandedMemberId === score.userId;
                     return (
                       <TouchableOpacity
@@ -790,13 +784,14 @@ function WeekDetailSheet({
                           )}
                         </View>
 
-                        {/* Expanded: goals summary + per-activity breakdown */}
-                        {isExpanded && enabledCount > 0 && !score.hasNoData && (
-                          <Text style={wdS.dayGoals}>
-                            {doneCount}/{enabledCount} goals
-                          </Text>
-                        )}
-
+                        {/* Goal-removal Stage A: per-category breakdown.
+                            One row per ENABLED category (iterate CATEGORIES,
+                            gate on pack.*_enabled) with the day's raw value
+                            and a "Won" badge for the categories this member
+                            took. ManualBadge stays for manually-logged
+                            steps / calories — that source indicator is
+                            independent of the goal-hit framing.
+                            No reads of pack.*_target or score.*Achieved. */}
                         {isExpanded &&
                           (score.hasNoData ? (
                             <Text style={wdS.noActivityText}>
@@ -804,90 +799,55 @@ function WeekDetailSheet({
                             </Text>
                           ) : (
                             <View style={wdS.actList}>
-                              {pack.steps_enabled && (
-                                <View style={wdS.actRow}>
-                                  <Text style={wdS.actLabel}>Steps</Text>
-                                  <View style={wdS.actRight}>
-                                    {score.manualStepsCount > 0 && <ManualBadge />}
-                                    <Text
-                                      style={[
-                                        wdS.actValue,
-                                        score.stepsAchieved && wdS.actValueDone,
-                                      ]}
-                                    >
-                                      {score.stepsCount.toLocaleString()} /{" "}
-                                      {(
-                                        pack.step_target ?? 10000
-                                      ).toLocaleString()}
-                                    </Text>
-                                    {score.stepsAchieved && (
-                                      <Text style={wdS.actCheck}>✓</Text>
-                                    )}
+                              {CATEGORIES.map((category) => {
+                                const enabled =
+                                  (category === "steps" && pack.steps_enabled) ||
+                                  (category === "workouts" && pack.workouts_enabled) ||
+                                  (category === "calories" && pack.calories_enabled) ||
+                                  (category === "water" && pack.water_enabled);
+                                if (!enabled) return null;
+                                const won = score.categoriesWon.includes(category);
+                                const valueText =
+                                  category === "steps"
+                                    ? `${score.stepsCount.toLocaleString()} steps`
+                                    : category === "workouts"
+                                      ? `${score.workoutCount} ${score.workoutCount === 1 ? "workout" : "workouts"}`
+                                      : category === "calories"
+                                        ? `${score.caloriesCount.toLocaleString()} cal`
+                                        : `${score.waterOzCount} oz`;
+                                const showManual =
+                                  (category === "steps" &&
+                                    score.manualStepsCount > 0) ||
+                                  (category === "calories" &&
+                                    score.manualCaloriesCount > 0);
+                                return (
+                                  <View key={category} style={wdS.actRow}>
+                                    <View style={wdS.actLeft}>
+                                      <CategoryIcon
+                                        category={category}
+                                        size={14}
+                                        color={C.textSecondary}
+                                      />
+                                      <Text style={wdS.actLabel}>
+                                        {CATEGORY_LABELS[category]}
+                                      </Text>
+                                    </View>
+                                    <View style={wdS.actRight}>
+                                      {showManual && <ManualBadge />}
+                                      <Text style={wdS.actValue}>
+                                        {valueText}
+                                      </Text>
+                                      {won && (
+                                        <View style={wdS.actWonBadge}>
+                                          <Text style={wdS.actWonBadgeText}>
+                                            Won
+                                          </Text>
+                                        </View>
+                                      )}
+                                    </View>
                                   </View>
-                                </View>
-                              )}
-                              {pack.workouts_enabled && (
-                                <View style={wdS.actRow}>
-                                  <Text style={wdS.actLabel}>Workout</Text>
-                                  <View style={wdS.actRight}>
-                                    <Text
-                                      style={[
-                                        wdS.actValue,
-                                        score.workoutAchieved &&
-                                          wdS.actValueDone,
-                                      ]}
-                                    >
-                                      {score.workoutCount} / 2
-                                    </Text>
-                                    {score.workoutAchieved && (
-                                      <Text style={wdS.actCheck}>✓</Text>
-                                    )}
-                                  </View>
-                                </View>
-                              )}
-                              {pack.calories_enabled && (
-                                <View style={wdS.actRow}>
-                                  <Text style={wdS.actLabel}>Calories</Text>
-                                  <View style={wdS.actRight}>
-                                    {score.manualCaloriesCount > 0 && <ManualBadge />}
-                                    <Text
-                                      style={[
-                                        wdS.actValue,
-                                        score.caloriesAchieved &&
-                                          wdS.actValueDone,
-                                      ]}
-                                    >
-                                      {score.caloriesCount.toLocaleString()} /{" "}
-                                      {(
-                                        pack.calorie_target ?? 500
-                                      ).toLocaleString()}{" "}
-                                      cal
-                                    </Text>
-                                    {score.caloriesAchieved && (
-                                      <Text style={wdS.actCheck}>✓</Text>
-                                    )}
-                                  </View>
-                                </View>
-                              )}
-                              {pack.water_enabled && (
-                                <View style={wdS.actRow}>
-                                  <Text style={wdS.actLabel}>Water</Text>
-                                  <View style={wdS.actRight}>
-                                    <Text
-                                      style={[
-                                        wdS.actValue,
-                                        score.waterAchieved && wdS.actValueDone,
-                                      ]}
-                                    >
-                                      {score.waterOzCount} /{" "}
-                                      {pack.water_target_oz ?? 64} oz
-                                    </Text>
-                                    {score.waterAchieved && (
-                                      <Text style={wdS.actCheck}>✓</Text>
-                                    )}
-                                  </View>
-                                </View>
-                              )}
+                                );
+                              })}
                             </View>
                           ))}
                       </TouchableOpacity>
@@ -1092,7 +1052,6 @@ const wdS = StyleSheet.create({
   dayRankFirst: { color: colors.leader },
   dayName: { flexShrink: 1, fontSize: 14, fontWeight: "600", color: C.textPrimary },
   dayNameMe: { color: C.accent },
-  dayGoals: { fontSize: 11, color: C.textTertiary, marginLeft: 34 },
   dayPts: { fontSize: 13, fontWeight: "600", color: C.textSecondary },
   dayPtsFirst: { color: colors.leader },
   noActivityText: {
@@ -1101,17 +1060,25 @@ const wdS = StyleSheet.create({
     marginLeft: 34,
     marginTop: 2,
   },
-  // Per-activity breakdown rows
+  // Goal-removal Stage A: per-category breakdown rows. actLeft holds the
+  // CategoryIcon + label; actRight holds (optional ManualBadge) + raw
+  // value + (optional "Won" pill). actValueDone / actCheck / dayGoals
+  // were goal-hit affordances and are gone.
   actList: { marginLeft: 34, marginTop: 6, gap: 6 },
   actRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
+  actLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    width: 96,
+  },
   actLabel: {
     fontSize: 13,
     color: C.textSecondary,
-    width: 72,
   },
   actRight: {
     flexDirection: "row",
@@ -1125,11 +1092,21 @@ const wdS = StyleSheet.create({
     color: C.textTertiary,
     textAlign: "right",
   },
-  actValueDone: { color: C.success },
-  actCheck: {
-    fontSize: 12,
-    color: C.success,
+  // "Won" badge — echoes the collapsed-card dayBadge treatment so a member
+  // sees the same visual signal in both surfaces: surfaceRaised pill,
+  // colors.leader gold text. Slightly tighter padding than dayBadge since
+  // the expanded row already has its own horizontal rhythm.
+  actWonBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: C.surfaceRaised,
+  },
+  actWonBadgeText: {
+    fontSize: 10,
     fontWeight: "700",
+    color: colors.leader,
+    letterSpacing: 0.3,
   },
 });
 
