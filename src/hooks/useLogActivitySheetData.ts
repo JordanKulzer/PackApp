@@ -8,6 +8,7 @@ import {
   isHealthKitAvailable,
 } from "../lib/healthkit";
 import { packToday, packTodayStartUTC, deviceLocalToday } from "../lib/packDates";
+import { useScoreStore } from "../stores/scoreStore";
 
 export interface LogEntry {
   amount_oz: number;
@@ -99,11 +100,38 @@ export function useLogActivitySheetData(
   const [error, setError] = useState<string | null>(null);
   const fetchIdRef = useRef(0);
 
+  // Issue-1 fix: subscribe to scoreStore.logVersion so every successful
+  // log inside the open sheet re-runs this effect. Without this, the
+  // streak module + manual/check-in flags showed stale values until the
+  // sheet was closed and reopened — the effect deps were [visible, userId]
+  // only, so bumpLogVersion() didn't reach this hook (the bump signals
+  // the Compete tab + per-pack fetchWeekly, neither of which is this).
+  const logVersion = useScoreStore((s) => s.logVersion);
+  // Track the previous logVersion across effect runs. When the current
+  // logVersion differs from the ref, the run is the result of a log →
+  // we MUST go to network even if the 30s module cache is still warm.
+  // This makes bumpLogVersion the authoritative cache-bust signal;
+  // invalidateLogActivitySheetCache stays as an explicit bust but is
+  // no longer the only thing keeping the sheet fresh after a log.
+  const prevLogVersionRef = useRef(logVersion);
+
   useEffect(() => {
     if (!visible || !userId) return; // don't wipe data on close — stale-while-revalidate
 
+    const logVersionChanged = prevLogVersionRef.current !== logVersion;
+    prevLogVersionRef.current = logVersion;
+
     const now = Date.now();
-    if (_cache && _cache.userId === userId && now - _cache.ts < CACHE_TTL_MS) {
+    // Cache-hit branch is skipped when logVersion has bumped — a fresh
+    // log just landed and the module cache may be stale (the caller
+    // invalidates before bumping today, but we don't rely on that
+    // pairing anymore; logVersion alone is enough).
+    if (
+      !logVersionChanged &&
+      _cache &&
+      _cache.userId === userId &&
+      now - _cache.ts < CACHE_TTL_MS
+    ) {
       // Cache hit: serve immediately without touching loading state
       setData(_cache.data);
       setIsLoading(false);
@@ -324,7 +352,7 @@ export function useLogActivitySheetData(
         setError("Failed to load activity data");
         setIsLoading(false);
       });
-  }, [visible, userId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [visible, userId, logVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { data, isLoading, error };
 }
