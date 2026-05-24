@@ -31,14 +31,29 @@ export type RunMemberStanding = {
   rank: number; // dense rank by totalWins desc (1,1,3,…)
 };
 
+// Stage B (history redesign): a member who is currently active in the
+// pack roster but won zero category-days this run. Separate from
+// `standings` so callers can render them as a quiet footer line below
+// the winning standings rows, instead of as full rows. Sorted by
+// displayName asc.
+export type ZeroWinMember = {
+  userId: string;
+  displayName: string;
+};
+
 export type CompletedRunHistory = {
   runId: string;
   startedAt: string; // run.start_date
   endedAt: string; // run.end_date
   categoryWinners: RunCategoryWinner[];
   // All members who won at least one category-day, ranked. standings[0]
-  // (plus anyone tied at rank 1) is the overall winner.
+  // (plus anyone tied at rank 1) is the overall winner. Zero-win members
+  // are NOT included — they live in zeroWinMembers below.
   standings: RunMemberStanding[];
+  // Active pack-roster members (pack_members.is_active = true) who won
+  // zero category-days this run. Empty when every active member won
+  // something. A member who left the pack mid-run is not included here.
+  zeroWinMembers: ZeroWinMember[];
 };
 
 // daily_winners / runs aren't in the generated DB types — declare the row
@@ -78,18 +93,34 @@ export function usePackRunHistory(packId: string): {
 
     (async () => {
       try {
-        // 1. Up to 10 most-recent completed runs for this pack.
-        const runsRes = await supabase
-          .from("runs")
-          .select("id, start_date, end_date")
-          .eq("pack_id", packId)
-          .eq("status", "completed")
-          .order("end_date", { ascending: false })
-          .limit(10);
+        // 1. Up to 10 most-recent completed runs for this pack, plus the
+        // pack's active roster. Stage B (history redesign): the roster
+        // query lets us identify "zero-win" members for FINAL STANDINGS —
+        // active members of pack_members who don't appear in any
+        // winner_user_ids row this run. Self-contained inside the hook,
+        // so callers don't change.
+        const [runsRes, rosterRes] = await Promise.all([
+          supabase
+            .from("runs")
+            .select("id, start_date, end_date")
+            .eq("pack_id", packId)
+            .eq("status", "completed")
+            .order("end_date", { ascending: false })
+            .limit(10),
+          supabase
+            .from("pack_members")
+            .select("user_id")
+            .eq("pack_id", packId)
+            .eq("is_active", true),
+        ]);
         if (runsRes.error) throw runsRes.error;
+        if (rosterRes.error) throw rosterRes.error;
         if (cancelled) return;
 
         const runs = (runsRes.data ?? []) as RunRow[];
+        const rosterIds = (
+          (rosterRes.data ?? []) as { user_id: string }[]
+        ).map((r) => r.user_id);
         if (runs.length === 0) {
           setCompletedRuns([]);
           setIsLoading(false);
@@ -109,11 +140,13 @@ export function usePackRunHistory(packId: string): {
 
         const winnerRows = (winnersRes.data ?? []) as DailyWinnerRow[];
 
-        // 3. Display names for every user appearing in any winner_user_ids.
+        // 3. Display names for every user appearing in any winner_user_ids
+        // OR in the active roster (so zero-win footer rows have real names).
         const userIdSet = new Set<string>();
         for (const row of winnerRows) {
           for (const uid of row.winner_user_ids) userIdSet.add(uid);
         }
+        for (const uid of rosterIds) userIdSet.add(uid);
         const nameMap: Record<string, string> = {};
         if (userIdSet.size > 0) {
           const usersRes = await supabase
@@ -186,12 +219,23 @@ export function usePackRunHistory(packId: string): {
             return { ...entry, rank };
           });
 
+          // Stage B: zero-win members = active roster ids that won nothing
+          // this run. Sorted by displayName asc for stable footer order.
+          const zeroWinMembers: ZeroWinMember[] = rosterIds
+            .filter((uid) => !(uid in winsByUser))
+            .map((uid) => ({
+              userId: uid,
+              displayName: nameMap[uid] ?? "Member",
+            }))
+            .sort((a, b) => a.displayName.localeCompare(b.displayName));
+
           return {
             runId: run.id,
             startedAt: run.start_date,
             endedAt: run.end_date,
             categoryWinners,
             standings,
+            zeroWinMembers,
           };
         });
 

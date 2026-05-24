@@ -281,6 +281,11 @@ interface WeekDetailEntry {
   // Per-category run winners — completed runs only (run.categoryWinners
   // from usePackRunHistory). undefined for active runs.
   categoryWinners?: RunCategoryWinner[];
+  // Stage B (history redesign): completed-run roster members who won zero
+  // category-days. Rendered as a quiet footer line under FINAL STANDINGS.
+  // undefined for active runs (CURRENT STANDINGS already seeds zero-win
+  // members via categoryStandings.rankedMembers — full rows, not a footer).
+  zeroWinMembers?: { userId: string; displayName: string }[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -470,6 +475,15 @@ function WeekDetailSheet({
   const summaryStandings = entry?.standings ?? [];
   // Per-category run winners — populated for completed runs only.
   const categoryWinners = entry?.categoryWinners ?? [];
+  // Stage B (history redesign): zero-win members for completed runs.
+  // Rendered as a quiet footer line below FINAL STANDINGS. Active runs
+  // leave this empty (CURRENT STANDINGS already shows zero-win members
+  // as full rows via categoryStandings.rankedMembers).
+  const zeroWinStandingsMembers = entry?.zeroWinMembers ?? [];
+
+  // Stage B-revised: zero-win members render as full standing rows
+  // (FINAL STANDINGS) / full daily rows (Daily Breakdown) — no footer
+  // line, no name-list formatter needed.
 
   // Goal-removal Stage A: enabledCount removed (its only consumer was
   // the "{doneCount}/{enabledCount} goals" line in the expanded card,
@@ -600,6 +614,34 @@ function WeekDetailSheet({
                 );
               })
             )}
+            {/* Stage B-revised: zero-win members render as full standing
+                rows below the ranked winners — every pack member gets an
+                equal row, no footer / no greying. They have no rank
+                (em-dash) and "0 wins". Completed runs only; active-run
+                CURRENT STANDINGS already lists all members via
+                categoryStandings.rankedMembers. */}
+            {zeroWinStandingsMembers.map((m) => {
+              const isMe = m.userId === currentUserId;
+              return (
+                <View
+                  key={m.userId}
+                  style={[wdS.standingRow, isMe && wdS.standingRowMe]}
+                >
+                  <Text style={wdS.sRank}>—</Text>
+                  <Text
+                    style={[wdS.sName, isMe && wdS.sNameMe]}
+                    numberOfLines={1}
+                  >
+                    {formatName(
+                      isMe && currentUser
+                        ? currentUser.displayName
+                        : m.displayName,
+                    )}
+                  </Text>
+                  <Text style={wdS.sPts}>0 wins</Text>
+                </View>
+              );
+            })}
           </View>
 
           {/* Category champions — completed runs only (per-category run
@@ -723,6 +765,12 @@ function WeekDetailSheet({
                     style={{ marginVertical: 16 }}
                   />
                 ) : (
+                  // Stage B-revised: every member of allMemberScores
+                  // renders as a full, equal row. The existing sort already
+                  // puts winners (more categoriesWon) first; zero-win and
+                  // hasNoData members follow at normal weight — no footer,
+                  // no greying. The only visual difference is the gold
+                  // "Won" / category badges on winning rows.
                   allMemberScores.map((score) => {
                     const isMe = score.userId === currentUserId;
                     // Goal-removal Stage A: doneCount + the X/Y goal check
@@ -733,18 +781,16 @@ function WeekDetailSheet({
                     return (
                       <TouchableOpacity
                         key={score.userId}
-                        style={[
-                          wdS.memberCard,
-                          isMe && wdS.memberCardMe,
-                          score.hasNoData && wdS.memberCardEmpty,
-                        ]}
+                        style={[wdS.memberCard, isMe && wdS.memberCardMe]}
                         onPress={() => toggleMember(score.userId)}
                         activeOpacity={0.75}
                       >
                         {/* Header row: name + the categories this member won
-                            that day (badges) + chevron. A day has no overall
-                            ranking under the categories model. hasNoData rows
-                            render dimmed with no badges and no chevron. */}
+                            that day (badges) + chevron. Every row is full
+                            weight + expandable (Stage B-revised); zero-win
+                            and hasNoData members just have no badges and
+                            their expanded card carries plain values or
+                            the "No activity logged" message. */}
                         <View style={wdS.memberHeaderRow}>
                           <Text
                             style={[wdS.dayName, isMe && wdS.dayNameMe]}
@@ -775,13 +821,11 @@ function WeekDetailSheet({
                               </View>
                             ))}
                           </View>
-                          {!score.hasNoData && (
-                            <Ionicons
-                              name={isExpanded ? "chevron-up" : "chevron-down"}
-                              size={14}
-                              color={C.textSecondary}
-                            />
-                          )}
+                          <Ionicons
+                            name={isExpanded ? "chevron-up" : "chevron-down"}
+                            size={14}
+                            color={C.textSecondary}
+                          />
                         </View>
 
                         {/* Goal-removal Stage A: per-category breakdown.
@@ -1032,12 +1076,10 @@ const wdS = StyleSheet.create({
     paddingHorizontal: 4,
     marginHorizontal: -4,
   },
-  // Dim treatment for hasNoData rows — reads as "muted but present"
-  // (member is in the pack, just didn't log this day) rather than
-  // "rendering broken." Pairs with em-dash + suppressed chevron.
-  memberCardEmpty: {
-    opacity: 0.6,
-  },
+  // Stage B-revised: memberCardEmpty (the 0.6-opacity dim for hasNoData
+  // rows) removed. Every row renders at full weight; missing data shows
+  // through plain values + the "No activity logged" expanded message
+  // instead of via a dimming visual signal.
   memberHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1277,6 +1319,7 @@ function PastRunsSection({
                     isActive: false,
                     standings: run.standings,
                     categoryWinners: run.categoryWinners,
+                    zeroWinMembers: run.zeroWinMembers,
                   })
                 }
                 activeOpacity={0.8}
