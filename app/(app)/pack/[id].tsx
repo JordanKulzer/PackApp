@@ -563,9 +563,48 @@ function WeekDetailSheet({
             <Text style={wdS.headerTitle} numberOfLines={1}>
               {entry ? formatRunRange(entry.startedAt, entry.endedAt) : ""}
             </Text>
-            <Text style={wdS.headerStatus}>
-              {entry?.isActive ? "In Progress" : "Completed"}
-            </Text>
+            {/* Stage C item 1: on completed runs, promote the winner from
+                summaryStandings. Reuses the "A & B" / "A & N others" tied
+                pattern from PastRunsSection / Category Champions. Active
+                runs keep the plain "In Progress" status — no winner yet. */}
+            {entry?.isActive ? (
+              <Text style={wdS.headerStatus}>In Progress</Text>
+            ) : (
+              (() => {
+                const winners = summaryStandings.filter((s) => s.rank === 1);
+                if (winners.length === 0) {
+                  const period =
+                    pack.competition_window === "monthly" ? "month" : "week";
+                  return (
+                    <Text style={wdS.headerStatus} numberOfLines={1}>
+                      No winner — quiet {period}
+                    </Text>
+                  );
+                }
+                const names = winners.map((w) =>
+                  formatName(
+                    w.userId === currentUserId && currentUser
+                      ? currentUser.displayName
+                      : (w.displayName ?? null),
+                    w.rank,
+                  ),
+                );
+                const namesLabel =
+                  names.length === 1
+                    ? names[0]
+                    : names.length === 2
+                      ? `${names[0]} & ${names[1]}`
+                      : `${names[0]} & ${names.length - 1} others`;
+                const totalWins = winners[0].totalWins;
+                const winsLabel = `${totalWins} ${totalWins === 1 ? "win" : "wins"}`;
+                return (
+                  <Text style={wdS.headerWinner} numberOfLines={1}>
+                    <Text style={wdS.headerWinnerName}>{namesLabel}</Text>
+                    <Text style={wdS.headerWinnerMeta}> · {winsLabel}</Text>
+                  </Text>
+                );
+              })()
+            )}
           </View>
           <View style={{ width: 40 }} />
         </View>
@@ -578,7 +617,7 @@ function WeekDetailSheet({
           {/* Weekly standings */}
           <View style={wdS.section}>
             <Text style={wdS.sectionLabel}>
-              {entry?.isActive ? "CURRENT STANDINGS" : "FINAL STANDINGS"}
+              {entry?.isActive ? "Current Standings" : "Final Standings"}
             </Text>
 
             {summaryStandings.length === 0 ? (
@@ -649,7 +688,7 @@ function WeekDetailSheet({
               categoryWinners, so the section is omitted for them. */}
           {categoryWinners.length > 0 && (
             <View style={wdS.section}>
-              <Text style={wdS.sectionLabel}>CATEGORY CHAMPIONS</Text>
+              <Text style={wdS.sectionLabel}>Category Champions</Text>
               {CATEGORIES.map((category) => {
                 const cw = categoryWinners.find((c) => c.category === category);
                 if (!cw) return null;
@@ -694,7 +733,7 @@ function WeekDetailSheet({
           {/* Daily breakdown — day picker + selected day's per-member results */}
           {days.length > 0 && (
             <View style={wdS.section}>
-              <Text style={wdS.sectionLabel}>DAILY BREAKDOWN</Text>
+              <Text style={wdS.sectionLabel}>Daily Breakdown</Text>
 
               <ScrollView
                 horizontal
@@ -933,6 +972,22 @@ const wdS = StyleSheet.create({
     color: C.textTertiary,
     letterSpacing: 0.5,
   },
+  // Stage C item 1: completed-run winner promoted into the sheet header.
+  // headerWinner is the container <Text> (so name + meta sit on one line
+  // and truncate together via numberOfLines). headerWinnerName carries
+  // the celebration in gold; headerWinnerMeta sits quieter behind a
+  // middle-dot, echoing PastRunsSection's "{leader} · {wins}" rhythm.
+  headerWinner: { fontSize: 13 },
+  headerWinnerName: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: colors.leader,
+  },
+  headerWinnerMeta: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: C.textTertiary,
+  },
   scroll: { flex: 1 },
   section: {
     backgroundColor: C.surface,
@@ -943,11 +998,14 @@ const wdS = StyleSheet.create({
     paddingBottom: 12,
     marginTop: 8,
   },
+  // Stage C item 4: section headers softened. All-caps + bold-tertiary
+  // (3 stacked uppercase blocks) read harsh; demoted to Title Case at a
+  // brighter secondary tone so section boundaries remain legible without
+  // shouting. JSX strings updated to Title Case at each call site.
   sectionLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: C.textTertiary,
-    letterSpacing: 0.8,
+    fontSize: 13,
+    fontWeight: "600",
+    color: C.textSecondary,
     marginBottom: 10,
   },
   emptyHint: { fontSize: 13, color: C.textTertiary, paddingVertical: 12 },
@@ -1310,7 +1368,7 @@ function PastRunsSection({
             return isPro || idx < FREE_HISTORY_WEEKS ? (
               <TouchableOpacity
                 key={run.runId}
-                style={pbS.card}
+                style={[pbS.card, pbS.cardCompleted]}
                 onPress={() =>
                   setDetailEntry({
                     runId: run.runId,
@@ -1342,10 +1400,15 @@ function PastRunsSection({
             ) : (
               <TouchableOpacity
                 key={run.runId}
-                style={[pbS.card, pbS.cardLocked]}
+                style={[pbS.card, pbS.cardPro]}
                 onPress={handleLockedRun}
                 activeOpacity={0.8}
               >
+                {/* Stage C item 3: Pro upsell as a CTA, not a faded data
+                    row. Drops the 0.6 opacity shroud and tints the border,
+                    bg, icon, and copy in the app's accent so it reads as
+                    an offer / invitation, clearly distinct from a real
+                    completed-run card or a broken row. */}
                 <Text style={pbS.dateLabel}>
                   {formatRunRange(run.startedAt, run.endedAt)}
                 </Text>
@@ -1353,13 +1416,15 @@ function PastRunsSection({
                   <Ionicons
                     name="lock-closed"
                     size={16}
-                    color={C.textTertiary}
+                    color={C.accent}
                   />
-                  <Text style={pbS.lockedText}>Full history with Pro</Text>
+                  <Text style={pbS.proCtaText}>
+                    See full history with Pro
+                  </Text>
                   <Ionicons
                     name="chevron-forward"
                     size={16}
-                    color={C.textTertiary}
+                    color={C.accent}
                   />
                 </View>
               </TouchableOpacity>
@@ -1443,12 +1508,29 @@ const pbS = StyleSheet.create({
   emptyState: { paddingVertical: 24, gap: 6, alignItems: "center" },
   emptyTitle: { fontSize: 14, fontWeight: "600", color: C.textSecondary },
   emptySubtitle: { fontSize: 13, color: C.textTertiary, textAlign: "center" },
-  cardLocked: { opacity: 0.6 },
-  lockedText: {
+  // Stage C item 2: completed-run cards get a celebratory gold left-rail.
+  // One-treatment differentiator — picks up the existing colors.leader
+  // accent used by the row's Crown + winnerName so the card composes
+  // visually with its own contents. paddingLeft compensates for the 3px
+  // border so internal content stays aligned with the In-Progress card.
+  cardCompleted: {
+    borderLeftWidth: 3,
+    borderLeftColor: colors.leader,
+    paddingLeft: 11,
+  },
+  // Stage C item 3: Pro upsell CTA. Accent border + subtle accent-tinted
+  // background read as "this is an offer", not as a faded data row. The
+  // icon + text inside switch to C.accent at the call site so the whole
+  // card reads as one coherent invitation.
+  cardPro: {
+    borderColor: C.accent,
+    backgroundColor: colors.selfBgDim,
+  },
+  proCtaText: {
     flex: 1,
     fontSize: 13,
-    color: C.textTertiary,
-    fontStyle: "italic",
+    fontWeight: "600",
+    color: C.accent,
   },
 });
 
