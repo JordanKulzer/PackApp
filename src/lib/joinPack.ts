@@ -97,12 +97,15 @@ export async function seedDailyScoresOnJoin(
     const water_achieved =
       pack.water_enabled && waterOz >= pack.water_target_oz;
 
+    // Prompt 2 (streak migration): streak_days dropped from this upsert.
+    // The column keeps its DB default (0) for the new row; the user's
+    // GLOBAL streak (users.current_streak) is the authoritative streak
+    // and is independent of this per-pack join event.
     const { error } = await supabase.from("daily_scores").upsert(
       {
         run_id: activeRunId,
         user_id: userId,
         score_date: today,
-        streak_days: 0,
         steps_achieved,
         workout_achieved: false,
         calories_achieved,

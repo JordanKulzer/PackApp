@@ -1,5 +1,4 @@
 import { supabase } from "./supabase";
-import { computeStreakForRun } from "./computeStreak";
 import { computeUserStreak } from "./computeUserStreak";
 import { packToday, deviceLocalToday } from "./packDates";
 import { notifyPackMembers } from "./notifications";
@@ -65,25 +64,40 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
       const water_achieved =
         pack.water_enabled && trueTotalOz >= pack.water_target_oz;
 
+      // Prompt 2 (streak migration): streak_days dropped from the SELECT —
+      // milestone gating reads the user's GLOBAL streak from
+      // users.current_streak below, not from this per-pack row.
       const { data: existing } = await supabase
         .from("daily_scores")
         .select(
-          "total_points, water_achieved, steps_achieved, workout_achieved, workout_count, calories_achieved, streak_days, manual_water_count, hk_water_count",
+          "total_points, water_achieved, steps_achieved, workout_achieved, workout_count, calories_achieved, manual_water_count, hk_water_count",
         )
         .eq("run_id", run.id)
         .eq("user_id", userId)
         .eq("score_date", today)
         .single();
-      const prevStreakDays = existing?.streak_days ?? 0;
       const prevWaterAchieved = existing?.water_achieved ?? false;
+
+      // Prompt 2: prevStreak comes from users.current_streak, read BEFORE
+      // computeUserStreak runs below. Pre-log value; compared against the
+      // post-log return value from computeUserStreak for milestone detection.
+      const { data: prevUserStreakRow } = await supabase
+        .from("users")
+        .select("current_streak")
+        .eq("id", userId)
+        .maybeSingle();
+      const prevStreak =
+        (prevUserStreakRow as { current_streak?: number } | null)
+          ?.current_streak ?? 0;
 
       const anyAchieved =
         water_achieved ||
         (existing?.steps_achieved ?? false) ||
         (existing?.workout_achieved ?? false) ||
         (existing?.calories_achieved ?? false);
-      const streakDays = await computeStreakForRun(userId, run.id, today, anyAchieved, packTz);
 
+      // Prompt 2: streak_days no longer written — users.current_streak is
+      // the authoritative streak, maintained by computeUserStreak below.
       const { error: upsertError } = await supabase.from("daily_scores").upsert(
         {
           run_id: run.id,
@@ -91,7 +105,6 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
           score_date: today,
           water_achieved,
           manual_water_count: Math.round(trueTotalOz),
-          streak_days: streakDays,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "run_id,user_id,score_date" },
@@ -101,11 +114,17 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
         console.error("[LogSheet] daily_scores upsert error:", upsertError);
       }
 
-      // Stage 2 streak rewrite: recompute the per-user GLOBAL streak after
-      // every successful daily_scores write. computeStreakForRun above
-      // continues to maintain the per-run daily_scores.streak_days value
-      // for legacy Recap / per-pack surfaces. Fire-and-forget; never throws.
-      computeUserStreak(userId).catch(() => {});
+      // Prompt 2: recompute the per-user GLOBAL streak after the
+      // daily_scores write. AWAITED so the return value feeds analytics +
+      // milestone gating below. computeUserStreak provably never throws
+      // (top-level try/catch returns 0); defensive wrap is belt-and-
+      // suspenders against unforeseen exceptions breaking the log.
+      let newStreak = prevStreak;
+      try {
+        newStreak = await computeUserStreak(userId);
+      } catch {
+        // Defensive: leave newStreak as prevStreak — no milestone crosses.
+      }
 
       // Categories pivot (Stage 2C): per-category passed_you / tied_you
       // threats. Water's before value is the prior manual + hk lanes; the
@@ -131,17 +150,20 @@ export async function syncWaterToDailyScores(userId: string): Promise<CrossingEv
           source: "manual",
           points_earned: 0,
           is_first_ever: false,
-          streak_days_after: streakDays,
+          // Prompt 2: GLOBAL streak from computeUserStreak above.
+          streak_days_after: newStreak,
           goal_hit_today: anyAchieved,
         });
       }
 
+      // Prompt 2: prev/new both come from the GLOBAL streak now (prevStreak
+      // pre-read from users.current_streak; newStreak from computeUserStreak).
       const STREAK_MILESTONES = [3, 7, 14, 30, 60, 90] as const;
       let crossedMilestone: 3 | 7 | 14 | 30 | 60 | 90 | null = null;
       let priorMilestone = 0;
       for (const m of STREAK_MILESTONES) {
-        if (prevStreakDays >= m) priorMilestone = m;
-        if (prevStreakDays < m && streakDays >= m) crossedMilestone = m;
+        if (prevStreak >= m) priorMilestone = m;
+        if (prevStreak < m && newStreak >= m) crossedMilestone = m;
       }
       if (crossedMilestone) {
         analytics.streakMilestone({

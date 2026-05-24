@@ -4,7 +4,6 @@
 
 import { supabase } from "./supabase";
 import { WORKOUT_MAX_DAILY } from "./scoring";
-import { computeStreakForRun } from "./computeStreak";
 import { computeUserStreak } from "./computeUserStreak";
 import { notifyPackMembers } from "./notifications";
 import { type CrossingEvent } from "./competitiveDetection";
@@ -70,22 +69,37 @@ export async function syncManualActivityToDailyScores(
       if (!run) continue;
 
       // Read current row to preserve other goal counts and achieved flags.
-      // streak_days included for Pass 9 streak_milestone gating — must come
-      // from this fresh DB read, never from in-memory state.
       // F.2: SELECT expanded to include manual_*_count and hk_*_count so
       // the additive accumulation can read both source sides. steps_count
       // and calories_count are now DB-generated; reading them is still
       // valid (they return manual + hk) but the writes go to manual_*.
+      //
+      // Prompt 2 (streak migration): streak_days dropped from the SELECT —
+      // milestone gating reads the user's GLOBAL streak from users.current_streak
+      // below, not from this per-pack row.
       const { data: existing } = await supabase
         .from("daily_scores")
         .select(
-          "total_points, manual_steps_count, manual_calories_count, hk_steps_count, hk_calories_count, workout_count, steps_achieved, workout_achieved, calories_achieved, water_achieved, streak_days",
+          "total_points, manual_steps_count, manual_calories_count, hk_steps_count, hk_calories_count, workout_count, steps_achieved, workout_achieved, calories_achieved, water_achieved",
         )
         .eq("run_id", run.id)
         .eq("user_id", userId)
         .eq("score_date", today)
         .maybeSingle();
-      const prevStreakDays = existing?.streak_days ?? 0;
+
+      // Prompt 2: prevStreak comes from users.current_streak, read BEFORE
+      // computeUserStreak runs below. That guarantees the value is the
+      // streak as it stood prior to this log — milestone-crossing
+      // detection compares this against the post-log return from
+      // computeUserStreak.
+      const { data: prevUserStreakRow } = await supabase
+        .from("users")
+        .select("current_streak")
+        .eq("id", userId)
+        .maybeSingle();
+      const prevStreak =
+        (prevUserStreakRow as { current_streak?: number } | null)
+          ?.current_streak ?? 0;
 
       // F.2: source-isolated counters. Manual writes go to manual_*_count;
       // HK writes go to hk_*_count; daily_scores.steps_count and
@@ -125,16 +139,14 @@ export async function syncManualActivityToDailyScores(
         calories_achieved = (newManualCalories + prevHkCalories) >= (pack.calorie_target ?? Infinity);
       }
 
-      const anyAchieved = steps_achieved || workout_achieved || calories_achieved || water_achieved;
-      const streakDays = await computeStreakForRun(userId, run.id, today, anyAchieved, packTz);
-
-      // Only send fields that changed — avoids clearing streak or other fields
-      // that daily_scores may have set via HealthKit sync
+      // Only send fields that changed — avoids clearing other fields that
+      // daily_scores may have set via HealthKit sync. Prompt 2: streak_days
+      // no longer written; the per-user GLOBAL streak (users.current_streak)
+      // is the source of truth and is recomputed below.
       const upsertPayload: Record<string, unknown> = {
         run_id: run.id,
         user_id: userId,
         score_date: today,
-        streak_days: streakDays,
         updated_at: new Date().toISOString(),
       };
 
@@ -162,13 +174,19 @@ export async function syncManualActivityToDailyScores(
         continue;
       }
 
-      // Stage 2 streak rewrite: recompute the per-user GLOBAL streak after
-      // every successful daily_scores write. computeStreakForRun above
-      // continues to maintain the per-run daily_scores.streak_days value
-      // for legacy Recap / per-pack surfaces (transition strategy — no
-      // regression). Fire-and-forget; the function never throws but we
-      // .catch() defensively so a streak failure never breaks the log.
-      computeUserStreak(userId).catch(() => {});
+      // Prompt 2 (streak migration): recompute the per-user GLOBAL streak
+      // after every successful daily_scores write. AWAITED so the return
+      // value (post-log streak) can feed analytics + milestone gating
+      // below. computeUserStreak has a top-level try/catch and provably
+      // never throws — returns 0 on internal failure — but we wrap
+      // defensively here so any unforeseen exception cannot break the log.
+      let newStreak = prevStreak;
+      try {
+        newStreak = await computeUserStreak(userId);
+      } catch {
+        // Defensive: leave newStreak as prevStreak if compute failed —
+        // analytics + milestone detection silently no-op (no crossing).
+      }
 
       // Categories pivot (Stage 2C): per-category passed_you / tied_you
       // threats. One CategoryDelta per call — this path logs one activity
@@ -221,18 +239,22 @@ export async function syncManualActivityToDailyScores(
           source: "manual",
           points_earned: 0,
           is_first_ever: false,
-          streak_days_after: streakDays,
+          // Prompt 2: streak_days_after is now the user's GLOBAL streak
+          // returned by computeUserStreak above, not the per-run value.
+          streak_days_after: newStreak,
           goal_hit_today: goalHitToday,
         });
       }
 
       // Highest crossed streak milestone, fire once per upsert max.
+      // Prompt 2: prev/new both come from the GLOBAL streak now (prevStreak
+      // pre-read from users.current_streak; newStreak from computeUserStreak).
       const STREAK_MILESTONES = [3, 7, 14, 30, 60, 90] as const;
       let crossedMilestone: 3 | 7 | 14 | 30 | 60 | 90 | null = null;
       let priorMilestone = 0;
       for (const m of STREAK_MILESTONES) {
-        if (prevStreakDays >= m) priorMilestone = m;
-        if (prevStreakDays < m && streakDays >= m) crossedMilestone = m;
+        if (prevStreak >= m) priorMilestone = m;
+        if (prevStreak < m && newStreak >= m) crossedMilestone = m;
       }
       if (crossedMilestone) {
         analytics.streakMilestone({

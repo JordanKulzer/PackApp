@@ -10,7 +10,6 @@ import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "./supabase";
 import { WORKOUT_MAX_DAILY } from "./scoring";
-import { computeStreakForRun } from "./computeStreak";
 import { computeUserStreak } from "./computeUserStreak";
 import { notifyPackMembers } from "./notifications";
 import { type CrossingEvent } from "./competitiveDetection";
@@ -330,10 +329,14 @@ export async function syncHealthDataToSupabase(
   // F.2: SELECT manual_*_count + hk_*_count separately. steps_count and
   // calories_count are now DB-generated (manual + hk); no need to read
   // them here — we have the components.
+  //
+  // Prompt 2 (streak migration): streak_days dropped from the SELECT —
+  // milestone gating reads the user's GLOBAL streak from
+  // users.current_streak below, not from this per-pack row.
   const { data: priorRow } = await supabase
     .from("daily_scores")
     .select(
-      "total_points, manual_steps_count, manual_calories_count, workout_count, hk_steps_count, hk_calories_count, hk_workout_count, streak_days, steps_achieved, calories_achieved, workout_achieved, water_achieved",
+      "total_points, manual_steps_count, manual_calories_count, workout_count, hk_steps_count, hk_calories_count, hk_workout_count, steps_achieved, calories_achieved, workout_achieved, water_achieved",
     )
     .eq("run_id", runId)
     .eq("user_id", userId)
@@ -350,7 +353,19 @@ export async function syncHealthDataToSupabase(
   const prevCaloriesAchieved = priorRow?.calories_achieved ?? false;
   const prevWorkoutAchieved  = priorRow?.workout_achieved  ?? false;
   const prevWaterAchieved    = priorRow?.water_achieved    ?? false;
-  const prevStreakDays       = priorRow?.streak_days       ?? 0;
+
+  // Prompt 2: prevStreak comes from users.current_streak, read BEFORE
+  // computeUserStreak runs below. Pre-log GLOBAL streak; compared against
+  // the post-log return value from computeUserStreak for milestone
+  // detection. Replaces the prior priorRow.streak_days read.
+  const { data: prevUserStreakRow } = await supabase
+    .from("users")
+    .select("current_streak")
+    .eq("id", userId)
+    .maybeSingle();
+  const prevStreak =
+    (prevUserStreakRow as { current_streak?: number } | null)
+      ?.current_streak ?? 0;
 
   // Step 2b: HealthKit values are absolute snapshots — write them as the
   // absolute hk_*_count. The DB-generated steps_count / calories_count
@@ -377,18 +392,14 @@ export async function syncHealthDataToSupabase(
   const calories_achieved = pack.calories_enabled && totalCalories >= pack.calorie_target;
   const water_achieved = pack.water_enabled && waterOz >= pack.water_target_oz;
 
-  // Step 5: Calculate streak via shared utility
-  const anyToday =
-    steps_achieved || workout_achieved || calories_achieved || water_achieved;
-  const streakDays = await computeStreakForRun(userId, runId, today, anyToday, packTz);
-
-  // Step 7: Upsert to daily_scores
+  // Step 7: Upsert to daily_scores. Prompt 2 (streak migration): streak_days
+  // is no longer written here — users.current_streak (the GLOBAL streak,
+  // maintained by computeUserStreak below) is authoritative everywhere.
   const { error: upsertError } = await supabase.from("daily_scores").upsert(
     {
       run_id: runId,
       user_id: userId,
       score_date: today,
-      streak_days: streakDays,
       steps_achieved,
       workout_achieved,
       calories_achieved,
@@ -411,11 +422,17 @@ export async function syncHealthDataToSupabase(
     throw upsertError;
   }
 
-  // Stage 2 streak rewrite: recompute the per-user GLOBAL streak after
-  // every successful daily_scores write. computeStreakForRun above
-  // continues to maintain the per-run daily_scores.streak_days value
-  // for legacy Recap / per-pack surfaces. Fire-and-forget; never throws.
-  computeUserStreak(userId).catch(() => {});
+  // Prompt 2: recompute the per-user GLOBAL streak after the daily_scores
+  // write. AWAITED so the return value feeds analytics + milestone gating
+  // below. computeUserStreak provably never throws (top-level try/catch
+  // returns 0); defensive wrap is belt-and-suspenders against unforeseen
+  // exceptions breaking the sync.
+  let newStreak = prevStreak;
+  try {
+    newStreak = await computeUserStreak(userId);
+  } catch {
+    // Defensive: leave newStreak as prevStreak — no milestone crosses.
+  }
 
   // ── Pass 9 funnel: activity_logged (B-style transition gating) + streak_milestone
   //
@@ -442,7 +459,8 @@ export async function syncHealthDataToSupabase(
         source: "healthkit",
         points_earned: 0,
         is_first_ever: false,
-        streak_days_after: streakDays,
+        // Prompt 2: GLOBAL streak from computeUserStreak above.
+        streak_days_after: newStreak,
         goal_hit_today: goalHitToday,
       });
     }
@@ -450,12 +468,14 @@ export async function syncHealthDataToSupabase(
     // Streak milestone — only the highest crossed threshold fires per update.
     // Backfill jumps could cross multiple at once; firing the highest avoids
     // a 3-event burst when streak goes 0 → 30+.
+    // Prompt 2: prev/new both come from the GLOBAL streak now (prevStreak
+    // pre-read from users.current_streak; newStreak from computeUserStreak).
     const STREAK_MILESTONES = [3, 7, 14, 30, 60, 90] as const;
     let crossed: 3 | 7 | 14 | 30 | 60 | 90 | null = null;
     let priorMilestone = 0;
     for (const m of STREAK_MILESTONES) {
-      if (prevStreakDays >= m) priorMilestone = m;
-      if (prevStreakDays < m && streakDays >= m) crossed = m;
+      if (prevStreak >= m) priorMilestone = m;
+      if (prevStreak < m && newStreak >= m) crossed = m;
     }
     if (crossed) {
       analytics.streakMilestone({
@@ -703,7 +723,9 @@ export async function syncHealthDataToSupabase(
     workout_achieved,
     calories_achieved,
     water_achieved,
-    streakDays,
+    // Prompt 2: log the GLOBAL streak (computeUserStreak return) instead
+    // of the dropped per-run streakDays variable.
+    streakDays: newStreak,
   });
 
   return crossings;
@@ -1070,40 +1092,20 @@ export async function syncHealthDataForUser(userId: string): Promise<void> {
           );
         }
 
-        // ── WHY THIS ORDER MATTERS — DO NOT PARALLELIZE ─────────────────────
+        // ── Day loop runs sequentially (oldest-first) ───────────────────────
         //
-        // The day loop writes daily_scores rows in oldest-first order:
-        // day−2, then day−1, then today. This is *correctness*, not a perf
-        // choice. Reordering or parallelizing this loop will silently break
-        // streak computation.
+        // Prompt 2 (streak migration): the old correctness reason for this
+        // ordering — that syncHealthDataToSupabase called
+        // computeStreakForRun which walked prior daily_scores rows — is
+        // gone. The GLOBAL streak (computeUserStreak) reads
+        // daily_checkins + activity_feed, not daily_scores, so day-order
+        // no longer affects streak correctness.
         //
-        // Why: syncHealthDataToSupabase computes streak_days by calling
-        // computeStreakForRun(userId, runId, today, anyAchievedToday, tz),
-        // which reads ALL prior daily_scores rows for the run with
-        // score_date < today and walks backward looking for consecutive
-        // `anyHit` rows.
-        //
-        // If we wrote today FIRST, then day−1, then day−2:
-        //   • Today's compute reads day−1 / day−2 from BEFORE backfill,
-        //     where they may not exist or may carry stale `_achieved` flags.
-        //   • Today's row gets written with the wrong streak_days.
-        //   • We then update day−1 and day−2 — but today's row already
-        //     shipped with the broken streak. Realtime fires, the user sees
-        //     the wrong number, no second pass corrects it.
-        //
-        // Writing day−2 first guarantees today's compute reads fresh
-        // prior-day rows. The streak is correct on first write — no
-        // recompute pass needed.
-        //
-        // Parallelizing (Promise.all over the 3 days) has the same
-        // problem: today's promise can resolve before day−1's, and the
-        // read/write interleave is undefined. Sequential oldest-first is
-        // the only correct shape.
-        //
-        // If you're tempted to "speed this up" — don't. Each day is one HK
-        // read + one Supabase upsert, ~100–300ms total. Three days
-        // sequential is ~500ms in the typical case, and runs in the
-        // background observer wake (the user is not waiting on it).
+        // The loop stays sequential anyway: parallelizing 3 HK reads + 3
+        // Supabase upserts runs hot against rate limits, and the work
+        // happens in a background observer wake — the user is not
+        // waiting on it. Each day is ~100–300ms; 3 sequential is ~500ms
+        // typical. Safe to parallelize if a future perf need justifies it.
         // ────────────────────────────────────────────────────────────────────
         for (const scoreDate of days) {
           // TODO(6.5b cross-run): backfill currently writes ONLY into the
