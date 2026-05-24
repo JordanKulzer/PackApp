@@ -21,7 +21,7 @@ import {
   Dimensions,
 } from "react-native";
 import type { StyleProp, TextStyle } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useAuthStore } from "../stores/authStore";
 import { useScoreStore } from "../stores/scoreStore";
 import { supabase } from "../lib/supabase";
@@ -37,6 +37,7 @@ import {
   useLogActivitySheetData,
   invalidateLogActivitySheetCache,
 } from "../hooks/useLogActivitySheetData";
+import { checkInToday } from "../lib/checkInToday";
 import type {
   LogEntry,
   WorkoutLogEntry,
@@ -87,6 +88,9 @@ const C = {
   textTertiary: "#484F58",
   accent: colors.self,
   success: "#3FB950",
+  // Stage 3: streak-headline accent. Matches PackGridView's C.streak so
+  // the lightning-bolt glyph reads identically across surfaces.
+  streak: "#FF9500",
 } as const;
 
 const QUICK_AMOUNTS = [8, 16, 32] as const;
@@ -358,6 +362,15 @@ const ar = StyleSheet.create({
 function RowSkeleton() {
   return (
     <>
+      {/* Stage 3 redesign — streak module placeholder. Matches the real
+          module's compact rhythm: a short headline line + a button-shaped
+          pill. Followed by a divider so the boundary lines up with the
+          real layout once data loads. */}
+      <View style={sk.streakBlock}>
+        <SkeletonBox width={110} height={14} borderRadius={4} />
+        <SkeletonBox width={150} height={28} borderRadius={8} />
+      </View>
+      <View style={sk.divider} />
       {[0, 1, 2, 3].map((i) => (
         <View key={i}>
           <View style={sk.row}>
@@ -372,6 +385,14 @@ function RowSkeleton() {
 }
 
 const sk = StyleSheet.create({
+  // Stage 3 redesign — streak module skeleton block. paddingVertical mirrors
+  // the real streakModule (12) so the boundary divider sits in the same spot
+  // both during loading and after data lands.
+  streakBlock: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 10,
+  },
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -488,6 +509,16 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
   const [hasManualCalories, setHasManualCalories] = useState(false);
   const [manualStepsSaving, setManualStepsSaving] = useState(false);
   const [manualCalSaving, setManualCalSaving] = useState(false);
+
+  // ── Stage 3: check-in box + streak headline ──────────────────────────────
+  // manuallyLoggedTodayLocal / checkedInTodayLocal drive the box's
+  // satisfied state; currentStreakLocal is the user's GLOBAL streak
+  // (users.current_streak — Stage 2 cache). All three sync from
+  // hookData on load; the check-in tap optimistically flips them.
+  const [manuallyLoggedTodayLocal, setManuallyLoggedTodayLocal] =
+    useState(false);
+  const [checkedInTodayLocal, setCheckedInTodayLocal] = useState(false);
+  const [currentStreakLocal, setCurrentStreakLocal] = useState(0);
 
   // ── Score store ───────────────────────────────────────────────────────────
   const patchMyScore = useScoreStore((s) => s.patchMyScore);
@@ -657,6 +688,12 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     // has_manual_* booleans dropped in migration 20260513b).
     setHasManualSteps((hookData.localScore?.manual_steps_count ?? 0) > 0);
     setHasManualCalories((hookData.localScore?.manual_calories_count ?? 0) > 0);
+    // Stage 3: pull the three streak-surface fields into local state so
+    // the check-in box's optimistic flip survives a re-render without
+    // waiting for the hook to re-fetch.
+    setManuallyLoggedTodayLocal(hookData.manuallyLoggedToday);
+    setCheckedInTodayLocal(hookData.checkedInToday);
+    setCurrentStreakLocal(hookData.currentStreak);
     if (hookData.packRun && hookData.localScore) {
       patchMyScore(hookData.packRun.packId, {
         ...hookData.localScore,
@@ -953,6 +990,29 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     }
   };
 
+  // ── Stage 3: check-in tap ────────────────────────────────────────────────
+  // Idempotent: re-tapping after a manual log (manuallyLoggedTodayLocal) or
+  // a previous check-in (checkedInTodayLocal) is a no-op. Optimistic flip +
+  // +1 streak preview; rolls back on failure. Server-side computeUserStreak
+  // is awaited inside checkInToday, so the cache-invalidate that follows
+  // reads the fresh users.current_streak.
+  const handleCheckIn = async () => {
+    if (!userId) return;
+    if (manuallyLoggedTodayLocal || checkedInTodayLocal) return;
+    Vibration.vibrate(40);
+    setCheckedInTodayLocal(true);
+    setCurrentStreakLocal((prev) => prev + 1);
+    try {
+      await checkInToday(userId);
+      invalidateLogActivitySheetCache();
+      bumpLogVersion();
+    } catch (err) {
+      console.error("[LogSheet] handleCheckIn error:", err);
+      setCheckedInTodayLocal(false);
+      setCurrentStreakLocal((prev) => Math.max(0, prev - 1));
+    }
+  };
+
   const handleSaveManualSteps = () => {
     const n = parseInt(rawSteps.replace(/,/g, ""), 10);
     if (!isNaN(n) && n > 0) {
@@ -1241,6 +1301,95 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                 <RowSkeleton />
               ) : (
                 <>
+                  {/* Stage 3 redesign — unified streak module. One compact
+                      block at the top of the overview with three states:
+                      satisfied (streak headline + "Today's locked in"),
+                      streak-active (headline + check-in button), and
+                      no-streak (invitation + check-in button). Lighter
+                      vertical rhythm (paddingVertical 12 vs the rows' 16)
+                      so it reads as context, not the hero of the sheet. */}
+                  {(() => {
+                    const satisfied =
+                      manuallyLoggedTodayLocal || checkedInTodayLocal;
+                    return (
+                      <View style={s.streakModule}>
+                        {satisfied ? (
+                          <>
+                            {currentStreakLocal > 0 && (
+                              <View style={s.streakHeadline}>
+                                <MaterialCommunityIcons
+                                  name="lightning-bolt"
+                                  size={14}
+                                  color={C.streak}
+                                />
+                                <Text style={s.streakHeadlineText}>
+                                  {currentStreakLocal} day streak
+                                </Text>
+                              </View>
+                            )}
+                            <View style={s.streakSubline}>
+                              <Ionicons
+                                name="checkmark"
+                                size={12}
+                                color={C.success}
+                              />
+                              <Text style={s.streakSublineText}>
+                                Today&apos;s locked in
+                              </Text>
+                            </View>
+                          </>
+                        ) : currentStreakLocal > 0 ? (
+                          // State B — has a streak, not yet satisfied today.
+                          // Lower-stakes than the invitation: the user is
+                          // already in the habit. Compact flex-start pill.
+                          <>
+                            <View style={s.streakHeadline}>
+                              <MaterialCommunityIcons
+                                name="lightning-bolt"
+                                size={14}
+                                color={C.streak}
+                              />
+                              <Text style={s.streakHeadlineText}>
+                                {currentStreakLocal} day streak
+                              </Text>
+                            </View>
+                            <TouchableOpacity
+                              style={s.checkInButton}
+                              onPress={handleCheckIn}
+                              activeOpacity={0.85}
+                            >
+                              <Text style={s.checkInButtonText}>
+                                I did an activity today
+                              </Text>
+                            </TouchableOpacity>
+                          </>
+                        ) : (
+                          // State C — the invitation. Primary CTA of the
+                          // module: confident headline + full-width primary
+                          // button. No lightning-bolt (no streak yet).
+                          <>
+                            <View style={s.streakHeadline}>
+                              <Text style={s.streakHeadlineTextStart}>
+                                Start your streak
+                              </Text>
+                            </View>
+                            <TouchableOpacity
+                              style={s.checkInButtonPrimary}
+                              onPress={handleCheckIn}
+                              activeOpacity={0.85}
+                            >
+                              <Text style={s.checkInButtonText}>
+                                I did an activity today
+                              </Text>
+                            </TouchableOpacity>
+                          </>
+                        )}
+                      </View>
+                    );
+                  })()}
+
+                  <View style={s.rowDivider} />
+
                   {/* Steps Row */}
                   <ActivityRow
                     label={activityCopy.logSheet.types.steps}
@@ -1795,6 +1944,69 @@ const s = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: C.border,
     marginHorizontal: 16,
+  },
+  // Stage 3 redesign — unified streak module. Compact (paddingVertical 12
+  // vs ActivityRow's 16) so it reads as secondary context, not the hero of
+  // the sheet. paddingHorizontal mirrors ar.header so the headline aligns
+  // with the row content below. gap: 10 between headline and CTA/sub-line.
+  streakModule: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  streakHeadline: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  streakHeadlineText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: C.streak,
+  },
+  // State C headline ("Start your streak") — the invitation. Confident
+  // primary-white treatment so the CTA state has presence; no muted grey.
+  streakHeadlineTextStart: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: C.textPrimary,
+  },
+  // Quiet confirmation under the headline in the satisfied state.
+  streakSubline: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  streakSublineText: {
+    fontSize: 12,
+    color: C.textSecondary,
+  },
+  // Check-in CTA — primary-action treatment matching home.tsx's createButton
+  // ("+ New" in the Pack header): C.accent blue fill, white label. Two
+  // accent colours, two meanings — orange = streak, blue = action.
+  //
+  // State B (compact pill): user already has a streak, so the CTA is
+  // lower-stakes — flex-start so it doesn't dominate the module.
+  checkInButton: {
+    alignSelf: "flex-start",
+    backgroundColor: C.accent,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  // State C (full-width primary): the invitation. Largest, most confident
+  // CTA in the module — fills the row to read as the obvious next action.
+  checkInButtonPrimary: {
+    backgroundColor: C.accent,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  checkInButtonText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#FFFFFF",
   },
   // Row right-side value styles. Pass 25: rowValue bumped to primary white
   // for load-bearing data (today's count). Pass 25-followup-B: rowToday

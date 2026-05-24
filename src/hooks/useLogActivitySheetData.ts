@@ -68,6 +68,17 @@ export interface LogActivitySheetData {
   packRun: { runId: string; packId: string; packTimezone: string } | null;
   localScore: DailyScoreSnapshot | null;
   localWeeklyPoints: number;
+  // Stage 3: streak surfaces. manuallyLoggedToday / checkedInToday drive
+  // the check-in box's satisfied state; currentStreak is the per-user
+  // GLOBAL streak (users.current_streak — Stage 2 cache). All three are
+  // user-global, populated even when there's no active packRun.
+  //
+  // manuallyLoggedToday is CROSS-PACK (no pack_id filter) so it matches
+  // computeUserStreak's semantics exactly — the box must agree with the
+  // streak compute on whether "today is satisfied via a manual log."
+  manuallyLoggedToday: boolean;
+  checkedInToday: boolean;
+  currentStreak: number;
 }
 
 type CacheEntry = { userId: string; data: LogActivitySheetData; ts: number };
@@ -119,8 +130,18 @@ export function useLogActivitySheetData(
       const hkAuthorized = hkAvailable ? await getHealthKitAuthStatus() : false;
 
       // Round 1: all independent sources in parallel. The HealthKit reads
-      // run only when iOS reports the prompt has been answered.
-      const [logsResult, memberResult, hkValues] = await Promise.all([
+      // run only when iOS reports the prompt has been answered. The three
+      // streak-surface queries (Stage 3) ride this round too — they're
+      // user-global (no pack/run dependency) and the EXISTS-style queries
+      // are cheap (head: true returns count only, no row data).
+      const [
+        logsResult,
+        memberResult,
+        hkValues,
+        manualFeedExistsResult,
+        checkinExistsResult,
+        userStreakResult,
+      ] = await Promise.all([
         supabase
           .from("water_logs")
           .select("amount_oz, logged_at")
@@ -137,6 +158,29 @@ export function useLogActivitySheetData(
         hkAvailable && hkAuthorized
           ? (Promise.all([getTodaySteps(), getTodayActiveCalories()]) as Promise<[number, number]>)
           : (Promise.resolve([0, 0]) as Promise<[number, number]>),
+        // Stage 3: did the user manually log anything today? Cross-pack
+        // (no pack_id filter) so the result matches Stage 2's
+        // computeUserStreak exactly. score_date is in pack-tz; the flagged
+        // far-shifted-pack midnight-boundary edge case applies here too,
+        // and the check-in box is the user's safety net for it.
+        supabase
+          .from("activity_feed")
+          .select("score_date", { count: "exact", head: true })
+          .eq("user_id", userId!)
+          .eq("entry_method", "manual")
+          .eq("score_date", deviceToday),
+        // Stage 3: did the user already check in today?
+        supabase
+          .from("daily_checkins")
+          .select("score_date", { count: "exact", head: true })
+          .eq("user_id", userId!)
+          .eq("score_date", deviceToday),
+        // Stage 3: the user's GLOBAL streak count (Stage 2 cache on users).
+        supabase
+          .from("users")
+          .select("current_streak")
+          .eq("id", userId!)
+          .maybeSingle(),
       ]);
 
       const entries = (logsResult.data ?? []) as LogEntry[];
@@ -151,6 +195,14 @@ export function useLogActivitySheetData(
       const stepsToday = hkAvailable && hkAuthorized ? stepsRaw : null;
       const caloriesToday = hkAvailable && hkAuthorized ? calsRaw : null;
 
+      // Stage 3: derive the three streak-surface fields. User-global, so
+      // included in every return path below (early returns + happy path).
+      const manuallyLoggedToday = (manualFeedExistsResult.count ?? 0) > 0;
+      const checkedInToday = (checkinExistsResult.count ?? 0) > 0;
+      const currentStreak =
+        (userStreakResult.data as { current_streak?: number } | null)
+          ?.current_streak ?? 0;
+
       const packId = member?.pack_id ?? null;
       const packTimezone: string = member?.packs?.timezone ?? "UTC";
       // Compute "today" in the pack's timezone for score_date queries
@@ -162,6 +214,7 @@ export function useLogActivitySheetData(
           stepsEntries: [], caloriesEntries: [],
           hkAuthorized, stepsToday, caloriesToday,
           packRun: null, localScore: null, localWeeklyPoints: 0,
+          manuallyLoggedToday, checkedInToday, currentStreak,
         };
       }
 
@@ -179,6 +232,7 @@ export function useLogActivitySheetData(
           stepsEntries: [], caloriesEntries: [],
           hkAuthorized, stepsToday, caloriesToday,
           packRun: null, localScore: null, localWeeklyPoints: 0,
+          manuallyLoggedToday, checkedInToday, currentStreak,
         };
       }
 
@@ -252,6 +306,7 @@ export function useLogActivitySheetData(
         packRun: { runId: run.id, packId, packTimezone },
         localScore,
         localWeeklyPoints,
+        manuallyLoggedToday, checkedInToday, currentStreak,
       };
     }
 
