@@ -12,9 +12,12 @@ import { supabase } from "./supabase";
 // the verified JWT — callers cannot spoof a different actor.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Goal-removal Part 3a: kind:"goal" and kind:"all_goals" variants
+// removed — both were paired to the *_achieved booleans (goal-hit /
+// all-goals-hit events), which are gone with the goal-hit framing.
+// Historical activity_feed rows of type "all_goals" still render via
+// SystemMessageRow's case for it; only the live push paths are gone.
 export type PackNotificationEvent =
-  | { kind: "goal"; activityType: "steps" | "workout" | "calories" | "water" }
-  | { kind: "all_goals" }
   | { kind: "ownership_transferred"; newOwnerName: string }
   | { kind: "new_comment"; bodyPreview: string }
   // Fired from the Edit Pack save flow when goal targets change (Pass 20d,

@@ -90,26 +90,19 @@ export async function seedDailyScoresOnJoin(
       ]);
     }
 
-    const steps_achieved =
-      pack.steps_enabled && hkSteps >= pack.step_target;
-    const calories_achieved =
-      pack.calories_enabled && hkCalories >= pack.calorie_target;
-    const water_achieved =
-      pack.water_enabled && waterOz >= pack.water_target_oz;
-
-    // Prompt 2 (streak migration): streak_days dropped from this upsert.
-    // The column keeps its DB default (0) for the new row; the user's
-    // GLOBAL streak (users.current_streak) is the authoritative streak
-    // and is independent of this per-pack join event.
+    // Goal-removal Part 3a: the three *_achieved computes (and the
+    // pack.step_target / calorie_target / water_target_oz reads they
+    // depended on) are gone. The four *_achieved fields drop out of
+    // the seed payload — the columns keep their DB defaults (false).
+    // Prompt 2 (streak migration): streak_days already dropped; the
+    // column keeps its DB default (0); users.current_streak is the
+    // authoritative streak and is independent of this per-pack join
+    // event.
     const { error } = await supabase.from("daily_scores").upsert(
       {
         run_id: activeRunId,
         user_id: userId,
         score_date: today,
-        steps_achieved,
-        workout_achieved: false,
-        calories_achieved,
-        water_achieved,
         manual_water_count: waterOz,
         hk_steps_count: hkSteps,
         hk_calories_count: hkCalories,

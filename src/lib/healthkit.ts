@@ -11,7 +11,9 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "./supabase";
 import { WORKOUT_MAX_DAILY } from "./scoring";
 import { computeUserStreak } from "./computeUserStreak";
-import { notifyPackMembers } from "./notifications";
+// Goal-removal Part 3a: notifyPackMembers no longer used here — all
+// kind:"goal" / kind:"all_goals" pushes are gone with the goal-hit
+// framing. Threat-detection has its own internal push path.
 import { type CrossingEvent } from "./competitiveDetection";
 import { detectAndSendCategoryThreats, type CategoryDelta } from "./threatNotifications";
 import { packToday, packDateRangeUTC } from "./packDates";
@@ -323,20 +325,20 @@ export async function syncHealthDataToSupabase(
     getWaterOzForRange(rangeStart, rangeEnd),
   ]);
 
-  // Step 2a: Read prior row for delta computation, threat delta, and Pass 9
-  // funnel transition detection (activity_logged + streak_milestone gate on
-  // these "before" values).
+  // Step 2a: Read prior row for delta computation + threat delta.
   // F.2: SELECT manual_*_count + hk_*_count separately. steps_count and
   // calories_count are now DB-generated (manual + hk); no need to read
   // them here — we have the components.
   //
-  // Prompt 2 (streak migration): streak_days dropped from the SELECT —
-  // milestone gating reads the user's GLOBAL streak from
-  // users.current_streak below, not from this per-pack row.
+  // Prompt 2 (streak migration): streak_days dropped from the SELECT.
+  // Goal-removal Part 3a: *_achieved booleans dropped from the SELECT —
+  // they're no longer read or written by this path. The Pass 9
+  // transition-gating + per-type goal-hit feed inserts + all_goals
+  // event that consumed them are all gone.
   const { data: priorRow } = await supabase
     .from("daily_scores")
     .select(
-      "total_points, manual_steps_count, manual_calories_count, workout_count, hk_steps_count, hk_calories_count, hk_workout_count, steps_achieved, calories_achieved, workout_achieved, water_achieved",
+      "total_points, manual_steps_count, manual_calories_count, workout_count, hk_steps_count, hk_calories_count, hk_workout_count",
     )
     .eq("run_id", runId)
     .eq("user_id", userId)
@@ -347,12 +349,6 @@ export async function syncHealthDataToSupabase(
   const prevManualCalories = priorRow?.manual_calories_count ?? 0;
   const prevWorkoutCount = priorRow?.workout_count ?? 0;
   const prevHkWorkouts = priorRow?.hk_workout_count ?? 0;
-  // Frozen "before" snapshot for Pass 9 transition gating. Read from priorRow
-  // (fresh DB read), NEVER from in-memory variables that get mutated below.
-  const prevStepsAchieved    = priorRow?.steps_achieved    ?? false;
-  const prevCaloriesAchieved = priorRow?.calories_achieved ?? false;
-  const prevWorkoutAchieved  = priorRow?.workout_achieved  ?? false;
-  const prevWaterAchieved    = priorRow?.water_achieved    ?? false;
 
   // Prompt 2: prevStreak comes from users.current_streak, read BEFORE
   // computeUserStreak runs below. Pre-log GLOBAL streak; compared against
@@ -386,24 +382,20 @@ export async function syncHealthDataToSupabase(
   const totalCalories = prevManualCalories + newHkCalories;
   const newWorkoutCount = Math.min(prevWorkoutCount + hkWorkoutsDelta, WORKOUT_MAX_DAILY);
 
-  // Step 3: Determine achievements using combined (manual + HK) totals
-  const steps_achieved = pack.steps_enabled && totalSteps >= pack.step_target;
-  const workout_achieved = pack.workouts_enabled && newWorkoutCount >= 1;
-  const calories_achieved = pack.calories_enabled && totalCalories >= pack.calorie_target;
-  const water_achieved = pack.water_enabled && waterOz >= pack.water_target_oz;
+  // Goal-removal Part 3a: Step 3 (steps_achieved/workout_achieved/calories_achieved/water_achieved
+  // compute) is gone — the booleans are no longer read or written by this
+  // path. The target columns they consumed (pack.step_target etc.) are
+  // unused here too.
 
   // Step 7: Upsert to daily_scores. Prompt 2 (streak migration): streak_days
   // is no longer written here — users.current_streak (the GLOBAL streak,
   // maintained by computeUserStreak below) is authoritative everywhere.
+  // Goal-removal Part 3a: *_achieved fields dropped from the payload.
   const { error: upsertError } = await supabase.from("daily_scores").upsert(
     {
       run_id: runId,
       user_id: userId,
       score_date: today,
-      steps_achieved,
-      workout_achieved,
-      calories_achieved,
-      water_achieved,
       // F.2: steps_count / calories_count are DB-generated as
       // (manual + hk); writes against them would fail. HK only
       // writes its own absolute snapshot to hk_*_count.
@@ -434,37 +426,16 @@ export async function syncHealthDataToSupabase(
     // Defensive: leave newStreak as prevStreak — no milestone crosses.
   }
 
-  // ── Pass 9 funnel: activity_logged (B-style transition gating) + streak_milestone
+  // ── Streak milestone (mode === "today" only) ─────────────────────────
   //
-  // Fires only on newly-crossed achievement transitions (priorRow_X_achieved
-  // was false, new value is true). Reads the "before" state from priorRow
-  // (fresh DB read above), NEVER from in-memory state below the upsert.
-  // mode === "backfill" suppresses both events — these are user-action funnel
-  // signals, not historical data fills.
+  // Goal-removal Part 3a: the per-type activityLogged transitions block
+  // (priorRow_*_achieved → transitions[]) is gone — the *_achieved gates
+  // it relied on don't exist anymore. Background HK syncs would have
+  // fired the emit per type per sync without that transition gate, which
+  // is noise; dropping the analytics emit here is the cleanest cut.
+  // streakMilestone still fires below — that's the meaningful state
+  // change a sync can produce.
   if (mode === "today") {
-    // Stage 2A: points_earned hard-zeroed and is_first_ever degraded to
-    // false — the points-based first-ever gate is gone with the POINTS
-    // table. A later sub-stage rebuilds is_first_ever on categories data.
-    const goalHitToday = steps_achieved || workout_achieved || calories_achieved || water_achieved;
-    type TransitionedType = "steps" | "workout" | "calories" | "water";
-    const transitions: Array<{ type: TransitionedType }> = [];
-    if (!prevStepsAchieved    && steps_achieved)    transitions.push({ type: "steps" });
-    if (!prevCaloriesAchieved && calories_achieved) transitions.push({ type: "calories" });
-    if (!prevWorkoutAchieved  && workout_achieved)  transitions.push({ type: "workout" });
-    if (!prevWaterAchieved    && water_achieved)    transitions.push({ type: "water" });
-
-    for (const t of transitions) {
-      analytics.activityLogged({
-        activity_type: t.type,
-        source: "healthkit",
-        points_earned: 0,
-        is_first_ever: false,
-        // Prompt 2: GLOBAL streak from computeUserStreak above.
-        streak_days_after: newStreak,
-        goal_hit_today: goalHitToday,
-      });
-    }
-
     // Streak milestone — only the highest crossed threshold fires per update.
     // Backfill jumps could cross multiple at once; firing the highest avoids
     // a 3-event burst when streak goes 0 → 30+.
@@ -513,56 +484,18 @@ export async function syncHealthDataToSupabase(
     }
   }
 
-  // Step 7: Log individual achieved activities to activity_logs
-  // Steps / calories / water — one row per type per day (idempotent upsert)
-  const idempotentRows: Array<{
-    user_id: string;
-    activity_type: string;
-    points_earned: number;
-    activity_date: string;
-    healthkit_data: Record<string, number>;
-  }> = [];
-
-  if (steps_achieved) {
-    idempotentRows.push({
-      user_id: userId,
-      activity_type: "steps",
-      points_earned: 0,
-      activity_date: today,
-      healthkit_data: { raw_value: Math.round(steps) },
-    });
-  }
-  if (calories_achieved) {
-    idempotentRows.push({
-      user_id: userId,
-      activity_type: "calories",
-      points_earned: 0,
-      activity_date: today,
-      healthkit_data: { raw_value: Math.round(calories) },
-    });
-  }
-  if (water_achieved) {
-    idempotentRows.push({
-      user_id: userId,
-      activity_type: "water",
-      points_earned: 0,
-      activity_date: today,
-      healthkit_data: { raw_value: Math.round(waterOz) },
-    });
-  }
-
-  for (const row of idempotentRows) {
-    const { error: logError } = await supabase.from("activity_logs").insert(row);
-    if (logError && logError.code !== "23505") {
-      console.error("[HealthKit Sync] activity_logs insert error:", logError);
-    }
-  }
-
-  // Workouts — one row per credited workout (up to WORKOUT_MAX_DAILY).
-  // syncWorkoutsToSupabase handles deduplication via synced_workout_ids;
-  // this path just ensures the count in activity_logs stays in sync with
-  // what daily_scores records after the aggregate sync.
-  if (workout_achieved) {
+  // Goal-removal Part 3a: the steps/calories/water activity_logs
+  // idempotent inserts are gone — they were gated on *_achieved and
+  // nothing reads activity_logs rows of those types anymore.
+  //
+  // The workout activity_logs primer survives. syncWorkoutsToSupabase
+  // reads this row's synced_workout_ids to dedup per-sample credits;
+  // without a primer it'd race with syncWorkoutsToSupabase to create
+  // the row on first credit, so seeding it here (when any workouts
+  // exist today) preserves the original guarantee. Gate switched from
+  // workout_achieved → newWorkoutCount > 0 (equivalent condition for
+  // the categories model, but reads off the count we already have).
+  if (newWorkoutCount > 0) {
     const { data: existingWorkoutLog } = await supabase
       .from("activity_logs")
       .select("id, healthkit_data")
@@ -584,130 +517,17 @@ export async function syncHealthDataToSupabase(
     }
   }
 
-  // ── Activity feed + push notifications ─────────────────────────────────
-  //
-  // SUPPRESSION ON BACKFILL — UX RATIONALE, NOT A BUG.
-  //
-  // When mode === "backfill" we deliberately skip every activity_feed insert
-  // and every notifyPackMembers call below. The daily_scores upsert above
-  // already credited the streak (the primary user-visible outcome of
-  // backfill). What we don't want is for past-day activity to surface as
-  // just-happened events:
-  //
-  //   • Activity feed inserts would appear in pack chat as "Jordan hit
-  //     steps goal" hours after the fact, looking like a live event.
-  //   • Push notifications would tell the pack about a goal hit two days
-  //     ago, which is noise and erodes notification trust.
-  //   • Threat-detection pushes (suppressed earlier) would falsely warn
-  //     about lead changes that are historical, not current.
-  //
-  // The streak benefit lands silently — exactly the right shape for
-  // recovering missed activity without surfacing stale events.
-  // ──────────────────────────────────────────────────────────────────────
-  const achievedTypes: Array<{ type: string }> = [];
-  if (steps_achieved)    achievedTypes.push({ type: "steps" });
-  if (workout_achieved)  achievedTypes.push({ type: "workout" });
-  if (calories_achieved) achievedTypes.push({ type: "calories" });
-  if (water_achieved)    achievedTypes.push({ type: "water" });
-
-  const rawValues: Record<string, number> = {
-    steps: totalSteps,
-    workout: newWorkoutCount,
-    calories: totalCalories,
-    water: Math.round(waterOz),
-  };
-
-  if (mode === "today") {
-    for (const { type } of achievedTypes) {
-      // Workouts are owned by syncWorkoutsToSupabase, which tracks per-sample
-      // HealthKit UUIDs and inserts one feed row per credited sample. Skipping
-      // here avoids the redundant + race-prone count-based path that was the
-      // source of the original duplicate emissions.
-      if (type === "workout") continue;
-
-      // See src/lib/syncWater.ts:142 for the partial-index ON CONFLICT
-      // discussion — same race-safety pattern. INSERT + 23505 catch
-      // preserves ignoreDuplicates: true semantics; the partial unique
-      // index still enforces uniqueness on INSERT.
-      const { data: insertedRows, error: feedError } = await supabase
-        .from("activity_feed")
-        .insert({
-          pack_id: packId,
-          user_id: userId,
-          activity_type: type,
-          value: rawValues[type] ?? 0,
-          points_earned: 0,
-          entry_method: "healthkit",
-          score_date: today,
-        })
-        .select("id");
-
-      if (feedError) {
-        if (feedError.code !== "23505") {
-          console.error("[HealthKit Sync] activity_feed insert error:", feedError);
-        }
-      } else if (insertedRows && insertedRows.length > 0) {
-        crossings.push({
-          packId,
-          packName: pack.name,
-          packTimezone: packTz,
-          feedItemId: insertedRows[0].id,
-          activityType: type as "steps" | "calories" | "water",
-          pointsEarned: 0,
-          scoreDate: today,
-        });
-        notifyPackMembers(userId, packId, {
-          kind: "goal",
-          activityType: type as "steps" | "calories" | "water",
-        }).catch(() => {});
-      }
-    }
-
-    // All-goals event — fires once when every enabled goal is hit on the same day.
-    // Requires at least 2 enabled goals so it carries meaningful signal.
-    const enabledGoalCount = [
-      pack.steps_enabled,
-      pack.workouts_enabled,
-      pack.calories_enabled,
-      pack.water_enabled,
-    ].filter(Boolean).length;
-
-    if (achievedTypes.length === enabledGoalCount && enabledGoalCount >= 2) {
-      // See src/lib/syncWater.ts:142 for the partial-index ON CONFLICT
-      // discussion — same race-safety pattern.
-      const { data: insertedAllGoals, error: allGoalsError } = await supabase
-        .from("activity_feed")
-        .insert({
-          pack_id: packId,
-          user_id: userId,
-          activity_type: "all_goals",
-          value: enabledGoalCount,
-          points_earned: 0,
-          entry_method: "healthkit",
-          score_date: today,
-        })
-        .select("id");
-
-      if (allGoalsError) {
-        if (allGoalsError.code !== "23505") {
-          console.error("[HealthKit Sync] all_goals insert error:", allGoalsError);
-        }
-      } else if (insertedAllGoals && insertedAllGoals.length > 0) {
-        crossings.push({
-          packId,
-          packName: pack.name,
-          packTimezone: packTz,
-          feedItemId: insertedAllGoals[0].id,
-          activityType: "all_goals",
-          pointsEarned: 0,
-          scoreDate: today,
-        });
-        notifyPackMembers(userId, packId, {
-          kind: "all_goals",
-        }).catch(() => {});
-      }
-    }
-  }
+  // Goal-removal Part 3a: the entire activity_feed + push block here is
+  // gone. It contained:
+  //   • the achievedTypes / rawValues setup (built from *_achieved)
+  //   • the per-type loop (mode === "today") that inserted
+  //     activity_type: steps/calories/water rows + fired kind:"goal" pushes
+  //   • the all_goals block that inserted activity_type: all_goals rows +
+  //     fired kind:"all_goals" pushes
+  // Under the categories pivot, none of these are goal-hit events anymore.
+  // Threat-detection (passed_you / tied_you) above survives and remains
+  // the live chat/push signal for HK syncs. Per-workout feed rows are
+  // owned by syncWorkoutsToSupabase (per-sample uuid dedup), unaffected.
 
   console.log("[HealthKit Sync] Success:", {
     packId,
@@ -719,10 +539,6 @@ export async function syncHealthDataToSupabase(
     totalCalories,
     totalWorkouts: newWorkoutCount,
     waterOz,
-    steps_achieved,
-    workout_achieved,
-    calories_achieved,
-    water_achieved,
     // Prompt 2: log the GLOBAL streak (computeUserStreak return) instead
     // of the dropped per-run streakDays variable.
     streakDays: newStreak,
@@ -819,10 +635,13 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEv
       const newSamples = daySamples.filter((s) => !syncedIds.includes(s.identifier));
       if (newSamples.length === 0) continue;
 
-      // Get current workout_count for this date/run
+      // Get current workout_count for this date/run.
+      // Goal-removal Part 3a: *_achieved fields trimmed from this SELECT —
+      // they were read into scope but never consumed (vestigial from the
+      // pre-pivot world).
       const { data: scoreRow } = await supabase
         .from("daily_scores")
-        .select("workout_count, steps_achieved, calories_achieved, water_achieved, hk_workout_count")
+        .select("workout_count, hk_workout_count")
         .eq("run_id", run.id)
         .eq("user_id", userId)
         .eq("score_date", date)
@@ -836,7 +655,9 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEv
       const newCount = currentCount + toCredit.length;
       const newSyncedIds = [...syncedIds, ...toCredit.map((s) => s.identifier)];
 
-      // Upsert daily_scores with new workout count
+      // Upsert daily_scores with new workout count.
+      // Goal-removal Part 3a: workout_achieved field dropped — the
+      // boolean is no longer written by any path.
       await supabase.from("daily_scores").upsert(
         {
           run_id: run.id,
@@ -844,7 +665,6 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEv
           score_date: date,
           workout_count: newCount,
           hk_workout_count: (scoreRow?.hk_workout_count ?? 0) + toCredit.length,
-          workout_achieved: newCount >= 1,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "run_id,user_id,score_date" },
@@ -935,6 +755,11 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEv
           continue;
         }
         if (insertedRows && insertedRows.length > 0) {
+          // Goal-removal Part 3a: kind:"goal" push removed for credited
+          // workouts. The activity_feed row above still posts (chat sees
+          // the workout via the feed); no real-time push fires anymore.
+          // crossings still emitted so callers (sharing flow) see the
+          // landed row.
           crossings.push({
             packId: pack_id,
             packName: pack.name,
@@ -944,10 +769,6 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEv
             pointsEarned: 0,
             scoreDate: date,
           });
-          notifyPackMembers(userId, pack_id, {
-            kind: "goal",
-            activityType: "workout",
-          }).catch(() => {});
         }
       }
 

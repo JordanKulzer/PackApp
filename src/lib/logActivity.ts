@@ -5,7 +5,9 @@
 import { supabase } from "./supabase";
 import { WORKOUT_MAX_DAILY } from "./scoring";
 import { computeUserStreak } from "./computeUserStreak";
-import { notifyPackMembers } from "./notifications";
+// Goal-removal Part 3a: notifyPackMembers no longer used in this file —
+// the only caller was the kind:"goal" push that fired per manual log,
+// which is gone with the goal-hit framing.
 import { type CrossingEvent } from "./competitiveDetection";
 import { detectAndSendCategoryThreats, type Category } from "./threatNotifications";
 import { packToday } from "./packDates";
@@ -38,10 +40,13 @@ export async function syncManualActivityToDailyScores(
     if (!memberships?.length) return crossings;
 
     for (const { pack_id } of memberships) {
+      // Goal-removal Part 3a: step_target / calorie_target dropped from the
+      // pack SELECT — the categories pivot doesn't gate on achievement
+      // boundaries, so the target columns aren't read here anymore.
       const { data: pack } = await supabase
         .from("packs")
         .select(
-          "id, name, steps_enabled, workouts_enabled, calories_enabled, step_target, calorie_target, timezone",
+          "id, name, steps_enabled, workouts_enabled, calories_enabled, timezone",
         )
         .eq("id", pack_id)
         .maybeSingle();
@@ -68,19 +73,19 @@ export async function syncManualActivityToDailyScores(
 
       if (!run) continue;
 
-      // Read current row to preserve other goal counts and achieved flags.
+      // Read current row to preserve other count fields.
       // F.2: SELECT expanded to include manual_*_count and hk_*_count so
       // the additive accumulation can read both source sides. steps_count
       // and calories_count are now DB-generated; reading them is still
       // valid (they return manual + hk) but the writes go to manual_*.
       //
-      // Prompt 2 (streak migration): streak_days dropped from the SELECT —
-      // milestone gating reads the user's GLOBAL streak from users.current_streak
-      // below, not from this per-pack row.
+      // Prompt 2 (streak migration): streak_days dropped from the SELECT.
+      // Goal-removal Part 3a: *_achieved dropped from the SELECT — the
+      // booleans are no longer read or written by this path.
       const { data: existing } = await supabase
         .from("daily_scores")
         .select(
-          "total_points, manual_steps_count, manual_calories_count, hk_steps_count, hk_calories_count, workout_count, steps_achieved, workout_achieved, calories_achieved, water_achieved",
+          "total_points, manual_steps_count, manual_calories_count, hk_steps_count, hk_calories_count, workout_count",
         )
         .eq("run_id", run.id)
         .eq("user_id", userId)
@@ -104,28 +109,15 @@ export async function syncManualActivityToDailyScores(
       // F.2: source-isolated counters. Manual writes go to manual_*_count;
       // HK writes go to hk_*_count; daily_scores.steps_count and
       // .calories_count are DB-generated as the sum (migration 20260513b).
+      // Goal-removal Part 3a: prevHkSteps / prevHkCalories / the *_achieved
+      // locals and wasAchievedBefore are all gone — only the count math
+      // remains.
       let newManualSteps    = existing?.manual_steps_count ?? 0;
       let newManualCalories = existing?.manual_calories_count ?? 0;
-      const prevHkSteps     = existing?.hk_steps_count ?? 0;
-      const prevHkCalories  = existing?.hk_calories_count ?? 0;
-      let newWorkoutCount  = existing?.workout_count ?? 0;
-      let steps_achieved   = existing?.steps_achieved ?? false;
-      let workout_achieved = existing?.workout_achieved ?? false;
-      let calories_achieved = existing?.calories_achieved ?? false;
-      const water_achieved  = existing?.water_achieved ?? false;
-
-      // F.2: wasAchievedBefore retained for the Pass 9 analytics
-      // transition gate only. The feed-row INSERT no longer gates on
-      // it — every manual log produces an audit-trail row regardless
-      // of goal-cross state (Bug 6 fix below).
-      const wasAchievedBefore =
-        activityType === "steps"   ? steps_achieved :
-        activityType === "workout" ? workout_achieved :
-                                     calories_achieved;
+      let newWorkoutCount   = existing?.workout_count ?? 0;
 
       if (activityType === "steps") {
         newManualSteps = (existing?.manual_steps_count ?? 0) + delta;
-        steps_achieved = (newManualSteps + prevHkSteps) >= (pack.step_target ?? Infinity);
       } else if (activityType === "workout") {
         // Pass 25-followup-C: cap-blocking throw removed. workout_count
         // can grow past WORKOUT_MAX_DAILY (user records what happened);
@@ -133,10 +125,8 @@ export async function syncManualActivityToDailyScores(
         // (Math.min(count, WORKOUT_MAX_DAILY) * POINTS.workout).
         const currentCount = existing?.workout_count ?? 0;
         newWorkoutCount = currentCount + 1;
-        workout_achieved = true;
       } else {
         newManualCalories = (existing?.manual_calories_count ?? 0) + delta;
-        calories_achieved = (newManualCalories + prevHkCalories) >= (pack.calorie_target ?? Infinity);
       }
 
       // Only send fields that changed — avoids clearing other fields that
@@ -154,15 +144,13 @@ export async function syncManualActivityToDailyScores(
       // are DB-generated as (manual + hk) — writes against them would
       // fail. M-badge derives client-side from manual_*_count > 0
       // (was the has_manual_* booleans, now dropped).
+      // Goal-removal Part 3a: *_achieved fields dropped from the payload.
       if (activityType === "steps") {
         upsertPayload.manual_steps_count = newManualSteps;
-        upsertPayload.steps_achieved = steps_achieved;
       } else if (activityType === "workout") {
         upsertPayload.workout_count = newWorkoutCount;
-        upsertPayload.workout_achieved = workout_achieved;
       } else {
         upsertPayload.manual_calories_count = newManualCalories;
-        upsertPayload.calories_achieved = calories_achieved;
       }
 
       const { error } = await supabase
@@ -198,18 +186,24 @@ export async function syncManualActivityToDailyScores(
           : activityType === "workout"
             ? "workouts"
             : "calories";
+      // Goal-removal Part 3a: the prevHkSteps / prevHkCalories locals were
+      // dropped with the _achieved compute block; read them inline from
+      // `existing` here so the threat-detection delta still has the full
+      // manual + HK total on both sides.
+      const _prevHkSteps    = existing?.hk_steps_count    ?? 0;
+      const _prevHkCalories = existing?.hk_calories_count ?? 0;
       const threatBefore =
         activityType === "steps"
-          ? (existing?.manual_steps_count ?? 0) + prevHkSteps
+          ? (existing?.manual_steps_count ?? 0) + _prevHkSteps
           : activityType === "workout"
             ? (existing?.workout_count ?? 0)
-            : (existing?.manual_calories_count ?? 0) + prevHkCalories;
+            : (existing?.manual_calories_count ?? 0) + _prevHkCalories;
       const threatAfter =
         activityType === "steps"
-          ? newManualSteps + prevHkSteps
+          ? newManualSteps + _prevHkSteps
           : activityType === "workout"
             ? newWorkoutCount
-            : newManualCalories + prevHkCalories;
+            : newManualCalories + _prevHkCalories;
       detectAndSendCategoryThreats(userId, pack.id, run.id, packTz, [
         {
           category: threatCategory,
@@ -218,33 +212,19 @@ export async function syncManualActivityToDailyScores(
         },
       ]).catch(() => {});
 
-      // Feed event: once per day per pack, only when goal is newly crossed
-      const nowAchieved =
-        activityType === "steps"   ? steps_achieved :
-        activityType === "workout" ? workout_achieved :
-                                     calories_achieved;
-
       // ── Pass 9 funnel: activity_logged + streak_milestone ──
-      // Transition gate uses `existing` (fresh DB read at the top of this
-      // iteration) — never in-memory state mutated below the upsert.
-      // wasAchievedBefore / nowAchieved already encode that transition for
-      // the current activity_type.
-      if (nowAchieved && !wasAchievedBefore) {
-        const goalHitToday = steps_achieved || workout_achieved || calories_achieved || water_achieved;
-        // Stage 2A: points_earned hard-zeroed and is_first_ever degraded to
-        // false — the points-based first-ever gate is gone with the POINTS
-        // table. A later sub-stage rebuilds is_first_ever on categories data.
-        analytics.activityLogged({
-          activity_type: activityType,
-          source: "manual",
-          points_earned: 0,
-          is_first_ever: false,
-          // Prompt 2: streak_days_after is now the user's GLOBAL streak
-          // returned by computeUserStreak above, not the per-run value.
-          streak_days_after: newStreak,
-          goal_hit_today: goalHitToday,
-        });
-      }
+      // Goal-removal Part 3a: wasAchievedBefore / nowAchieved / goal_hit_today
+      // dropped. The transition gate ("fire on goal-cross") doesn't exist
+      // in the categories model — fire activityLogged once per manual log
+      // per pack instead. streak_days_after still meaningful (GLOBAL streak
+      // from computeUserStreak above).
+      analytics.activityLogged({
+        activity_type: activityType,
+        source: "manual",
+        points_earned: 0,
+        is_first_ever: false,
+        streak_days_after: newStreak,
+      });
 
       // Highest crossed streak milestone, fire once per upsert max.
       // Prompt 2: prev/new both come from the GLOBAL streak now (prevStreak
@@ -322,6 +302,11 @@ export async function syncManualActivityToDailyScores(
             console.error("[logActivity] activity_feed insert error:", feedError);
           }
         } else if (insertedRows && insertedRows.length > 0) {
+          // Goal-removal Part 3a: kind:"goal" push removed. The activity_feed
+          // row above still posts to chat — pack members see the log when
+          // they scroll the feed — but no real-time goal-hit notification.
+          // crossings is still emitted so callers (sharing flow) see what
+          // landed.
           crossings.push({
             packId: pack.id,
             packName: pack.name,
@@ -331,10 +316,6 @@ export async function syncManualActivityToDailyScores(
             pointsEarned: 0,
             scoreDate: today,
           });
-          notifyPackMembers(userId, pack.id, {
-            kind: "goal",
-            activityType,
-          }).catch(() => {});
         }
       }
     }

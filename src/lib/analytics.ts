@@ -126,19 +126,20 @@ export const analytics = {
     total_activities_in_pack: number | null; // null if SUM query is too expensive at deletion time
   }) => capture("pack_deleted", props),
 
-  // ── Activity logging — B-style gating ────────────────────────────────────
-  // Fires only when an achievement is NEWLY crossed (priorRow_achieved was
-  // false, new value is true). NOT on every successful sync write — that
-  // would generate 50+ events/day per active user from HK delta-syncs.
-  // The transition check must read priorRow from a fresh DB read, not from
-  // in-memory state that was already mutated.
+  // ── Activity logging ─────────────────────────────────────────────────────
+  // Goal-removal Part 3a: goal_hit_today dropped — the *_achieved
+  // booleans that derived it are gone. The "B-style transition gating"
+  // (fire only on goal-cross) was paired to the same booleans; under
+  // the categories pivot callers fire this per user-action (manual log
+  // / water sync) rather than on a transition. healthkit's per-type
+  // transitions emit was dropped entirely (background syncs would have
+  // produced too much noise without a transition gate).
   activityLogged: (props: {
     activity_type: "steps" | "workout" | "calories" | "water";
     source: "healthkit" | "manual";
     points_earned: number;
     is_first_ever: boolean;
     streak_days_after: number;
-    goal_hit_today: boolean;
   }) => capture("activity_logged", props),
 
   // Fires when streak crosses a milestone threshold (3, 7, 14, 30, 60, 90).
