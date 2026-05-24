@@ -2,8 +2,12 @@ import { create } from "zustand";
 
 // Mirrors the fields PackScreen needs for a MemberScore row,
 // minus user_id / display_name which are derived elsewhere.
+//
+// Prompt 1 (streak read-site migration): streak_days dropped — PackScreen's
+// Compete row now reads users.current_streak via the pack_members→users
+// join, not from this optimistic shape. Nothing reads streak_days off
+// OptimisticScore anymore; the field is dead.
 export interface OptimisticScore {
-  streak_days: number;
   steps_achieved: boolean;
   workout_achieved: boolean;
   calories_achieved: boolean;
@@ -16,7 +20,6 @@ export interface OptimisticScore {
 
 export function emptyOptimisticScore(): OptimisticScore {
   return {
-    streak_days: 0,
     steps_achieved: false,
     workout_achieved: false,
     calories_achieved: false,

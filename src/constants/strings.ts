@@ -470,7 +470,7 @@ export const userProfile = {
   // Pass 21d additions — streak line + sectioned shared-packs/lifetime layout.
   streakLine: {
     dayStreak: "{count} day streak",
-    bestSuffix: "best {count}",
+    bestSuffix: "Top streak: {count}",
   },
   section: {
     sharedPacks: "Shared packs",

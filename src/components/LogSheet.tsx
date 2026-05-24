@@ -112,7 +112,11 @@ const EMPTY_LOCAL_SCORE = {
   steps_count: 0,
   calories_count: 0,
   workout_count: 0,
-  streak_days: 0,
+  // Prompt 1 (streak read-site migration): streak_days dropped from the
+  // optimistic shape. The streak headline in this sheet reads
+  // currentStreakLocal (sourced from users.current_streak via the data
+  // hook), not from any per-pack localScore field. streak_multiplier
+  // stays (out of scope; still surfaced elsewhere).
   streak_multiplier: 1,
   manual_steps_count: 0,
   manual_calories_count: 0,
@@ -540,7 +544,6 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
     steps_count: number;
     calories_count: number;
     workout_count: number;
-    streak_days: number;
     streak_multiplier: number;
     manual_steps_count: number;
     manual_calories_count: number;

@@ -36,7 +36,14 @@ import { deviceLocalToday, deviceLocalDateOffset } from "./packDates";
 // by score_date.
 const WINDOW_DAYS = 365;
 
-export async function computeUserStreak(userId: string): Promise<void> {
+// Prompt 1 (streak read-site migration): signature changed from
+// Promise<void> → Promise<number>. The sync paths (logActivity, syncWater,
+// healthkit) will use the returned currentStreak for analytics / streak-
+// milestone gating in Prompt 2 once the old computeStreakForRun call is
+// removed. For now all callers still ignore the return value — adding the
+// return is non-breaking. Error / early-return paths return 0 (no streak
+// surface should ever throw or stay "uninitialized" on this function).
+export async function computeUserStreak(userId: string): Promise<number> {
   try {
     const today = deviceLocalToday();
     const yesterday = deviceLocalDateOffset(1);
@@ -70,21 +77,21 @@ export async function computeUserStreak(userId: string): Promise<void> {
         "[computeUserStreak] daily_checkins select error:",
         checkinsRes.error,
       );
-      return;
+      return 0;
     }
     if (manualFeedRes.error) {
       console.error(
         "[computeUserStreak] activity_feed select error:",
         manualFeedRes.error,
       );
-      return;
+      return 0;
     }
     if (userRes.error) {
       console.error(
         "[computeUserStreak] users select error:",
         userRes.error,
       );
-      return;
+      return 0;
     }
 
     // Build the set of satisfied YYYY-MM-DD dates. activity_feed rows are
@@ -142,7 +149,10 @@ export async function computeUserStreak(userId: string): Promise<void> {
     if (updateError) {
       console.error("[computeUserStreak] users update error:", updateError);
     }
+
+    return currentStreak;
   } catch (err) {
     console.error("[computeUserStreak] error:", err);
+    return 0;
   }
 }

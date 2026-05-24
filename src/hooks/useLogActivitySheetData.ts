@@ -26,6 +26,10 @@ export interface ManualLogEntry {
   created_at: string;
 }
 
+// Prompt 1 (streak read-site migration): streak_days dropped from this
+// snapshot. The LogSheet streak headline reads users.current_streak via
+// the currentStreak field on LogActivitySheetData, not from this per-pack
+// daily_scores row. streak_multiplier stays (out of scope).
 export interface DailyScoreSnapshot {
   total_points: number;
   steps_achieved: boolean;
@@ -36,7 +40,6 @@ export interface DailyScoreSnapshot {
   steps_count: number;
   calories_count: number;
   workout_count: number;
-  streak_days: number;
   streak_multiplier: number;
   // F.2: M badge derives from manual_*_count > 0 (replaced the prior
   // has_manual_* booleans dropped in migration 20260513b).
@@ -243,7 +246,7 @@ export function useLogActivitySheetData(
         supabase
           .from("daily_scores")
           .select(
-            "total_points, steps_achieved, workout_achieved, calories_achieved, water_achieved, water_oz_count, steps_count, calories_count, workout_count, streak_days, streak_multiplier, manual_steps_count, manual_calories_count",
+            "total_points, steps_achieved, workout_achieved, calories_achieved, water_achieved, water_oz_count, steps_count, calories_count, workout_count, streak_multiplier, manual_steps_count, manual_calories_count",
           )
           .eq("run_id", run.id)
           .eq("user_id", userId!)

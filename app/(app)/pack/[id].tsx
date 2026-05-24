@@ -124,11 +124,15 @@ const C = {
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Prompt 1 (streak read-site migration): streak_days dropped from
+// MemberScore / ScoreRow / SCORE_SELECT. The Compete row's streak now
+// comes from users.current_streak via the pack_members→users join
+// (see memberStreakMap, gridEntries below), not from this per-pack
+// daily_scores row.
 interface MemberScore {
   user_id: string;
   display_name: string;
   avatar_url?: string | null;
-  streak_days: number;
   updated_at: string | null;
   steps_achieved: boolean;
   workout_achieved: boolean;
@@ -146,7 +150,6 @@ interface MemberScore {
 
 type ScoreRow = {
   user_id: string;
-  streak_days: number;
   updated_at: string | null;
   steps_achieved: boolean;
   workout_achieved: boolean;
@@ -171,7 +174,6 @@ function mapRows(
   return data.map((row) => ({
     user_id: row.user_id,
     display_name: nameMap[row.user_id] ?? "",
-    streak_days: row.streak_days,
     updated_at: row.updated_at,
     steps_achieved: row.steps_achieved,
     workout_achieved: row.workout_achieved,
@@ -191,7 +193,7 @@ function mapRows(
 // steps_count/calories_count are DB-generated (manual + hk) and still
 // returned by Postgres; no client-side recompute needed.
 const SCORE_SELECT =
-  "user_id, streak_days, updated_at, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, calories_count, water_oz_count, workout_count, manual_steps_count, manual_calories_count";
+  "user_id, updated_at, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, calories_count, water_oz_count, workout_count, manual_steps_count, manual_calories_count";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Manual badge
@@ -2356,27 +2358,35 @@ export default function PackScreen() {
   // Build a name map from packData.members — the pack_members→users join is
   // the reliable post-RLS-fix source of truth for display names.
   // At runtime PostgREST returns the key as "users" (table name), not "user".
+  //
+  // Prompt 1 (streak read-site migration): memberStreakMap rides the same
+  // users(*) join. current_streak / best_streak are now on the users row
+  // (Stage 1 migration); pulling current_streak here costs nothing extra
+  // and feeds the Compete row + sort tiebreaker below in place of the old
+  // per-pack daily_scores.streak_days value.
   const memberNameMap = new Map<string, string>();
   const memberAvatarMap = new Map<string, string | null>();
+  const memberStreakMap = new Map<string, number>();
   (packData?.members ?? []).forEach((m) => {
     const u = (
       m as unknown as {
-        users: { display_name: string; avatar_url: string | null } | null;
+        users: {
+          display_name: string;
+          avatar_url: string | null;
+          current_streak: number | null;
+        } | null;
       }
     ).users;
     if (u?.display_name) memberNameMap.set(m.user_id, u.display_name);
     memberAvatarMap.set(m.user_id, u?.avatar_url ?? null);
+    memberStreakMap.set(m.user_id, u?.current_streak ?? 0);
   });
 
-  // Apply names and avatars to scores fetched today
-  const namedScores: MemberScore[] = scores.map((s) => ({
-    ...s,
-    display_name: memberNameMap.get(s.user_id) ?? s.display_name,
-    avatar_url: memberAvatarMap.get(s.user_id) ?? null,
-  }));
-
-  // Today's scores keyed by user — gridEntries reads streak_days from this.
-  const scoreById = new Map(namedScores.map((s) => [s.user_id, s]));
+  // Prompt 1 (streak read-site migration): namedScores + scoreById removed
+  // — the sole downstream consumer was the gridEntry streak_days field
+  // below, now sourced from memberStreakMap (users.current_streak via the
+  // pack_members→users join). Display name + avatar still flow through
+  // memberNameMap / memberAvatarMap, used directly in gridEntries below.
 
   // ── Categories-pivot grid entries (Stage 3d) ──────────────────────────
   // PackGridView consumes a categories-shaped GridEntry[]. Build it from
@@ -2426,7 +2436,7 @@ export default function PackScreen() {
           >),
         today_values,
         is_today_leader_in,
-        streak_days: scoreById.get(m.user_id)?.streak_days ?? 0,
+        streak_days: memberStreakMap.get(m.user_id) ?? 0,
         wonPreviousRun: previousRunWinnerIds.has(m.user_id),
       };
     });

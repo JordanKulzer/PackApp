@@ -343,49 +343,43 @@ export default function Profile() {
         .select("id", { count: "exact", head: true })
         .eq("user_id", user.id)
         .eq("is_active", true),
+      // Prompt 1 (streak read-site migration): streak_days dropped from
+      // this SELECT — current/longest streak now come from the users row
+      // (users.current_streak / users.best_streak), maintained by
+      // computeUserStreak. The remaining fields (totals + score_date)
+      // still drive totalDaysLogged and the 4 fitness totals below.
       supabase
         .from("daily_scores")
         .select(
-          "streak_days, score_date, steps_achieved, workout_achieved, calories_achieved, water_achieved, steps_count, workout_count, calories_count, water_oz_count",
+          "score_date, steps_count, workout_count, calories_count, water_oz_count",
         )
         .eq("user_id", user.id)
         .order("score_date", { ascending: true }),
     ]);
 
-    setProfile(profileResult.data ?? null);
+    // Stage 1 added current_streak / best_streak columns to the users
+    // table but the TS User type wasn't updated (out of allowlist here).
+    // Local cast picks the new fields off the row without polluting the
+    // shared type. profile state stays typed as User; the streak values
+    // are only read here at fetch time.
+    const profileRow = (profileResult.data ?? null) as
+      | (User & {
+          current_streak: number | null;
+          best_streak: number | null;
+        })
+      | null;
+    setProfile(profileRow);
 
     const scores = scoresResult.data ?? [];
-    const longestStreak = scores.reduce(
-      (max, s) => Math.max(max, s.streak_days),
-      0,
-    );
     const totalSteps = scores.reduce((sum, s) => sum + s.steps_count, 0);
     const totalWorkouts = scores.reduce((sum, s) => sum + s.workout_count, 0);
     const totalCalories = scores.reduce((sum, s) => sum + s.calories_count, 0);
     const totalWaterOz = scores.reduce((sum, s) => sum + s.water_oz_count, 0);
 
-    let currentStreak = 0;
-    if (scores.length > 0) {
-      const latest = scores[scores.length - 1];
-      const now = new Date();
-      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-      const yesterday = new Date(Date.now() - 86400000)
-        .toISOString()
-        .split("T")[0];
-      const isRecent =
-        latest.score_date === today || latest.score_date === yesterday;
-      const anyAchieved =
-        latest.steps_achieved ||
-        latest.workout_achieved ||
-        latest.calories_achieved ||
-        latest.water_achieved;
-      if (isRecent && anyAchieved) currentStreak = latest.streak_days;
-    }
-
     setStats({
       totalDaysLogged: scores.length,
-      longestStreak,
-      currentStreak,
+      longestStreak: profileRow?.best_streak ?? 0,
+      currentStreak: profileRow?.current_streak ?? 0,
       packsJoined: packsResult.count ?? 0,
       totalSteps,
       totalWorkouts,
