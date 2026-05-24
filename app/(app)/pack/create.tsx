@@ -50,9 +50,9 @@ export default function CreatePack() {
   const [workoutsEnabled, setWorkoutsEnabled] = useState(true);
   const [caloriesEnabled, setCaloriesEnabled] = useState(true);
   const [waterEnabled, setWaterEnabled] = useState(true);
-  const [stepTarget, setStepTarget] = useState("10000");
-  const [calorieTarget, setCalorieTarget] = useState("500");
-  const [waterTarget, setWaterTarget] = useState("64");
+  // Goal-removal Part 1: goal-target useStates dropped. The 4 category
+  // toggles are now binary on/off; per-day per-category winners (not
+  // goal-hits) drive scoring under the categories pivot.
   const [isLoading, setIsLoading] = useState(false);
 
   const openPaywall = (trigger: string) => {
@@ -127,6 +127,11 @@ export default function CreatePack() {
       // Run window dates are computed server-side from pack_timezone — weekly
       // = Mon→Sun (matches rollover_expired_runs), monthly = first→last of
       // month. See supabase/migrations/20260504_fix_create_pack_with_run_week_convention.sql.
+      // Goal-removal Part 1: goal-target keys dropped from this call.
+      // The migration 20260524_pack_rpcs_drop_goal_targets re-creates
+      // create_pack_with_run without those 3 params; the packs.step_target
+      // / calorie_target / water_target_oz columns get their DB DEFAULTs
+      // applied server-side.
       const { data, error } = await supabase.rpc("create_pack_with_run", {
         pack_name: name.trim(),
         pack_invite_code: generateInviteCode(),
@@ -136,9 +141,6 @@ export default function CreatePack() {
         pack_workouts_enabled: workoutsEnabled,
         pack_calories_enabled: caloriesEnabled,
         pack_water_enabled: waterEnabled,
-        pack_step_target: parseInt(stepTarget, 10) || 10000,
-        pack_calorie_target: parseInt(calorieTarget, 10) || 500,
-        pack_water_target_oz: parseInt(waterTarget, 10) || 64,
       });
 
       if (error) throw error;
@@ -272,21 +274,15 @@ export default function CreatePack() {
             )}
           </View>
 
+          {/* Goal-removal Part 1: expanded TextInput slots dropped from
+              Steps / Calories / Water. All 4 category rows are now binary
+              enable toggles; the per-category daily-winner scoring under
+              the categories pivot doesn't read goal numbers. */}
           <ActivityToggleRow
             label="Steps"
-            description={`Target: ${stepTarget} steps`}
+            description="Tracked"
             value={stepsEnabled}
             onValueChange={setStepsEnabled}
-            expanded={
-              <TextInput
-                style={styles.inlineInput}
-                placeholder="Step target"
-                placeholderTextColor={C.textTertiary}
-                keyboardType="number-pad"
-                value={stepTarget}
-                onChangeText={setStepTarget}
-              />
-            }
           />
 
           <ActivityToggleRow
@@ -298,37 +294,17 @@ export default function CreatePack() {
 
           <ActivityToggleRow
             label="Active Calories"
-            description={`Target: ${calorieTarget} cal`}
+            description="Tracked"
             value={caloriesEnabled}
             onValueChange={setCaloriesEnabled}
-            expanded={
-              <TextInput
-                style={styles.inlineInput}
-                placeholder="Calorie target"
-                placeholderTextColor={C.textTertiary}
-                keyboardType="number-pad"
-                value={calorieTarget}
-                onChangeText={setCalorieTarget}
-              />
-            }
           />
 
           <ActivityToggleRow
             label="Water"
-            description={`Target: ${waterTarget} oz`}
+            description="Tracked"
             value={waterEnabled}
             onValueChange={setWaterEnabled}
             isLast
-            expanded={
-              <TextInput
-                style={styles.inlineInput}
-                placeholder="Water target (oz)"
-                placeholderTextColor={C.textTertiary}
-                keyboardType="number-pad"
-                value={waterTarget}
-                onChangeText={setWaterTarget}
-              />
-            }
           />
 
         </View>
@@ -459,18 +435,4 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  // Activity expanded-slot styles. Pass 26-followup-2: target inputs use
-  // the same subtle-box treatment as nameInput. Mirrors Pack Name's
-  // affordance pattern; eliminates the bottom-hairline-only flatness that
-  // read as display values rather than editable inputs.
-  inlineInput: {
-    fontSize: 15,
-    color: C.textPrimary,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: C.border,
-    borderRadius: 8,
-    backgroundColor: "transparent",
-  },
 });
