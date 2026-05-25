@@ -263,14 +263,52 @@ function AvatarCircle({
 }
 
 export default function RecapScreen() {
-  const { id: runId, packId } = useLocalSearchParams<{
-    id: string;
-    packId: string;
-  }>();
+  // Param contract: ONLY the run id is needed (the path segment). The
+  // pack_id is derived from the run via a runs.select("pack_id") lookup
+  // below — this removes the prior requirement that every caller
+  // remember to pass packId as a search param (we hit that failure with
+  // the dev button before this fix).
+  const { id: runId } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const userId = useAuthStore((st) => st.user?.id);
-  const { completedRuns, isLoading } = usePackRunHistory(packId ?? "");
+
+  // derivedPackId starts null + derivingPackId starts true. Once the
+  // runs lookup completes: derivedPackId is the resolved pack id (run
+  // exists) or stays null (no such run → falls through to the
+  // "Recap not found" branch), and derivingPackId flips to false. The
+  // loading gate below combines BOTH derivingPackId AND the
+  // usePackRunHistory isLoading so the not-found branch can't fire
+  // prematurely during the derive window (when the hook is briefly
+  // not-loading because it was called with "").
+  const [derivedPackId, setDerivedPackId] = useState<string | null>(null);
+  const [derivingPackId, setDerivingPackId] = useState(true);
+  useEffect(() => {
+    if (!runId) {
+      setDerivingPackId(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("runs")
+        .select("pack_id")
+        .eq("id", runId)
+        .maybeSingle();
+      if (cancelled) return;
+      setDerivedPackId(
+        (data as { pack_id: string } | null)?.pack_id ?? null,
+      );
+      setDerivingPackId(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [runId]);
+
+  const { completedRuns, isLoading } = usePackRunHistory(
+    derivedPackId ?? "",
+  );
   // Celebration flourish — fires once when the viewer is the overall
   // winner. Built-in Animated only; no confetti dependency.
   const flourish = useRef(new Animated.Value(0)).current;
@@ -286,15 +324,16 @@ export default function RecapScreen() {
   // Recap copy needs "week"/"month" — CompletedRunHistory doesn't carry
   // the pack's competition_window, so fetch it directly. Defaults to
   // "week" until resolved (most packs are weekly; the flash is negligible).
+  // Keyed off derivedPackId so it runs once the runs lookup resolves.
   const [period, setPeriod] = useState<"week" | "month">("week");
   useEffect(() => {
-    if (!packId) return;
+    if (!derivedPackId) return;
     let cancelled = false;
     (async () => {
       const { data } = await supabase
         .from("packs")
         .select("competition_window")
-        .eq("id", packId)
+        .eq("id", derivedPackId)
         .maybeSingle();
       if (!cancelled && data?.competition_window) {
         setPeriod(data.competition_window === "monthly" ? "month" : "week");
@@ -303,7 +342,7 @@ export default function RecapScreen() {
     return () => {
       cancelled = true;
     };
-  }, [packId]);
+  }, [derivedPackId]);
 
   const run = completedRuns.find((r) => r.runId === runId);
   const viewerResult = run ? computeViewerResult(run, userId) : null;
@@ -345,7 +384,7 @@ export default function RecapScreen() {
     return () => loop.stop();
   }, [viewerResult?.kind, pulse]);
 
-  if (isLoading) {
+  if (derivingPackId || isLoading) {
     return (
       <View style={s.center}>
         <ActivityIndicator size="large" color={colors.accent} />
@@ -718,7 +757,7 @@ export default function RecapScreen() {
       {/* CTA */}
       <TouchableOpacity
         style={s.ctaBtn}
-        onPress={() => router.replace(`/(app)/pack/${packId}` as any)}
+        onPress={() => router.replace(`/(app)/pack/${derivedPackId}` as any)}
         activeOpacity={0.85}
       >
         <Text style={s.ctaText}>{recap.cta}</Text>

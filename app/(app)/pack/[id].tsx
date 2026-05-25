@@ -2881,7 +2881,6 @@ export default function PackScreen() {
                   pathname: "/pack/recap/[id]",
                   params: {
                     id: (data as { id: string }).id,
-                    packId: pack.id,
                   },
                 } as any);
               }}
