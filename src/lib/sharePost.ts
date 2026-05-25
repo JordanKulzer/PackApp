@@ -37,11 +37,26 @@ export interface ShareContext {
 
 // Returns true on success, false on any failure (caller surfaces via Alert).
 // No partial state on failure — the row is deleted if the photo path fails.
+//
+// photoDims (width + height in source pixels) is forwarded from the picker
+// so the row carries the photo's native aspect ratio from INSERT time —
+// FeedItemRow then renders without an Image.getSize round-trip (no flicker).
+// Caller passes null when there's no photo OR when dimensions aren't
+// available; in that case photo_aspect is left NULL and FeedItemRow falls
+// back to its legacy getSize path.
 export async function createSharePost(
   ctx: ShareContext,
   caption: string | null,
   localUri: string | null,
+  photoDims: { width: number; height: number } | null = null,
 ): Promise<boolean> {
+  // Aspect ratio is only meaningful when there's actually a photo on this
+  // share. Photo-less captions leave photo_aspect NULL.
+  const photoAspect =
+    localUri && photoDims && photoDims.width > 0 && photoDims.height > 0
+      ? photoDims.width / photoDims.height
+      : null;
+
   // Step 1: INSERT row. id / created_at / comment_count are DB-side;
   // photo_url stays null until the upload (if any) lands. healthkit_uuid
   // is omitted — shares have no HK provenance.
@@ -57,6 +72,7 @@ export async function createSharePost(
       score_date: ctx.scoreDate,
       category: ctx.category ?? null,
       caption,
+      photo_aspect: photoAspect,
     })
     .select("id")
     .single();

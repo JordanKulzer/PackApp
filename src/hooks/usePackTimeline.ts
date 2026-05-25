@@ -77,7 +77,7 @@ export function usePackTimeline(
     let feedQuery = supabase
       .from("activity_feed")
       .select(
-        "id, pack_id, user_id, activity_type, value, points_earned, created_at, entry_method, photo_url, caption, score_date, comment_count, category",
+        "id, pack_id, user_id, activity_type, value, points_earned, created_at, entry_method, photo_url, photo_aspect, caption, score_date, comment_count, category",
       )
       .eq("pack_id", packId);
     if (!FEATURE_FLAGS.dailyWinner) {
@@ -204,6 +204,8 @@ export function usePackTimeline(
           createdAt: row.created_at,
           entryMethod: (row.entry_method ?? "manual") as FeedItem["entryMethod"],
           photoUrl: row.photo_url ?? null,
+          photoAspect:
+            row.photo_aspect != null ? Number(row.photo_aspect) : null,
           caption: row.caption ?? null,
           scoreDate: row.score_date ?? null,
           commentCount: row.comment_count ?? 0,

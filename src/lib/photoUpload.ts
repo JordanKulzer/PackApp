@@ -174,7 +174,17 @@ export async function getSignedUrl(path: string): Promise<string | null> {
     .createSignedUrl(path, 3600);
 
   if (error || !data) {
-    console.error("[photoUpload] getSignedUrl error:", error);
+    // "Object not found" is an expected, benign state — the row's photo
+    // was deleted (account deletion, manual cleanup, storage lifecycle)
+    // and FeedItemRow's render guard already degrades the row to a
+    // clean text post. Logging it as an error spams the console on
+    // every render of the affected row, so swallow that case silently.
+    // Other errors (network, auth) still surface as warnings so real
+    // failures stay diagnosable.
+    const message = (error as { message?: string } | null)?.message ?? "";
+    if (!/not\s*found/i.test(message)) {
+      console.warn("[photoUpload] getSignedUrl error:", error);
+    }
     return null;
   }
 

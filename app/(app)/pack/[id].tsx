@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
-  ActionSheetIOS,
   Alert,
   Animated,
   View,
@@ -55,7 +54,11 @@ import { ChatInputBar } from "../../../src/components/ChatInputBar";
 import { FeedItemRow } from "../../../src/components/FeedItemRow";
 // Intentional-sharing Phase 2: the manual Share composer + its emit shape.
 import { SharePostSheet } from "../../../src/components/SharePostSheet";
-import type { ShareContext, ShareKind } from "../../../src/lib/sharePost";
+import {
+  SharePickerSheet,
+  type SharePickerResolution,
+} from "../../../src/components/SharePickerSheet";
+import type { ShareContext } from "../../../src/lib/sharePost";
 import { ReactionPicker } from "../../../src/components/ReactionPicker";
 import {
   MessageActionMenu,
@@ -1728,104 +1731,85 @@ function ChatTab({
 
   // Intentional-sharing Phase 2: SharePostSheet state. `share` is the
   // resolved ShareContext (kind + value + category). `openingShare`
-  // flips true while we run the kind-picker → daily_scores fetch round-
-  // trip so the button can show a spinner state.
+  // flips true while we run the daily_scores fetch round-trip so the
+  // button can show a spinner state. `sharePickerVisible` drives the
+  // custom kind-picker Modal that replaced the native ActionSheet.
   const [share, setShare] = useState<ShareContext | null>(null);
   const [openingShare, setOpeningShare] = useState(false);
+  const [sharePickerVisible, setSharePickerVisible] = useState(false);
 
-  // Standalone "Share an activity" launcher.
-  //
-  // STUB-LEVEL UX per Phase 2 brief: the primary entry path is Phase 3's
-  // post-log banner (which knows the kind + value from the log). This
-  // standalone launch is a secondary entry — it asks the user which
-  // category, then fetches today's daily_scores to seed the value, and
-  // opens the sheet. Workout subcategory defaults to NULL ("Workout")
-  // here — picking from 15 categories balloons the prompt and is the
-  // banner's job (the banner has the original log's category in scope).
-  //
-  // TODO(Phase 3): replace this with the banner entry path. Keep this
-  // standalone button as a fallback / always-on entry point.
-  const handleOpenShare = useCallback(async () => {
+  // Standalone "Share an activity" launcher. Opens SharePickerSheet,
+  // which resolves to a kind (+ optional workout category) via
+  // handlePickerResolve below.
+  const handleOpenShare = useCallback(() => {
     if (!currentUserId || openingShare) return;
+    setSharePickerVisible(true);
+  }, [currentUserId, openingShare]);
 
-    const pickKind = (): Promise<ShareKind | null> =>
-      new Promise((resolve) => {
-        if (Platform.OS === "ios") {
-          ActionSheetIOS.showActionSheetWithOptions(
-            {
-              title: "Share an activity",
-              options: ["Steps", "Workout", "Calories", "Water", "Cancel"],
-              cancelButtonIndex: 4,
-            },
-            (idx: number) => {
-              if (idx === 0) resolve("steps_share");
-              else if (idx === 1) resolve("workout_share");
-              else if (idx === 2) resolve("calories_share");
-              else if (idx === 3) resolve("water_share");
-              else resolve(null);
-            },
-          );
-        } else {
-          Alert.alert("Share an activity", undefined, [
-            { text: "Steps", onPress: () => resolve("steps_share") },
-            { text: "Workout", onPress: () => resolve("workout_share") },
-            { text: "Calories", onPress: () => resolve("calories_share") },
-            { text: "Water", onPress: () => resolve("water_share") },
-            { text: "Cancel", style: "cancel", onPress: () => resolve(null) },
-          ]);
+  // Called when SharePickerSheet resolves a selection. We dismiss the
+  // picker FIRST and defer the daily_scores lookup + setShare via
+  // setTimeout so SharePostSheet only mounts after SharePickerSheet's
+  // exit animation (~250ms) completes — iOS won't reliably present a
+  // sibling Modal while another is still showing.
+  const handlePickerResolve = useCallback(
+    (resolution: SharePickerResolution) => {
+      if (!currentUserId) return;
+      setSharePickerVisible(false);
+      setOpeningShare(true);
+      setTimeout(async () => {
+        try {
+          // Today's day-total for the chosen category, in the pack's tz.
+          // Falls back to 0 if there's no daily_scores row yet — the user
+          // can still share a caption / photo without a numeric anchor.
+          const scoreDate = packToday(packTimezone);
+          const { data: scoreRow } = await supabase
+            .from("daily_scores")
+            .select(
+              "steps_count, calories_count, water_oz_count, workout_count",
+            )
+            .eq("user_id", currentUserId)
+            .eq("score_date", scoreDate)
+            .order("updated_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          const row = scoreRow as
+            | {
+                steps_count: number | null;
+                calories_count: number | null;
+                water_oz_count: number | null;
+                workout_count: number | null;
+              }
+            | null;
+
+          const value =
+            resolution.kind === "steps_share"
+              ? row?.steps_count ?? 0
+              : resolution.kind === "calories_share"
+                ? row?.calories_count ?? 0
+                : resolution.kind === "water_share"
+                  ? row?.water_oz_count ?? 0
+                  : row?.workout_count ?? 0; // workout_share
+
+          setShare({
+            kind: resolution.kind,
+            userId: currentUserId,
+            packId,
+            packName,
+            scoreDate,
+            value,
+            category:
+              resolution.kind === "workout_share"
+                ? resolution.category
+                : undefined,
+          });
+        } finally {
+          setOpeningShare(false);
         }
-      });
-
-    const kind = await pickKind();
-    if (!kind) return;
-
-    setOpeningShare(true);
-    try {
-      // Today's day-total for the chosen category, in the pack's tz.
-      // Falls back to 0 if there's no daily_scores row yet — the user
-      // can still share a caption / photo without a numeric anchor.
-      const scoreDate = packToday(packTimezone);
-      const { data: scoreRow } = await supabase
-        .from("daily_scores")
-        .select("steps_count, calories_count, water_oz_count, workout_count")
-        .eq("user_id", currentUserId)
-        .eq("score_date", scoreDate)
-        .order("updated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      const row = scoreRow as
-        | {
-            steps_count: number | null;
-            calories_count: number | null;
-            water_oz_count: number | null;
-            workout_count: number | null;
-          }
-        | null;
-
-      const value =
-        kind === "steps_share"
-          ? row?.steps_count ?? 0
-          : kind === "calories_share"
-            ? row?.calories_count ?? 0
-            : kind === "water_share"
-              ? row?.water_oz_count ?? 0
-              : row?.workout_count ?? 0; // workout_share
-
-      setShare({
-        kind,
-        userId: currentUserId,
-        packId,
-        packName,
-        scoreDate,
-        value,
-        // Standalone path doesn't know the workout subcategory — leave
-        // undefined; SharePostSheet falls back to "Workout".
-      });
-    } finally {
-      setOpeningShare(false);
-    }
-  }, [currentUserId, openingShare, packId, packName, packTimezone]);
+      }, 350);
+    },
+    [currentUserId, packId, packName, packTimezone],
+  );
 
   // ReactionPicker state — agnostic to target type. The picker fires
   // a single onToggle(emoji) callback; we route to either
@@ -2301,6 +2285,15 @@ function ChatTab({
           onCancelEdit={() => setEditingMessage(null)}
         />
       </KeyboardStickyView>
+      {/* Intentional-sharing Phase 2: kind-picker. Opens off the
+          "Share an activity" button; resolves to a kind (+ optional
+          workout category) and hands off to SharePostSheet via the
+          `share` state once its exit animation completes. */}
+      <SharePickerSheet
+        visible={sharePickerVisible}
+        onResolve={handlePickerResolve}
+        onClose={() => setSharePickerVisible(false)}
+      />
       {/* Intentional-sharing Phase 2: SharePostSheet. Rendered when
           `share` is non-null (resolved by handleOpenShare or, in
           Phase 3, the post-log banner). */}

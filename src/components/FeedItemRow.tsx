@@ -179,7 +179,15 @@ export function FeedItemRow({
   // the ratio in state and apply it to the wrap (non-victory rows).
   // Failure → photoAspect stays null and we fall back to the prior
   // 4:5 framing for that row only — same behaviour as before the fix.
+  //
+  // Flicker fix follow-up: new share rows now carry photo_aspect on the
+  // activity_feed row (set by createSharePost from the picker's source
+  // dimensions). When item.photoAspect is present, we use it
+  // synchronously and skip this effect entirely — no getSize round-trip,
+  // no shrink/grow flicker. The effect is kept ONLY as a fallback for
+  // legacy rows created before the photo_aspect column existed.
   useEffect(() => {
+    if (item.photoAspect != null) return;
     if (!signedPhotoUrl) {
       setPhotoAspect(null);
       return;
@@ -193,7 +201,7 @@ export function FeedItemRow({
         setPhotoAspect(null);
       },
     );
-  }, [signedPhotoUrl]);
+  }, [item.photoAspect, signedPhotoUrl]);
 
   const handleDeletePhoto = async () => {
     setPhotoMenuOpen(false);
@@ -281,7 +289,14 @@ export function FeedItemRow({
                     : [
                         s.photoWrap,
                         s.photoWrapNative,
-                        { aspectRatio: photoAspect ?? 4 / 5 },
+                        // Synchronous read from the row → getSize fallback
+                        // → legacy 4:5 default. The first branch is hit
+                        // for every new share row and avoids the visible
+                        // 4:5 → real-ratio snap (the flicker source).
+                        {
+                          aspectRatio:
+                            item.photoAspect ?? photoAspect ?? 4 / 5,
+                        },
                       ]
                 }
                 onPress={() => setFullscreenOpen(true)}

@@ -118,6 +118,14 @@ export function SharePostSheet({ visible, onDismiss, onPosted, share }: Props) {
   const subtitle = interpolateSubtitle(subtitleTemplate, share);
   const insets = useSafeAreaInsets();
   const [localUri, setLocalUri] = useState<string | null>(null);
+  // Source pixel dimensions from the picker (expo-image-picker returns
+  // these on every asset). Threaded to createSharePost so the activity_feed
+  // row carries photo_aspect at INSERT time — FeedItemRow then renders the
+  // photo at the correct ratio synchronously instead of after a second
+  // Image.getSize round-trip on read.
+  const [localDims, setLocalDims] = useState<
+    { width: number; height: number } | null
+  >(null);
   const [caption, setCaption] = useState("");
   const [posting, setPosting] = useState(false);
   // Native aspect ratio of the picked photo, read via Image.getSize.
@@ -154,7 +162,10 @@ export function SharePostSheet({ visible, onDismiss, onPosted, share }: Props) {
   const handlePickPhoto = () => {
     const pick = async (picker: typeof pickFromLibrary) => {
       const photo = await picker();
-      if (photo) setLocalUri(photo.uri);
+      if (photo) {
+        setLocalUri(photo.uri);
+        setLocalDims({ width: photo.width, height: photo.height });
+      }
     };
 
     if (Platform.OS === "ios") {
@@ -182,7 +193,12 @@ export function SharePostSheet({ visible, onDismiss, onPosted, share }: Props) {
     setPosting(true);
 
     const trimmedCaption = caption.trim() || null;
-    const ok = await createSharePost(share, trimmedCaption, localUri);
+    const ok = await createSharePost(
+      share,
+      trimmedCaption,
+      localUri,
+      localDims,
+    );
 
     if (!ok) {
       Alert.alert("Failed to post", "Please try again.");
@@ -192,6 +208,7 @@ export function SharePostSheet({ visible, onDismiss, onPosted, share }: Props) {
 
     setPosting(false);
     setLocalUri(null);
+    setLocalDims(null);
     setCaption("");
     onPosted();
     onDismiss();
@@ -200,6 +217,7 @@ export function SharePostSheet({ visible, onDismiss, onPosted, share }: Props) {
   const handleClose = () => {
     if (posting) return;
     setLocalUri(null);
+    setLocalDims(null);
     setCaption("");
     onDismiss();
   };
@@ -266,7 +284,10 @@ export function SharePostSheet({ visible, onDismiss, onPosted, share }: Props) {
               />
               <TouchableOpacity
                 style={s.previewRemove}
-                onPress={() => setLocalUri(null)}
+                onPress={() => {
+                  setLocalUri(null);
+                  setLocalDims(null);
+                }}
                 hitSlop={8}
               >
                 <Ionicons name="close-circle" size={26} color="#FFF" />

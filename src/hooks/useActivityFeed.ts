@@ -42,6 +42,10 @@ export interface FeedItem {
   createdAt: string;
   entryMethod: "manual" | "healthkit" | "oura" | "whoop" | "system";
   photoUrl: string | null; // Supabase Storage path (not a full URL)
+  // Source aspect ratio (width / height) of the photo, captured at share
+  // create time. NULL for: photo-less rows, and pre-photo_aspect-column
+  // legacy rows (FeedItemRow falls back to Image.getSize for those).
+  photoAspect: number | null;
   caption: string | null;
   scoreDate: string | null;
   commentCount: number;
@@ -102,7 +106,7 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
 
     let query = supabase
       .from("activity_feed")
-      .select("id, pack_id, user_id, activity_type, value, points_earned, created_at, entry_method, photo_url, caption, score_date, comment_count, category")
+      .select("id, pack_id, user_id, activity_type, value, points_earned, created_at, entry_method, photo_url, photo_aspect, caption, score_date, comment_count, category")
       .eq("pack_id", packId);
     if (!FEATURE_FLAGS.dailyWinner) {
       query = query.neq("activity_type", "daily_winner");
@@ -169,6 +173,11 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
       createdAt: row.created_at,
       entryMethod: (row.entry_method ?? "manual") as FeedItem["entryMethod"],
       photoUrl: row.photo_url ?? null,
+      // postgrest serializes `numeric` columns as strings to preserve
+      // arbitrary precision; Number() coerces to a JS float (precision
+      // loss is irrelevant for a 2-digit aspect ratio).
+      photoAspect:
+        row.photo_aspect != null ? Number(row.photo_aspect) : null,
       caption: row.caption ?? null,
       scoreDate: row.score_date ?? null,
       commentCount: row.comment_count ?? 0,
