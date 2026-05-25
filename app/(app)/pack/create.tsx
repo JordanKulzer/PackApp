@@ -280,7 +280,7 @@ export default function CreatePack() {
               the categories pivot doesn't read goal numbers. */}
           <ActivityToggleRow
             label="Steps"
-            description="Tracked"
+            description="Synced from HealthKit or logged manually"
             value={stepsEnabled}
             onValueChange={setStepsEnabled}
           />
@@ -294,14 +294,14 @@ export default function CreatePack() {
 
           <ActivityToggleRow
             label="Active Calories"
-            description="Tracked"
+            description="From HealthKit or logged manually"
             value={caloriesEnabled}
             onValueChange={setCaloriesEnabled}
           />
 
           <ActivityToggleRow
             label="Water"
-            description="Tracked"
+            description="From HealthKit or logged in oz"
             value={waterEnabled}
             onValueChange={setWaterEnabled}
             isLast
