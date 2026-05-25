@@ -90,6 +90,11 @@ import { useCurrentUser } from "../../../src/context/CurrentUserContext";
 import { useRefreshCurrentUserOnFocus } from "../../../src/hooks/useRefreshCurrentUserOnFocus";
 import { den, packEdit, t } from "../../../src/constants/strings";
 import { subscribeToRunScores } from "../../../src/lib/realtimeSubscriptions";
+import { FEATURE_FLAGS } from "../../../src/lib/featureFlags";
+import {
+  getLastSeenRunId,
+  markRunSeen,
+} from "../../../src/lib/newRunRecap";
 
 if (
   Platform.OS === "android" &&
@@ -2581,6 +2586,78 @@ export default function PackScreen() {
     return subscribeToRunScores(runId, () => fetchWeekly(runId), "pack");
   }, [packData?.activeRun?.id, fetchWeekly]);
 
+  // ── New-run recap trigger (per-pack, per-device, exactly once) ────────
+  //
+  // Fires when this device's stored "last seen run" for the pack differs
+  // from the current active run id → a rollover happened since the user
+  // last opened this pack. NOT inside useFocusEffect (that runs before
+  // packData re-resolves on refetch); a dedicated effect keyed on the
+  // resolved activeRun.id is the only spot where the comparison is sound.
+  //
+  // States walked:
+  //   1. Loading / no active run → activeRunId falsy → return.
+  //   2. First-ever visit (lastSeen === null) → seed the marker with the
+  //      current run id and return. NEVER navigate; the user has no prior
+  //      run to recap.
+  //   3. Same run as last visit (lastSeen === activeRunId) → return.
+  //   4. Real rollover (lastSeen exists, differs from activeRunId) → look
+  //      up the just-completed run, AWAIT the marker write FIRST (so a
+  //      background+resume can't re-fire before the write lands), then
+  //      navigate. If the just-completed lookup returns null (rollover RPC
+  //      lagging — rare), the marker is already written; skip navigation
+  //      to avoid trapping the trigger in a loop. User misses one recap.
+  //
+  // navigatedRef prevents double-fire if the effect re-runs (e.g. user?.id
+  // identity change) before the awaited markRunSeen has flushed.
+  const navigatedRecapRef = useRef(false);
+  useEffect(() => {
+    if (!FEATURE_FLAGS.newRunRecap) return;
+    if (!user?.id) return;
+    const activeRunId = packData?.activeRun?.id;
+    if (!activeRunId) return;
+    const packId = packData?.pack?.id;
+    if (!packId) return;
+    if (navigatedRecapRef.current) return;
+
+    let cancelled = false;
+    (async () => {
+      const lastSeen = await getLastSeenRunId(packId);
+      if (cancelled) return;
+      // First-visit: seed the baseline, never navigate.
+      if (lastSeen === null) {
+        await markRunSeen(packId, activeRunId);
+        return;
+      }
+      // No rollover.
+      if (lastSeen === activeRunId) return;
+      // Rollover detected. Look up the just-completed run.
+      const { data } = await supabase
+        .from("runs")
+        .select("id")
+        .eq("pack_id", packId)
+        .eq("status", "completed")
+        .order("end_date", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (cancelled) return;
+      // CRITICAL: write the marker BEFORE navigating. If the user
+      // backgrounds + resumes after navigation but before the write
+      // lands, the trigger would re-fire on the next focus.
+      await markRunSeen(packId, activeRunId);
+      if (cancelled) return;
+      const completedRunId = (data as { id: string } | null)?.id;
+      if (!completedRunId) return; // rollover RPC lag — skip this one.
+      navigatedRecapRef.current = true;
+      router.push({
+        pathname: "/pack/recap/[id]",
+        params: { id: completedRunId },
+      } as any);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [packData?.activeRun?.id, packData?.pack?.id, user?.id, router]);
+
   // ── Refetch after any activity log (belt-and-suspenders alongside realtime) ──
   const logVersion = useScoreStore((s) => s.logVersion);
   useEffect(() => {
@@ -2858,46 +2935,6 @@ export default function PackScreen() {
             />
           }
         >
-          {/* TEMP DEV-ONLY scaffold: pops the orphaned recap screen so we
-              can preview it before designing the real once-per-new-run
-              trigger. __DEV__-gated — cannot ship to production. DELETE
-              this block when the real trigger lands. */}
-          {__DEV__ && (
-            <TouchableOpacity
-              onPress={async () => {
-                const { data, error } = await supabase
-                  .from("runs")
-                  .select("id")
-                  .eq("pack_id", pack.id)
-                  .eq("status", "completed")
-                  .order("end_date", { ascending: false })
-                  .limit(1)
-                  .maybeSingle();
-                if (error || !data) {
-                  Alert.alert("DEV", "No completed run for this pack");
-                  return;
-                }
-                router.push({
-                  pathname: "/pack/recap/[id]",
-                  params: {
-                    id: (data as { id: string }).id,
-                  },
-                } as any);
-              }}
-              style={{
-                backgroundColor: "#7F1D1D",
-                paddingVertical: 10,
-                paddingHorizontal: 16,
-                borderRadius: 6,
-                marginBottom: 12,
-                alignSelf: "flex-start",
-              }}
-            >
-              <Text style={{ color: "#FFF", fontWeight: "700" }}>
-                DEV: View Recap
-              </Text>
-            </TouchableOpacity>
-          )}
           {scoresLoading ? (
             <View style={s.loadingBox}>
               <ActivityIndicator size="small" color={C.textTertiary} />

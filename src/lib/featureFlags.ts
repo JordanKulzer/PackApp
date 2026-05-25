@@ -25,4 +25,10 @@ export const FEATURE_FLAGS = {
   // continue firing from competitiveDetection.ts independently; only the
   // in-app celebration sheet + banner are suppressed here.
   achievementCelebrationSheet: false,
+  // 2026-05-24: Per-pack run-rollover recap trigger. When ON, opening a
+  // pack whose active run rolled over since the user last opened it (on
+  // this device) navigates to the recap once. Default OFF — flip after a
+  // dogfood pass. Helpers: src/lib/newRunRecap.ts. Trigger lives in
+  // app/(app)/pack/[id].tsx.
+  newRunRecap: false,
 } as const;
