@@ -102,22 +102,28 @@ function actionPhrase(item: FeedItem): string {
       // mirrors SystemMessageRow's tone for cross-surface consistency.
       return "took the lead 👑";
     // ── Intentional-sharing Phase 2: manual-share variants ──────────
-    // Rendered by FeedItemRow (NOT routed to SystemMessageRow — these
-    // are user-initiated social posts, not system events). Tone mirrors
-    // the existing auto-post phrasing but framed as a share.
+    // Rendered by FeedItemRow as a normal feed row (NOT system-style —
+    // these are user-initiated social posts). Copy reads as the
+    // person's actual activity, not as telemetry — the row should
+    // feel like a post, not a debug label. "shared their X" reads
+    // robotic ("Jordan shared their 412 calories"); we use the verb
+    // for the action instead ("Jordan burned 412 calories today" /
+    // "Jordan did yoga").
     case "steps_share":
-      return `shared their ${item.value.toLocaleString()} steps`;
+      return `took ${item.value.toLocaleString()} steps today`;
     case "calories_share":
-      return `shared their ${item.value.toLocaleString()} calories`;
+      return `burned ${item.value.toLocaleString()} calories today`;
     case "water_share":
-      return `shared their ${item.value} oz of water`;
+      return `drank ${item.value} oz of water today`;
     case "workout_share":
-      // Reuse the category verb when present (e.g. "shared their yoga"),
-      // fall back to a plain "shared a workout" for null/"other".
+      // Reuse WORKOUT_VERBS for the category when known. "other" /
+      // missing category lands on a plain "did a workout" — better
+      // than the WORKOUT_VERBS["other"] = "logged a workout" fallback,
+      // which leaks the old logging framing into share rows.
       if (item.category && item.category !== "other") {
-        return `shared their ${item.category.replace(/_/g, " ")}`;
+        return WORKOUT_VERBS[item.category];
       }
-      return "shared a workout";
+      return "did a workout";
     default:
       // all_goals etc. route to SystemMessageRow; this fallback covers any
       // unknown future type.
