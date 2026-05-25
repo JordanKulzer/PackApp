@@ -710,7 +710,8 @@ function WeekDetailSheet({
                       </Text>
                     </View>
                     <Text style={wdS.champDays}>
-                      {cw.totalDaysWon} {cw.totalDaysWon === 1 ? "day" : "days"}
+                      {cw.championDaysWon}{" "}
+                      {cw.championDaysWon === 1 ? "day" : "days"}
                     </Text>
                   </View>
                 );
@@ -1040,10 +1041,14 @@ const wdS = StyleSheet.create({
     fontWeight: "600",
     color: C.textPrimary,
   },
+  // Most-days-won rework: the day count is the meaningful metric now
+  // (the champion's day count, not "days the category was contested"),
+  // so it reads as content — heavier weight, primary text color — rather
+  // than a trailing label. Matches the recap's promoted day-count style.
   champDays: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: C.textTertiary,
+    fontSize: 15,
+    fontWeight: "700",
+    color: C.textPrimary,
   },
   // Daily-breakdown per-member category-won badges
   dayBadges: {

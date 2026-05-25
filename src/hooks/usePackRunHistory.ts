@@ -13,13 +13,16 @@ import { useState, useEffect } from "react";
 import { supabase } from "../lib/supabase";
 import { CATEGORIES, type Category } from "../lib/categories";
 
-// Per-category winner(s) for a completed run. winnerUserIds is a uuid[] —
-// ties are first-class. totalDaysWon counts winning DAYS (daily_winners
-// rows) for the category, not user-days: a tied day is one row.
+// Per-category champion(s) for a completed run. winnerUserIds is a uuid[] —
+// ties are first-class. The champion is the member (or members, on a true
+// tie) with the MOST days won in the category across the run; a member who
+// won 1 day in a 7-day category is not the champion.
+// championDaysWon is the champion's day count (the max). Tied-day rows
+// (winner_user_ids of length > 1) contribute +1 to EACH listed user.
 export type RunCategoryWinner = {
   category: Category;
   winnerUserIds: string[];
-  totalDaysWon: number;
+  championDaysWon: number;
 };
 
 // One member's standing in a completed run. totalWins is their count of
@@ -171,20 +174,34 @@ export function usePackRunHistory(packId: string): {
           const rows = rowsByRun[run.id] ?? [];
 
           // categoryWinners: one entry per category that has winner rows.
-          // totalDaysWon = number of winner rows for the category (= days
-          // won); a tied day is a single row listing multiple users.
+          // The champion is the member with the MOST days won in the
+          // category (ties first-class — if N users tie at the max, all N
+          // are returned). Per-user day count: +1 per row PER uid listed
+          // in winner_user_ids, so a tied day awards +1 to each tied user
+          // (not a fractional share, and not just to the first).
           const categoryWinners: RunCategoryWinner[] = [];
           for (const category of CATEGORIES) {
             const catRows = rows.filter((r) => r.category === category);
             if (catRows.length === 0) continue;
-            const winnerIds = new Set<string>();
+            const daysByUser: Record<string, number> = {};
             for (const r of catRows) {
-              for (const uid of r.winner_user_ids) winnerIds.add(uid);
+              for (const uid of r.winner_user_ids) {
+                daysByUser[uid] = (daysByUser[uid] ?? 0) + 1;
+              }
             }
+            const counts = Object.values(daysByUser);
+            // Defensive: a row with an empty winner_user_ids would leave
+            // daysByUser empty even though catRows.length > 0. Skip in that
+            // case rather than push a champion with championDaysWon=0.
+            if (counts.length === 0) continue;
+            const maxDays = Math.max(...counts);
+            const winnerUserIds = Object.entries(daysByUser)
+              .filter(([, days]) => days === maxDays)
+              .map(([uid]) => uid);
             categoryWinners.push({
               category,
-              winnerUserIds: Array.from(winnerIds),
-              totalDaysWon: catRows.length,
+              winnerUserIds,
+              championDaysWon: maxDays,
             });
           }
 

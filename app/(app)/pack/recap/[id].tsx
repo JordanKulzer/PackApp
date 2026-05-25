@@ -10,6 +10,7 @@ import {
   Easing,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { CategoryIcon } from "../../../../src/components/CategoryIcon";
 import { useAuthStore } from "../../../../src/stores/authStore";
 import { supabase } from "../../../../src/lib/supabase";
@@ -189,6 +190,7 @@ export default function RecapScreen() {
     packId: string;
   }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const userId = useAuthStore((st) => st.user?.id);
   const { completedRuns, isLoading } = usePackRunHistory(packId ?? "");
   // Celebration flourish — fires once when the viewer is the overall
@@ -280,7 +282,7 @@ export default function RecapScreen() {
   return (
     <ScrollView style={s.scroll} contentContainerStyle={s.content}>
       {/* Header */}
-      <View style={s.header}>
+      <View style={[s.header, { paddingTop: insets.top + 8 }]}>
         <TouchableOpacity onPress={() => router.back()} activeOpacity={0.7}>
           <Text style={s.backText}>← Back</Text>
         </TouchableOpacity>
@@ -293,7 +295,12 @@ export default function RecapScreen() {
       {/* Hero — viewer-adaptive. Overall-winner gets the gold flourish. */}
       <View style={s.hero}>
         {showHeroAvatar && (
-          <View style={s.heroAvatarWrap}>
+          <View
+            style={[
+              s.heroAvatarWrap,
+              !isWinnerView && s.heroAvatarWrapTight,
+            ]}
+          >
             {isWinnerView && (
               <Animated.View
                 style={[
@@ -376,7 +383,8 @@ export default function RecapScreen() {
                   {label}
                 </Text>
                 <Text style={s.champDays}>
-                  {cw.totalDaysWon} {cw.totalDaysWon === 1 ? "day" : "days"}
+                  {cw.championDaysWon}{" "}
+                  {cw.championDaysWon === 1 ? "day" : "days"}
                 </Text>
               </View>
             );
@@ -410,8 +418,15 @@ export default function RecapScreen() {
         </View>
       )}
 
-      {/* Full standings */}
-      {run.standings.length > 0 && (
+      {/* Full standings — every member, winners-first then zero-win
+          members as equal rows. Zero-win members come from
+          run.zeroWinMembers (the hook's pre-sorted active-roster list
+          minus anyone with ≥1 win). They render as the SAME row
+          component with 0 wins and an empty bar — NOT a demoted footer
+          line. Matches the History tab's deliberate Stage B choice:
+          every member is a full row; a dulled treatment reads as
+          discouraging. Shared next-rank for the zero-win tie. */}
+      {(run.standings.length > 0 || run.zeroWinMembers.length > 0) && (
         <View style={s.card}>
           <Text style={s.sectionTitle}>
             {den.standings.title.toUpperCase()}
@@ -459,6 +474,40 @@ export default function RecapScreen() {
               </View>
             );
           })}
+          {run.zeroWinMembers.map((zwm) => {
+            const isMe = !!userId && zwm.userId === userId;
+            // All zero-win members share the next rank after the ranked
+            // standings (e.g. ranked ends at #2 → zero-win tie at #3).
+            // Empty standings (no winners at all) → zero-win tie at #1.
+            const sharedRank = run.standings.length + 1;
+            return (
+              <View
+                key={zwm.userId}
+                style={[s.standingRow, isMe && s.rowMe]}
+              >
+                <Text style={s.standingRank}>#{sharedRank}</Text>
+                <View style={s.standingInfo}>
+                  <View style={s.standingMeta}>
+                    <Text style={s.standingName} numberOfLines={1}>
+                      {formatName(zwm.displayName, sharedRank)}
+                    </Text>
+                    <Text style={s.standingWins}>0 wins</Text>
+                  </View>
+                  <View style={s.barTrack}>
+                    <View
+                      style={[
+                        s.barFill,
+                        {
+                          width: "0%" as `${number}%`,
+                          backgroundColor: colors.accent,
+                        },
+                      ]}
+                    />
+                  </View>
+                </View>
+              </View>
+            );
+          })}
         </View>
       )}
 
@@ -484,8 +533,10 @@ const s = StyleSheet.create({
     backgroundColor: "#0A0A0A",
   },
   errorText: { color: "#9CA3AF", fontSize: 16 },
+  // paddingTop is set inline from useSafeAreaInsets — the prior hardcoded 60
+  // didn't read the device's notch geometry and produced a dead-air gap on
+  // non-notch / smaller-status-bar devices.
   header: {
-    paddingTop: 60,
     paddingHorizontal: 16,
     paddingBottom: 12,
     gap: 8,
@@ -504,11 +555,18 @@ const s = StyleSheet.create({
     paddingHorizontal: 24,
     gap: 10,
   },
+  // Wrap is sized for the winner's goldBurst glow (160×160). Non-winner
+  // views override to a tight ~avatar+12 box via heroAvatarWrapTight so
+  // they don't inherit the giant empty halo the glow needs.
   heroAvatarWrap: {
     width: 160,
     height: 160,
     alignItems: "center",
     justifyContent: "center",
+  },
+  heroAvatarWrapTight: {
+    width: 84,
+    height: 84,
   },
   // Soft radial gold glow behind the winner avatar — a plain View (no
   // confetti / blur dependency); opacity + scale animate in via `flourish`.
@@ -573,7 +631,11 @@ const s = StyleSheet.create({
     width: 76,
   },
   champName: { flex: 1, fontSize: 14, fontWeight: "600", color: "#FFFFFF" },
-  champDays: { fontSize: 12, fontWeight: "600", color: "#9CA3AF" },
+  // Most-days-won rework: the day count is the meaningful metric now (not a
+  // "days the category was contested" total), so it reads as content — same
+  // weight as the name, white, slightly heavier — rather than as a trailing
+  // label.
+  champDays: { fontSize: 15, fontWeight: "700", color: "#FFFFFF" },
   // Podium
   podium: {
     flexDirection: "row",
