@@ -17,7 +17,11 @@ import { computeUserStreak } from "./computeUserStreak";
 import { type CrossingEvent } from "./competitiveDetection";
 import { detectAndSendCategoryThreats, type CategoryDelta } from "./threatNotifications";
 import { packToday, packDateRangeUTC } from "./packDates";
-import { getCategoryFromHKType } from "./activityCategoryMap";
+// Intentional-sharing Phase 1: getCategoryFromHKType no longer used —
+// its only call site was the per-HK-sample activity_feed insert's
+// `category` field, gone with the auto-post deletion. Phase 2's
+// Share composer may import it again to seed the workout share's
+// category from the HK sample type.
 import { analytics } from "./analytics";
 import type { Pack } from "../types/database";
 
@@ -700,78 +704,19 @@ export async function syncWorkoutsToSupabase(userId: string): Promise<CrossingEv
         });
       }
 
-      // Insert activity_feed entries for each newly credited workout.
+      // Intentional-sharing Phase 1: the per-HK-sample activity_feed
+      // auto-post is gone, along with the WORKOUT_MAX_DAILY feed-cap
+      // count query that gated it. Pack chat is becoming an intentional
+      // surface; HK workout quantity telemetry no longer flows into it.
       //
-      // Two distinct constraints govern this loop:
-      //   - WORKOUT_MAX_DAILY scoring cap (max 2 feed rows per user/pack/day):
-      //     enforced by the existingFeedCount-derived feedSlotsRemaining gate
-      //     below. Even if the user has 3+ unique HK workout samples, only
-      //     the first 2 produce feed rows.
-      //   - Per-sample uniqueness (don't insert the same HK sample twice):
-      //     enforced by the partial unique index idx_activity_feed_no_dup_hk_workouts
-      //     on (user_id, healthkit_uuid). See src/lib/syncWater.ts:142 for
-      //     the partial-index ON CONFLICT discussion — a plain INSERT with a
-      //     23505 catch is the correct pattern here too. The partial index
-      //     still enforces uniqueness on INSERT; concurrent re-syncs of the
-      //     same sample raise 23505, which we treat as a successful no-op.
-      // Both gates are needed; they cover different concerns.
-      const todayStart = new Date(date + "T00:00:00");
-      const dayEnd = new Date(date + "T23:59:59");
-      const { count: existingFeedCount } = await supabase
-        .from("activity_feed")
-        .select("id", { count: "exact", head: true })
-        .eq("pack_id", pack_id)
-        .eq("user_id", userId)
-        .eq("activity_type", "workout")
-        .gte("created_at", todayStart.toISOString())
-        .lte("created_at", dayEnd.toISOString());
-
-      const feedSlotsRemaining = WORKOUT_MAX_DAILY - (existingFeedCount ?? 0);
-      const feedToInsert = Math.min(toCredit.length, feedSlotsRemaining);
-      for (let i = 0; i < feedToInsert; i++) {
-        const sample = toCredit[i];
-        const { data: insertedRows, error: feedError } = await supabase
-          .from("activity_feed")
-          .insert({
-            pack_id,
-            user_id: userId,
-            activity_type: "workout",
-            value: newCount,
-            points_earned: 0,
-            entry_method: "healthkit",
-            score_date: date,
-            healthkit_uuid: sample.identifier,
-            category: getCategoryFromHKType(sample.activityType),
-          })
-          .select("id");
-
-        if (feedError) {
-          if (feedError.code !== "23505") {
-            console.error(
-              "[syncWorkoutsToSupabase] activity_feed insert error:",
-              feedError,
-            );
-          }
-          continue;
-        }
-        if (insertedRows && insertedRows.length > 0) {
-          // Goal-removal Part 3a: kind:"goal" push removed for credited
-          // workouts. The activity_feed row above still posts (chat sees
-          // the workout via the feed); no real-time push fires anymore.
-          // crossings still emitted so callers (sharing flow) see the
-          // landed row.
-          crossings.push({
-            packId: pack_id,
-            packName: pack.name,
-            packTimezone: packTz,
-            feedItemId: insertedRows[0].id,
-            activityType: "workout",
-            pointsEarned: 0,
-            scoreDate: date,
-          });
-        }
-      }
-
+      // Per-sample dedup against the same HK workout being credited
+      // twice still survives via activity_logs.synced_workout_ids
+      // (the workout primer + the update path above) — that's the
+      // personal log, not chat. daily_scores.workout_count writes
+      // also survive (the categories-pivot scoring path).
+      //
+      // crossings[] return is preserved (always empty now) — the
+      // orchestrator's Promise.all discards it; type signature stable.
       console.log(`[WorkoutSync] credited ${toCredit.length} new workout(s) for ${date} in pack ${pack_id}`);
     }
   }

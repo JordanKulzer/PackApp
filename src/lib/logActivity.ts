@@ -3,7 +3,10 @@
 // These activities upsert daily_scores directly since there is no separate log table.
 
 import { supabase } from "./supabase";
-import { WORKOUT_MAX_DAILY } from "./scoring";
+// Intentional-sharing Phase 1: WORKOUT_MAX_DAILY import dropped — the
+// only consumer here was the per-workout activity_feed insert cap, now
+// gone with the auto-post deletion. Scoring still imports it where
+// relevant (healthkit.ts workout-sync still caps workout_count writes).
 import { computeUserStreak } from "./computeUserStreak";
 // Goal-removal Part 3a: notifyPackMembers no longer used in this file —
 // the only caller was the kind:"goal" push that fired per manual log,
@@ -244,80 +247,14 @@ export async function syncManualActivityToDailyScores(
         });
       }
 
-      // F.2 Bug 6: every manual log produces an audit-trail row. The
-      // prior `if (nowAchieved)` wrapper + `!wasAchievedBefore` gate
-      // silently swallowed sub-target + post-cross logs. Now: workout
-      // still capped at WORKOUT_MAX_DAILY (product-intentional);
-      // steps/calories produce a row on every call. Index narrowing
-      // in migration 20260513b ensures no 23505 from the dedup index.
-      // value stores the per-action delta — what the user just added in
-      // THIS call — not the cumulative manual total. The cumulative total
-      // lives in daily_scores.manual_*_count (the additive write target).
-      // FeedItemRow renders this as "logged X steps", which reads
-      // naturally as the action amount. HK feed rows store cumulative
-      // because they fire per goal-cross, not per sync — that asymmetry
-      // is intentional and matches the event semantics on each side.
-      const value =
-        activityType === "steps"   ? delta :
-        activityType === "workout" ? newWorkoutCount :
-                                     delta;
-
-      let shouldInsertFeed = false;
-      if (activityType === "workout") {
-        const { count: existingCount } = await supabase
-          .from("activity_feed")
-          .select("id", { count: "exact", head: true })
-          .eq("pack_id", pack.id)
-          .eq("user_id", userId)
-          .eq("activity_type", "workout")
-          .eq("score_date", today);
-        shouldInsertFeed = (existingCount ?? 0) < WORKOUT_MAX_DAILY;
-      } else {
-        // Manual steps/calories: every action gets a row (additive
-        // audit trail per F.2 locked product model).
-        shouldInsertFeed = true;
-      }
-
-      if (shouldInsertFeed) {
-        // 23505 try/catch kept defensively. Post-F.2-narrowing the
-        // partial unique index covers only (took_lead, all_goals), so
-        // 23505 cannot fire from this path — but the conditional
-        // is cheap insurance against any future schema re-tightening.
-        const { data: insertedRows, error: feedError } = await supabase
-          .from("activity_feed")
-          .insert({
-            pack_id: pack.id,
-            user_id: userId,
-            activity_type: activityType,
-            value,
-            points_earned: 0,
-            entry_method: "manual",
-            score_date: today,
-            category: activityType === "workout" ? (category ?? "other") : null,
-          })
-          .select("id");
-
-        if (feedError) {
-          if (feedError.code !== "23505") {
-            console.error("[logActivity] activity_feed insert error:", feedError);
-          }
-        } else if (insertedRows && insertedRows.length > 0) {
-          // Goal-removal Part 3a: kind:"goal" push removed. The activity_feed
-          // row above still posts to chat — pack members see the log when
-          // they scroll the feed — but no real-time goal-hit notification.
-          // crossings is still emitted so callers (sharing flow) see what
-          // landed.
-          crossings.push({
-            packId: pack.id,
-            packName: pack.name,
-            packTimezone: packTz,
-            feedItemId: insertedRows[0].id,
-            activityType,
-            pointsEarned: 0,
-            scoreDate: today,
-          });
-        }
-      }
+      // Intentional-sharing Phase 1: the per-manual-log activity_feed
+      // auto-post is gone. Pack chat becomes an intentional surface;
+      // quantity telemetry no longer flows into it. The composer in
+      // Phase 2 will INSERT share rows on user demand.
+      // crossings[] return is preserved (always empty now) — every
+      // caller already discards it; the type signature stays stable.
+      // KEEP intact above: daily_scores count writes, computeUserStreak,
+      // detectAndSendCategoryThreats (per-category lead-change pushes).
     }
   } catch (err) {
     console.error("[logActivity] syncManualActivityToDailyScores error:", err);
