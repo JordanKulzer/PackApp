@@ -230,37 +230,29 @@ export function SharePostSheet({ visible, onDismiss, onPosted, share }: Props) {
           </TouchableOpacity>
         </View>
 
-        {/* ScrollView holds ONLY the scrollable content — context pill
-            + photo control. A tall photo preview (up to maxHeight 360)
-            scrolls naturally here. keyboardDismissMode="interactive"
-            lets a deliberate scroll-down dismiss the keyboard (matches
-            iOS conventions). keyboardShouldPersistTaps="handled" keeps
-            touchables (e.g. photo-remove X) tappable without a
-            keyboard-dismiss tap first. */}
-        <ScrollView
-          style={s.scroll}
-          contentContainerStyle={s.scrollContent}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="interactive"
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={s.contextPill}>
-            <Text style={s.contextPillText}>{subtitle}</Text>
-          </View>
-
-          {/* Photo control.
-              Empty state: compact add-photo row (icon tile + label +
-                "Optional" subtext). Tap opens the photo-source
-                ActionSheet. The page stays uncluttered until the
-                user actually attaches something.
-              Photo-added state: full-width preview at the photo's
-                NATIVE aspect ratio (Image.getSize → photoAspect),
-                capped at maxHeight 360 so a very tall portrait
-                doesn't dominate. resizeMode="contain" — no crop.
-              The picker mechanism (handlePickPhoto + ActionSheet) is
-              unchanged — only the trigger affordance and the
-              preview's sizing/cropping behavior change here. */}
-          {localUri ? (
+        {/* State-aware body layout. The empty and photo-added states
+            have different sizing needs — empty wants a large target
+            that fills the available space; photo-added wants the
+            preview to size to its native aspect ratio and be
+            scrollable when tall on small devices. Branching gives
+            each state the right container without one fighting the
+            other through shared flex rules. */}
+        {localUri ? (
+          /* Photo-added state — UNCHANGED from previous prompt.
+             ScrollView with gap-spaced content, preview at native
+             aspect ratio capped at maxHeight: 360. Scrolls when the
+             preview pushes content taller than the viewport (e.g.
+             tall portrait on a small device). */
+          <ScrollView
+            style={s.scroll}
+            contentContainerStyle={s.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={s.contextPill}>
+              <Text style={s.contextPillText}>{subtitle}</Text>
+            </View>
             <View
               style={[
                 s.previewWrap,
@@ -280,31 +272,35 @@ export function SharePostSheet({ visible, onDismiss, onPosted, share }: Props) {
                 <Ionicons name="close-circle" size={26} color="#FFF" />
               </TouchableOpacity>
             </View>
-          ) : (
+          </ScrollView>
+        ) : (
+          /* Empty state — large "Add photo" target. Plain column
+             (no ScrollView — content is bounded by emptyTarget's
+             maxHeight, no scroll needed). flex:1 on the column +
+             flex:1 on the target makes the target absorb the space
+             between the pill and the sticky footer; maxHeight 420
+             caps it on tall devices so it stays "large + inviting"
+             rather than absurdly tall. Tap opens the existing
+             handlePickPhoto ActionSheet — unchanged. */
+          <View style={s.emptyColumn}>
+            <View style={s.contextPill}>
+              <Text style={s.contextPillText}>{subtitle}</Text>
+            </View>
             <TouchableOpacity
-              style={s.addPhotoRow}
+              style={s.emptyTarget}
               onPress={handlePickPhoto}
-              activeOpacity={0.7}
+              activeOpacity={0.8}
             >
-              <View style={s.addPhotoIconTile}>
-                <Ionicons
-                  name="camera-outline"
-                  size={20}
-                  color={C.textSecondary}
-                />
-              </View>
-              <View style={s.addPhotoText}>
-                <Text style={s.addPhotoLabel}>Add photo</Text>
-                <Text style={s.addPhotoSubtext}>Optional</Text>
-              </View>
               <Ionicons
-                name="chevron-forward"
-                size={18}
+                name="camera-outline"
+                size={48}
                 color={C.textTertiary}
               />
+              <Text style={s.emptyTargetLabel}>Add photo</Text>
+              <Text style={s.emptyTargetSubtext}>Optional</Text>
             </TouchableOpacity>
-          )}
-        </ScrollView>
+          </View>
+        )}
 
         {/* Sticky footer block — caption + counter + Post button. Pinned
             above the keyboard via KeyboardStickyView (same primitive
@@ -392,10 +388,22 @@ const s = StyleSheet.create({
   scroll: {
     flex: 1,
   },
+  // Single source of truth for inter-item spacing. The previous layout
+  // had the caption + counter + Post inside this ScrollView, and items
+  // carried per-item marginBottom (contextPill: 24, addPhotoRow: 16,
+  // previewWrap: 16) to space themselves vs the caption block below.
+  // After Phase 2 moved the caption block to a KeyboardStickyView
+  // footer, those marginBottoms became trailing space — stacking to
+  // a visible "dead gap" between Add photo and the sticky footer in
+  // the empty state. Fix: drop the per-item marginBottoms; use
+  // scrollContent.gap for inter-item spacing instead. Content flows
+  // top-down naturally; any empty space sits below the last item,
+  // above the footer — fine for a full-screen modal.
   scrollContent: {
     paddingHorizontal: 20,
     paddingTop: 20,
     paddingBottom: 16,
+    gap: 16,
   },
   contextPill: {
     alignSelf: "center",
@@ -405,46 +413,48 @@ const s = StyleSheet.create({
     borderRadius: 9999,
     paddingHorizontal: 12,
     paddingVertical: 6,
-    marginBottom: 24,
   },
   contextPillText: {
     fontSize: 13,
     fontWeight: "500",
     color: C.gold,
   },
-  // Option B — empty state: compact add-photo row. No large reserved
-  // box; the sheet stays short until a photo is actually attached.
-  addPhotoRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: C.border,
-    borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.03)",
-    marginBottom: 16,
+  // Empty-state column. Plain View (no ScrollView) — the empty state
+  // is bounded by emptyTarget's maxHeight and doesn't need to scroll.
+  // flex:1 fills the space between header and sticky footer; mirrors
+  // scrollContent's padding/gap so the pill sits the same distance
+  // from the top as in the photo-added ScrollView path.
+  emptyColumn: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 16,
+    gap: 16,
   },
-  addPhotoIconTile: {
-    width: 40,
-    height: 40,
-    borderRadius: 8,
-    backgroundColor: "rgba(255,255,255,0.06)",
+  // Large "Add photo" target. flex:1 absorbs the empty space between
+  // pill and sticky footer; maxHeight 420 caps it on tall devices so
+  // it stays "large + inviting" rather than absurdly tall. Dashed
+  // border + tinted surface read as a tap target / drop zone. Icon +
+  // label + subtext vertically centered.
+  emptyTarget: {
+    flex: 1,
+    maxHeight: 420,
+    borderWidth: 2,
+    borderColor: C.border,
+    borderStyle: "dashed",
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.03)",
     alignItems: "center",
     justifyContent: "center",
+    gap: 8,
   },
-  addPhotoText: {
-    flex: 1,
-    gap: 2,
-  },
-  addPhotoLabel: {
-    fontSize: 15,
+  emptyTargetLabel: {
+    fontSize: 16,
     fontWeight: "600",
     color: C.textPrimary,
   },
-  addPhotoSubtext: {
-    fontSize: 12,
+  emptyTargetSubtext: {
+    fontSize: 13,
     color: C.textTertiary,
   },
   // Photo-added state: full-width preview at the photo's NATIVE aspect
@@ -458,7 +468,6 @@ const s = StyleSheet.create({
     borderRadius: 12,
     overflow: "hidden",
     backgroundColor: "rgba(255,255,255,0.04)",
-    marginBottom: 16,
   },
   preview: {
     width: "100%",

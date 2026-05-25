@@ -1,9 +1,47 @@
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as FileSystem from "expo-file-system/legacy";
+import { Image } from "react-native";
 import { decode as base64Decode } from "base64-arraybuffer";
 import { supabase } from "./supabase";
 import { analytics } from "./analytics";
+
+// ─── Shared resize helper ────────────────────────────────────────────────────
+// Reads the source image dimensions, then mirrors compressPhoto's
+// proportional-scale math (scale by maxEdge / maxDim, apply to both
+// width and height so aspect ratio is preserved). Returns the
+// ImageManipulator action, or null when the image already fits
+// (no resize needed) or its size couldn't be read (skip resize —
+// upload at native dimensions; better than squashing to a square).
+//
+// Bug C fix: uploadVictoryPhoto + uploadChatPhoto previously did
+// `resize: { width: MAX, height: MAX }` which forces an exact-pixel
+// stretch to a square. This helper replaces that with the
+// proportional pattern compressPhoto already uses correctly.
+async function proportionalResizeAction(
+  uri: string,
+  maxEdge: number,
+): Promise<ImageManipulator.Action | null> {
+  const size = await new Promise<{ width: number; height: number } | null>(
+    (resolve) => {
+      Image.getSize(
+        uri,
+        (width, height) => resolve({ width, height }),
+        () => resolve(null),
+      );
+    },
+  );
+  if (!size || size.width <= 0 || size.height <= 0) return null;
+  const maxDim = Math.max(size.width, size.height);
+  if (maxDim <= maxEdge) return null;
+  const scale = maxEdge / maxDim;
+  return {
+    resize: {
+      width: Math.round(size.width * scale),
+      height: Math.round(size.height * scale),
+    },
+  };
+}
 
 const BUCKET = "activity_photos";
 const MAX_LONG_EDGE = 1080;
@@ -304,9 +342,20 @@ export async function uploadVictoryPhoto(
   localUri: string,
 ): Promise<string | null> {
   try {
+    // Bug C fix: was `resize: { width: MAX, height: MAX }` which forces
+    // an exact-pixel stretch to a square (any non-square photo was
+    // distorted before storage). Now reads the source dimensions and
+    // applies a proportional resize via the shared helper.
+    const resizeAction = await proportionalResizeAction(
+      localUri,
+      VICTORY_MAX_EDGE,
+    );
+    const actions: ImageManipulator.Action[] = resizeAction
+      ? [resizeAction]
+      : [];
     const compressed = await ImageManipulator.manipulateAsync(
       localUri,
-      [{ resize: { width: VICTORY_MAX_EDGE, height: VICTORY_MAX_EDGE } }],
+      actions,
       { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG },
     );
 
@@ -370,9 +419,18 @@ export async function uploadChatPhoto(
   localUri: string,
 ): Promise<string | null> {
   try {
+    // Bug C fix (sister to uploadVictoryPhoto): proportional resize via
+    // the shared helper instead of the prior square-stretch resize.
+    const resizeAction = await proportionalResizeAction(
+      localUri,
+      CHAT_MAX_EDGE,
+    );
+    const actions: ImageManipulator.Action[] = resizeAction
+      ? [resizeAction]
+      : [];
     const compressed = await ImageManipulator.manipulateAsync(
       localUri,
-      [{ resize: { width: CHAT_MAX_EDGE, height: CHAT_MAX_EDGE } }],
+      actions,
       { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG },
     );
 

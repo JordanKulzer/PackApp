@@ -139,6 +139,15 @@ export function FeedItemRow({
   removePhotoFromItem,
 }: Props) {
   const [signedPhotoUrl, setSignedPhotoUrl] = useState<string | null>(null);
+  // Bug C fix: native aspect ratio of the signed photo, read via
+  // Image.getSize once the URL resolves. Used to size the non-victory
+  // photo wrap (incl. _share rows) so the photo renders at its true
+  // ratio instead of the prior forced-4:5 cover crop. Falls back to
+  // 4:5 (the previous default) while the dimensions are in flight,
+  // so the first frame doesn't pop. Victory rows
+  // (daily_winner / took_lead) keep their existing 4:5 framing — that
+  // styling is intentional for celebration posts and out of scope.
+  const [photoAspect, setPhotoAspect] = useState<number | null>(null);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const [photoMenuOpen, setPhotoMenuOpen] = useState(false);
   const [reportMenuOpen, setReportMenuOpen] = useState(false);
@@ -164,6 +173,27 @@ export function FeedItemRow({
       .then((url) => setSignedPhotoUrl(url))
       .catch(() => {});
   }, [item.photoUrl]);
+
+  // Bug C fix: read native dimensions when the signed URL resolves.
+  // Image.getSize returns the photo's intrinsic pixel size; we cache
+  // the ratio in state and apply it to the wrap (non-victory rows).
+  // Failure → photoAspect stays null and we fall back to the prior
+  // 4:5 framing for that row only — same behaviour as before the fix.
+  useEffect(() => {
+    if (!signedPhotoUrl) {
+      setPhotoAspect(null);
+      return;
+    }
+    Image.getSize(
+      signedPhotoUrl,
+      (w, h) => {
+        if (w > 0 && h > 0) setPhotoAspect(w / h);
+      },
+      () => {
+        setPhotoAspect(null);
+      },
+    );
+  }, [signedPhotoUrl]);
 
   const handleDeletePhoto = async () => {
     setPhotoMenuOpen(false);
@@ -230,27 +260,44 @@ export function FeedItemRow({
 
         {/* Photo — daily_winner + took_lead use the larger victory-style
             wrap (Pass 25-followup-E.2.b.iii-fix-2 extends took_lead to
-            match daily_winner's share-worthy framing). */}
+            match daily_winner's share-worthy framing).
+            Bug C fix: non-victory rows (incl. _share variants) now
+            render at the photo's NATIVE aspect ratio, capped at
+            maxHeight 480 so a very tall portrait doesn't dominate a
+            feed row. Falls back to the prior 4:5 framing while
+            photoAspect is still resolving (or if Image.getSize fails).
+            Victory rows keep their existing s.victoryPhotoWrap +
+            s.photo (4:5) — that styling is intentional and untouched. */}
         {signedPhotoUrl && (
-          <TouchableOpacity
-            style={
+          (() => {
+            const isVictory =
               item.activityType === "daily_winner" ||
-              item.activityType === "took_lead"
-                ? s.victoryPhotoWrap
-                : s.photoWrap
-            }
-            onPress={() => setFullscreenOpen(true)}
-            onLongPress={() =>
-              isMe ? setPhotoMenuOpen(true) : setReportMenuOpen(true)
-            }
-            activeOpacity={0.92}
-          >
-            <Image
-              source={{ uri: signedPhotoUrl }}
-              style={s.photo}
-              resizeMode="cover"
-            />
-          </TouchableOpacity>
+              item.activityType === "took_lead";
+            return (
+              <TouchableOpacity
+                style={
+                  isVictory
+                    ? s.victoryPhotoWrap
+                    : [
+                        s.photoWrap,
+                        s.photoWrapNative,
+                        { aspectRatio: photoAspect ?? 4 / 5 },
+                      ]
+                }
+                onPress={() => setFullscreenOpen(true)}
+                onLongPress={() =>
+                  isMe ? setPhotoMenuOpen(true) : setReportMenuOpen(true)
+                }
+                activeOpacity={0.92}
+              >
+                <Image
+                  source={{ uri: signedPhotoUrl }}
+                  style={isVictory ? s.photo : s.photoNative}
+                  resizeMode={isVictory ? "cover" : "contain"}
+                />
+              </TouchableOpacity>
+            );
+          })()
         )}
 
         {/* Caption — render whenever the row has one, regardless of
@@ -469,6 +516,18 @@ const s = StyleSheet.create({
   photo: {
     width: "100%",
     aspectRatio: 4 / 5,
+  },
+  // Bug C fix — non-victory (incl. _share) rows render at native aspect.
+  // The wrap's aspectRatio is set inline from photoAspect state; this
+  // style adds the cap so a very tall portrait can't dominate the row.
+  // Background fills any letterbox left by resizeMode="contain".
+  photoWrapNative: {
+    maxHeight: 480,
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+  photoNative: {
+    width: "100%",
+    height: "100%",
   },
   caption: {
     marginTop: 6,
