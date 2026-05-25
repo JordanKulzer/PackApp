@@ -79,6 +79,17 @@ interface InitialValues {
     calories: boolean;
     water: boolean;
   };
+  // Per-category "did pending_*_enabled exist (non-null) at form-seed?"
+  // snapshot. Used by the post-save toast to distinguish queued-this-save
+  // (false → true) from cancelled-this-save (true → false). The seed
+  // useEffect folds the actual pending booleans into `effective` via ??,
+  // which loses the null/non-null distinction; this field preserves it.
+  pendingExistedBefore: {
+    steps: boolean;
+    workouts: boolean;
+    calories: boolean;
+    water: boolean;
+  };
 }
 
 export default function EditPackScreen() {
@@ -126,6 +137,12 @@ export default function EditPackScreen() {
         workouts: effWorkouts,
         calories: effCalories,
         water: effWater,
+      },
+      pendingExistedBefore: {
+        steps: p.pending_steps_enabled !== null,
+        workouts: p.pending_workouts_enabled !== null,
+        calories: p.pending_calories_enabled !== null,
+        water: p.pending_water_enabled !== null,
       },
     });
   }, [packData]);
@@ -207,9 +224,58 @@ export default function EditPackScreen() {
       return;
     }
 
-    const hasPendingCategoryChange =
-      (rpcData as { has_pending_category_change?: boolean } | null)
-        ?.has_pending_category_change ?? false;
+    // RPC's aggregate post-save flag — kept as a sanity reference but
+    // NOT used for branching the toast. The toast uses the two
+    // per-category facts below (anyQueued / anyCancelled), which are
+    // derivable client-side from what the handler sent vs. what existed
+    // at form-seed. The aggregate bool collapses queued + cancelled +
+    // untouched into one truthy value and loses the cancel signal.
+    // Intentionally suppressed via `void` so tsc doesn't flag unused.
+    void (rpcData as { has_pending_category_change?: boolean } | null)
+      ?.has_pending_category_change;
+
+    // Per-category post-save state, derived from the param the handler
+    // just sent + the live value:
+    //   param === null              → unchanged from pendingBefore
+    //   param !== null, !== live    → pending now exists (queued)
+    //   param !== null, === live    → RPC will clear pending (cancelled)
+    type Cat = "steps" | "workouts" | "calories" | "water";
+    const sent: Record<Cat, boolean | null> = {
+      steps: pendingSteps,
+      workouts: pendingWorkouts,
+      calories: pendingCalories,
+      water: pendingWater,
+    };
+    const before = initial.pendingExistedBefore;
+    const live = initial.live;
+    const after: Record<Cat, boolean> = {
+      steps:
+        sent.steps === null
+          ? before.steps
+          : sent.steps !== live.steps,
+      workouts:
+        sent.workouts === null
+          ? before.workouts
+          : sent.workouts !== live.workouts,
+      calories:
+        sent.calories === null
+          ? before.calories
+          : sent.calories !== live.calories,
+      water:
+        sent.water === null
+          ? before.water
+          : sent.water !== live.water,
+    };
+    // Queued: any category that did NOT have a pending before but does
+    // after — a fresh queue this save. (A user replacing one pending
+    // with a different pending value is a no-op semantically since
+    // pending state is binary; the value just gets overwritten.)
+    const anyQueued = (["steps", "workouts", "calories", "water"] as Cat[])
+      .some((c) => after[c] && !before[c]);
+    // Cancelled: any category that had a pending before but doesn't
+    // after.
+    const anyCancelled = (["steps", "workouts", "calories", "water"] as Cat[])
+      .some((c) => before[c] && !after[c]);
 
     // Pass 20e: when the pack name changes, insert a pack_renamed system
     // message and fire a push. Same insert + 23505 catch pattern as
@@ -243,24 +309,45 @@ export default function EditPackScreen() {
       }
     }
 
-    // Toast: branch on (nameChanged, hasPendingCategoryChange).
-    // `hasPendingCategoryChange` reflects the post-save pending state,
-    // so a user who opened with pending=on and didn't touch the toggles
-    // still gets the "applies next period" message — accurate, the
-    // queued change is still pending.
+    // Toast: branch on (nameChanged, anyQueued, anyCancelled). The
+    // cancel and both-happened branches are checked BEFORE noChanges so
+    // a revert never falls through to "No changes." Six category-
+    // related variants cover the cross-product of name × (queued /
+    // cancelled / both); the "both queued AND cancelled in one save"
+    // case uses the "updated" wording rather than enumerating sides.
     const period = pack.competition_window === "monthly" ? "month" : "week";
-    if (nameChanged && hasPendingCategoryChange) {
+    if (nameChanged && anyQueued && anyCancelled) {
+      showToast({
+        message: packEdit.toast.bothChangedCategoriesUpdated,
+        kind: "success",
+      });
+    } else if (nameChanged && anyQueued) {
       showToast({
         message: t(packEdit.toast.bothChangedCategories, { period }),
         kind: "success",
       });
-    } else if (nameChanged) {
-      showToast({ message: packEdit.toast.nameUpdated, kind: "success" });
-    } else if (hasPendingCategoryChange) {
+    } else if (nameChanged && anyCancelled) {
+      showToast({
+        message: packEdit.toast.bothChangedCategoriesCancelled,
+        kind: "success",
+      });
+    } else if (anyQueued && anyCancelled) {
+      showToast({
+        message: packEdit.toast.categoriesUpdated,
+        kind: "success",
+      });
+    } else if (anyQueued) {
       showToast({
         message: t(packEdit.toast.categoriesApplyAt, { period }),
         kind: "success",
       });
+    } else if (anyCancelled) {
+      showToast({
+        message: packEdit.toast.categoriesCancelled,
+        kind: "success",
+      });
+    } else if (nameChanged) {
+      showToast({ message: packEdit.toast.nameUpdated, kind: "success" });
     } else {
       showToast({ message: packEdit.toast.noChanges, kind: "info" });
     }

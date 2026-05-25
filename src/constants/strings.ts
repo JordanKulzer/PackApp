@@ -442,16 +442,24 @@ export const packEdit = {
     nameUpdated: "Pack name updated",
     goalsApplyAt: "Goal changes apply {date}",
     bothChanged: "Pack updated · Goals apply {date}",
-    // Phase 2 toast variants — category-only and name+category combined.
-    // {period} interpolates "week" or "month". Wording is deliberate:
-    // the rename is IMMEDIATE (update_pack_settings writes the name to
-    // the live column on the spot), and ONLY the category changes are
-    // deferred to rollover. The combined string leads with "Pack
-    // renamed" (past-tense, already-applied) so the trailing "category
-    // changes apply next [period]" clause reads as scoped to the
-    // category changes only, not the entire save.
+    // Phase 2 toast variants. {period} interpolates "week" or "month".
+    // Wording is deliberate: the rename is IMMEDIATE
+    // (update_pack_settings writes the name to the live column on the
+    // spot), and ONLY the category changes are deferred to rollover.
+    // The "Pack renamed" past-tense lead-in scopes the trailing clause
+    // to category changes, not the entire save.
+    //
+    // The six category-related variants cover the cross-product of
+    // (name changed yes/no) × (queued, cancelled, both). "Updated" is
+    // the catch-all wording for a save that BOTH queued AND cancelled
+    // in one go — the toast doesn't enumerate which side did what; the
+    // banner + Edit Pack form already show the post-save state.
     categoriesApplyAt: "Category changes apply next {period}.",
+    categoriesCancelled: "Category change cancelled.",
+    categoriesUpdated: "Category changes updated.",
     bothChangedCategories: "Pack renamed · Category changes apply next {period}.",
+    bothChangedCategoriesCancelled: "Pack renamed · Category change cancelled.",
+    bothChangedCategoriesUpdated: "Pack renamed · Category changes updated.",
     noChanges: "No changes",
   },
   validation: {
