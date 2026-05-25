@@ -554,7 +554,7 @@ export default function RecapScreen() {
             );
             const isMe = !!userId && cw.winnerUserIds.includes(userId);
             return (
-              <View key={category} style={[s.champRow, isMe && s.rowMe]}>
+              <View key={category} style={s.champRow}>
                 {/* Per-category icon (was a Crown). Crown is reserved for
                     overall winners now; this site labels WHICH category
                     was won. Neutral colors.member — the surrounding
@@ -568,7 +568,10 @@ export default function RecapScreen() {
                 <Text style={s.champCategory}>
                   {CATEGORY_LABELS[category]}
                 </Text>
-                <Text style={s.champName} numberOfLines={1}>
+                <Text
+                  style={[s.champName, isMe && s.nameSelf]}
+                  numberOfLines={1}
+                >
                   {label}
                 </Text>
                 <Text style={s.champDays}>
@@ -630,10 +633,7 @@ export default function RecapScreen() {
                 : 0;
             const isMe = !!userId && standing.userId === userId;
             return (
-              <View
-                key={standing.userId}
-                style={[s.standingRow, isMe && s.rowMe]}
-              >
+              <View key={standing.userId} style={s.standingRow}>
                 <Text style={s.standingRank}>#{standing.rank}</Text>
                 <AvatarCircle
                   name={standing.displayName}
@@ -643,7 +643,10 @@ export default function RecapScreen() {
                 />
                 <View style={s.standingInfo}>
                   <View style={s.standingMeta}>
-                    <Text style={s.standingName} numberOfLines={1}>
+                    <Text
+                      style={[s.standingName, isMe && s.nameSelf]}
+                      numberOfLines={1}
+                    >
                       {formatName(standing.displayName, standing.rank)}
                     </Text>
                     <Text style={s.standingWins}>
@@ -660,7 +663,7 @@ export default function RecapScreen() {
                           backgroundColor:
                             standing.rank === 1
                               ? colors.leader
-                              : colors.accent,
+                              : colors.barNeutral,
                         },
                       ]}
                     />
@@ -676,10 +679,7 @@ export default function RecapScreen() {
             // Empty standings (no winners at all) → zero-win tie at #1.
             const sharedRank = run.standings.length + 1;
             return (
-              <View
-                key={zwm.userId}
-                style={[s.standingRow, isMe && s.rowMe]}
-              >
+              <View key={zwm.userId} style={s.standingRow}>
                 <Text style={s.standingRank}>#{sharedRank}</Text>
                 <AvatarCircle
                   name={zwm.displayName}
@@ -689,7 +689,10 @@ export default function RecapScreen() {
                 />
                 <View style={s.standingInfo}>
                   <View style={s.standingMeta}>
-                    <Text style={s.standingName} numberOfLines={1}>
+                    <Text
+                      style={[s.standingName, isMe && s.nameSelf]}
+                      numberOfLines={1}
+                    >
                       {formatName(zwm.displayName, sharedRank)}
                     </Text>
                     <Text style={s.standingWins}>0 wins</Text>
@@ -700,7 +703,7 @@ export default function RecapScreen() {
                         s.barFill,
                         {
                           width: "0%" as `${number}%`,
-                          backgroundColor: colors.accent,
+                          backgroundColor: colors.barNeutral,
                         },
                       ]}
                     />
@@ -823,13 +826,11 @@ const s = StyleSheet.create({
     letterSpacing: 1.0,
     marginBottom: 12,
   },
-  // Viewer's own row highlight (Category Champions + standings).
-  rowMe: {
-    backgroundColor: "rgba(47,129,247,0.10)",
-    borderRadius: 8,
-    marginHorizontal: -8,
-    paddingHorizontal: 8,
-  },
+  // Self-identity marker — the user's NAME goes blue (colors.self),
+  // no row background tint. App-wide consolidation: every row-level
+  // self-highlight is a name-color change. The earlier rowMe bg tint
+  // here was inconsistent with chat/feed/grid/home and is retired.
+  nameSelf: { color: colors.self },
   // Category Champions rows
   champRow: {
     flexDirection: "row",

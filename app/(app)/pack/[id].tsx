@@ -621,14 +621,14 @@ function WeekDetailSheet({
                 const isFirst = standing.rank === 1;
                 const isMe = standing.userId === currentUserId;
                 return (
-                  <View
-                    key={standing.userId}
-                    style={[wdS.standingRow, isMe && wdS.standingRowMe]}
-                  >
+                  <View key={standing.userId} style={wdS.standingRow}>
                     <Text style={[wdS.sRank, isFirst && wdS.sRankGold]}>
                       #{standing.rank}
                     </Text>
-                    <Text style={wdS.sName} numberOfLines={1}>
+                    <Text
+                      style={[wdS.sName, isMe && wdS.sNameSelf]}
+                      numberOfLines={1}
+                    >
                       {formatName(
                         isMe && currentUser
                           ? currentUser.displayName
@@ -653,12 +653,12 @@ function WeekDetailSheet({
             {zeroWinStandingsMembers.map((m) => {
               const isMe = m.userId === currentUserId;
               return (
-                <View
-                  key={m.userId}
-                  style={[wdS.standingRow, isMe && wdS.standingRowMe]}
-                >
+                <View key={m.userId} style={wdS.standingRow}>
                   <Text style={wdS.sRank}>—</Text>
-                  <Text style={wdS.sName} numberOfLines={1}>
+                  <Text
+                    style={[wdS.sName, isMe && wdS.sNameSelf]}
+                    numberOfLines={1}
+                  >
                     {formatName(
                       isMe && currentUser
                         ? currentUser.displayName
@@ -809,7 +809,7 @@ function WeekDetailSheet({
                     return (
                       <TouchableOpacity
                         key={score.userId}
-                        style={[wdS.memberCard, isMe && wdS.memberCardMe]}
+                        style={wdS.memberCard}
                         onPress={() => toggleMember(score.userId)}
                         activeOpacity={0.75}
                       >
@@ -820,7 +820,10 @@ function WeekDetailSheet({
                             their expanded card carries plain values or
                             the "No activity logged" message. */}
                         <View style={wdS.memberHeaderRow}>
-                          <Text style={wdS.dayName} numberOfLines={1}>
+                          <Text
+                            style={[wdS.dayName, isMe && wdS.dayNameSelf]}
+                            numberOfLines={1}
+                          >
                             {formatName(
                               isMe && currentUser
                                 ? currentUser.displayName
@@ -1002,18 +1005,15 @@ const wdS = StyleSheet.create({
     paddingVertical: 8,
     gap: 8,
   },
-  standingRowMe: {
-    backgroundColor: colors.selfBgSubtle,
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    marginHorizontal: -6,
-  },
   sRank: { width: 26, fontSize: 12, fontWeight: "600", color: C.textTertiary },
   sRankGold: { color: colors.leader },
   sName: { flex: 1, fontSize: 14, fontWeight: "500", color: C.textSecondary },
-  // Stage D: sNameMe removed. The blue self-tint already lives on
-  // standingRowMe (row background); a redundant blue/bold on the name
-  // was a second self-marker doing the same job.
+  // Self-identity marker — app-wide consolidation: the user's NAME goes
+  // blue (colors.self), no row background tint. Reverses the earlier
+  // "Stage D removed sNameMe in favor of the bg tint" decision; the
+  // bg-tint approach was inconsistent with chat/feed/grid/home and the
+  // unified treatment is now name-color.
+  sNameSelf: { color: colors.self, fontWeight: "600" },
   sPts: { fontSize: 13, fontWeight: "600", color: C.textTertiary },
   sPtsGold: { color: colors.leader },
   // Category Champions (completed runs)
@@ -1120,12 +1120,6 @@ const wdS = StyleSheet.create({
     borderBottomColor: C.border,
     gap: 4,
   },
-  memberCardMe: {
-    backgroundColor: colors.selfBgDim,
-    borderRadius: 6,
-    paddingHorizontal: 4,
-    marginHorizontal: -4,
-  },
   // Stage B-revised: memberCardEmpty (the 0.6-opacity dim for hasNoData
   // rows) removed. Every row renders at full weight; missing data shows
   // through plain values + the "No activity logged" expanded message
@@ -1143,9 +1137,10 @@ const wdS = StyleSheet.create({
   },
   dayRankFirst: { color: colors.leader },
   dayName: { flexShrink: 1, fontSize: 14, fontWeight: "600", color: C.textPrimary },
-  // Stage D: dayNameMe removed. memberCardMe (the row background tint)
-  // is the single self-marker; the redundant accent-blue name color
-  // doubled up on the same signal.
+  // Self-identity marker for the daily-breakdown member card name.
+  // Same app-wide treatment as sNameSelf above — blue name (colors.self),
+  // no row bg tint.
+  dayNameSelf: { color: colors.self },
   dayPts: { fontSize: 13, fontWeight: "600", color: C.textSecondary },
   dayPtsFirst: { color: colors.leader },
   noActivityText: {

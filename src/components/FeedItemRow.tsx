@@ -30,6 +30,7 @@ import { ReactionPills } from "./ReactionPills";
 import { useCurrentUser } from "../context/CurrentUserContext";
 import { formatName, getInitial } from "../lib/displayName";
 import type { ActivityCategory } from "../lib/activityCategoryMap";
+import { colors } from "../theme/colors";
 import {
   getSignedUrl,
   deletePhoto,
@@ -494,7 +495,7 @@ const s = StyleSheet.create({
     flexShrink: 1,
   },
   nameSelf: {
-    color: "#0A84FF",
+    color: colors.self,
   },
   actionLine: {
     marginTop: 1,

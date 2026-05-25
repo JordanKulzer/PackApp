@@ -18,10 +18,20 @@ export const colors = {
   leader:       "#E3A000",               // amber/gold — whoever is #1
   leaderBg:     "#2A1D00",               // dark container bg for leader badge
   leaderBorder: "#B07D00",               // border for leader badge container
-  self:         "#2F81F7",               // blue — current user
-  selfBgDim:    "rgba(47,129,247,0.06)", // subtle self-row highlight
-  selfBgSubtle: "rgba(47,129,247,0.08)", // medium self-row highlight
-  selfBgLight:  "rgba(47,129,247,0.15)", // light self-badge background
+  self:         "#2F81F7",               // blue — current user (NAME color on rows)
+  // selfBgDim / selfBgLight are RETAINED for non-self-identity uses:
+  // selfBgDim → cardPro background, selfBgLight → "Active" badge bg.
+  // The earlier selfBgSubtle (0.08) is gone — its only consumer was the
+  // History tab self-row tint, which was removed in the app-wide
+  // self-highlight consolidation (name-color is the single treatment).
+  selfBgDim:    "rgba(47,129,247,0.06)",
+  selfBgLight:  "rgba(47,129,247,0.15)",
   member:       "#8B949E",               // neutral grey — all other members (ring + name)
+  // Neutral fill for non-leader PROGRESS BARS — same slate family as the
+  // bar track (#1F2937) so the fill reads as "fill, not identity." Pulled
+  // out as its own token to keep colors.self / colors.accent reserved for
+  // their actual semantic roles (self-identity / UI chrome) instead of
+  // doubling as bar decoration.
+  barNeutral:   "#4B5563",
   accent:       "#2563EB",               // UI chrome: buttons, toggles, active states
 } as const;

@@ -43,10 +43,13 @@ if (
 
 // Color rule (mirrors src/theme/colors.ts — keep in sync):
 //   colors.leader (#E3A000 gold)  → leader-only signal: #1 rank, leader name,
-//                                   leader's points, leader's ring arc.
+//                                   leader's points, leader's ring arc, the
+//                                   leader's progress bar fill.
 //   colors.self / C.accent (blue) → self-identity + UI chrome: own row border,
 //                                   own name, day picker active button,
-//                                   tab indicator, progress bars.
+//                                   tab indicator.
+//   colors.barNeutral (slate)     → non-leader progress bar fill (was blue,
+//                                   collided with self).
 //   C.success (green)             → achievement signal: 100% bar fill, goal-hit.
 //   C.danger (red)                → destructive only: delete actions, errors.
 //
@@ -468,7 +471,7 @@ function CategoryBar({
         <Animated.View
           style={[
             s.goalBarFill,
-            { width, backgroundColor: isLeader ? colors.leader : C.accent },
+            { width, backgroundColor: isLeader ? colors.leader : colors.barNeutral },
           ]}
         />
       </View>

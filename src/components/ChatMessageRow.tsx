@@ -25,6 +25,7 @@ import type { AnchorPosition } from "./MessageActionMenu";
 import { ReactionPills } from "./ReactionPills";
 import { formatName, getInitial } from "../lib/displayName";
 import { getSignedUrl } from "../lib/photoUpload";
+import { colors } from "../theme/colors";
 
 interface Props {
   message: ChatMessage & {
@@ -168,7 +169,6 @@ export function ChatMessageRow({
     <Pressable
       style={({ pressed }) => [
         s.row,
-        isMe && s.rowSelf,
         isGrouped && s.rowGrouped,
         pressed && message.is_deleted ? null : null,
       ]}
@@ -290,9 +290,6 @@ const s = StyleSheet.create({
     paddingBottom: 8,
     alignItems: "flex-start",
   },
-  rowSelf: {
-    backgroundColor: "rgba(10, 132, 255, 0.06)",
-  },
   // Grouped continuation rows still need ~6pt of vertical breathing room
   // so the per-row smileys distribute rhythmically across the group's
   // vertical extent instead of clumping into a stuttering vertical stack.
@@ -350,7 +347,7 @@ const s = StyleSheet.create({
     flexShrink: 1,
   },
   nameSelf: {
-    color: "#0A84FF",
+    color: colors.self,
   },
   bodyRow: {
     flexDirection: "row",
