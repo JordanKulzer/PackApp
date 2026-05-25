@@ -320,24 +320,38 @@ export const activity = {
  * Pack recap — end-of-run celebration. Headlines are
  * viewer-adaptive (3g-core): the recap screen picks a key by the
  * viewer's result, then interpolates {period}/{place}/{categories}/
- * {winner}. Provisional copy — voice review pending.
+ * {winner}.
  * ============================================================ */
 export const recap = {
-  cta: "Back to your pack →",
+  cta: "Back to your pack",
   headline: {
-    youWon: "You won the {period}",
-    youPodium: "You finished {place}",
-    youCategory: "You owned {categories} this {period}",
-    winnerWon: "{winner} won the {period}",
-    quietRun: "A quiet {period}",
+    youWon: "You won the {period}.",
+    youPodium: "{place} place. So close.",
+    youCategory: "You owned {categories}.",
+    winnerWon: "{winner} took the {period}.",
+    quietRun: "A quiet {period}.",
   },
   // Hero subtitle — run-shape flavor, branched on the wins margin.
+  // SELF-VOICE: paired with the youWon headline (the reader IS the
+  // winner — "you" is correct).
   flavor: {
-    solo: "You had the trail to yourself.",
-    tie: "A dead heat at the top.",
-    runaway: "A clear run from the front.",
-    close: "Decided by a single day.",
-    standard: "Every category was contested.",
+    solo: "You showed up. Nobody else did.",
+    tie: "Down to the wire — you barely took it.",
+    runaway: "Wire to wire. Not even close.",
+    close: "One day. That's all it came down to.",
+    standard: "You fought for every category. And won.",
+  },
+  // OBSERVER VOICE: paired with the winnerWon headline on the quiet
+  // run branch (someone else won — the reader is a non-winner viewer,
+  // "you" would be wrong). Mirrors `flavor`'s keys 1:1; the same wins-
+  // margin branches pick the matching variant. {winner} interpolates
+  // the winner's display name; {period} interpolates "week" / "month".
+  flavorObserver: {
+    solo: "{winner} showed up. Nobody else did.",
+    tie: "Down to the wire — {winner} barely took it.",
+    runaway: "Wire to wire. {winner} ran away with it.",
+    close: "One day. That's all it came down to.",
+    standard: "Every category was a fight this {period}.",
   },
 } as const;
 

@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 import { CategoryIcon } from "../../../../src/components/CategoryIcon";
 import { useAuthStore } from "../../../../src/stores/authStore";
 import { supabase } from "../../../../src/lib/supabase";
@@ -85,6 +86,7 @@ function ordinalPlace(rank: number): string {
 // Run-shape flavor for the hero subtitle, branched on the WINS margin
 // (3g-core — the old points-margin logic is gone). A close finish is a
 // 1-win gap; a runaway is a wide gap.
+// Self-voice — paired with the youWon headline (the reader is the winner).
 function pickFlavor(run: CompletedRunHistory): string {
   const st = run.standings;
   if (st.length <= 1) return recap.flavor.solo;
@@ -93,6 +95,30 @@ function pickFlavor(run: CompletedRunHistory): string {
   if (margin >= 4) return recap.flavor.runaway;
   if (margin <= 1) return recap.flavor.close;
   return recap.flavor.standard;
+}
+
+// Observer voice — paired with the winnerWon headline on the quiet run
+// branch (a non-winner viewer reading about someone else's win; "you"
+// would be wrong). Same wins-margin branching as pickFlavor; reads from
+// recap.flavorObserver and interpolates {winner} / {period} via t().
+function pickFlavorObserver(
+  run: CompletedRunHistory,
+  winner: string,
+  period: string,
+): string {
+  const st = run.standings;
+  let template: string;
+  if (st.length <= 1) {
+    template = recap.flavorObserver.solo;
+  } else if (st.filter((m) => m.rank === 1).length >= 2) {
+    template = recap.flavorObserver.tie;
+  } else {
+    const margin = st[0].totalWins - st[1].totalWins;
+    if (margin >= 4) template = recap.flavorObserver.runaway;
+    else if (margin <= 1) template = recap.flavorObserver.close;
+    else template = recap.flavorObserver.standard;
+  }
+  return t(template, { winner, period });
 }
 
 // Viewer-adaptive headline + subtitle. Branches on viewerResult first,
@@ -133,7 +159,10 @@ function pickRecapHeadline(
               winner: winnerLabel,
               period,
             }),
-            subtitle: pickFlavor(run),
+            // Observer voice — the reader is NOT the winner here.
+            // pickFlavor (self-voice) would render "you fought for every
+            // category. And won." paired with a third-person headline.
+            subtitle: pickFlavorObserver(run, winnerLabel, period),
           }
         : { headline: t(recap.headline.quietRun, { period }), subtitle: "" };
   }
@@ -150,14 +179,40 @@ function formatDateRange(startedAt: string, endedAt: string): string {
   return `${MONTHS[s.getMonth()]} ${s.getDate()} – ${MONTHS[e.getMonth()]} ${e.getDate()}`;
 }
 
+// Non-winner ring palette — present-but-understated frames that give the
+// hero avatar a sense of place without competing with the winner's gold
+// burst. Refined hex values (not garish), keyed off ViewerResult:
+//   - podium rank 2: refined silver
+//   - podium rank 3: refined bronze
+//   - category-champion / quiet: muted neutral
+// The overall-winner kind returns undefined — the goldBurst glow IS the
+// treatment, no ring needed.
+const RING_SILVER = "#C7CFD8";
+const RING_BRONZE = "#C58A4A";
+const RING_MUTED = "#4B5563";
+
+function ringColorForViewer(viewer: ViewerResult): string | undefined {
+  if (viewer.kind === "overall-winner") return undefined;
+  if (viewer.kind === "podium") {
+    return viewer.standing?.rank === 2 ? RING_SILVER : RING_BRONZE;
+  }
+  // category-champion or quiet
+  return RING_MUTED;
+}
+
 function AvatarCircle({
   name,
   size,
   bg,
+  ringColor,
 }: {
   name: string;
   size: number;
   bg: string;
+  // When provided, frames the disc with a 4pt ring of the given color.
+  // The 4pt border eats into the inner content area; on a 72pt disc that
+  // leaves ~64pt of fill, still comfortable for the centered initial.
+  ringColor?: string;
 }) {
   const initial = getInitial(name);
   return (
@@ -169,6 +224,9 @@ function AvatarCircle({
         backgroundColor: bg,
         alignItems: "center",
         justifyContent: "center",
+        ...(ringColor
+          ? { borderWidth: 4, borderColor: ringColor }
+          : null),
       }}
     >
       <Text
@@ -338,11 +396,18 @@ export default function RecapScreen() {
                 },
               ]}
             >
-              {heroIsWinner && <Text style={s.trophy}>🏆</Text>}
+              {heroIsWinner && (
+                <Ionicons
+                  name="trophy"
+                  size={34}
+                  color={colors.leader}
+                />
+              )}
               <AvatarCircle
                 name={heroName}
                 size={72}
                 bg={heroIsWinner ? colors.leader : colors.accent}
+                ringColor={ringColorForViewer(viewerResult)}
               />
             </Animated.View>
           </View>
@@ -578,7 +643,6 @@ const s = StyleSheet.create({
     backgroundColor: colors.leader,
   },
   heroAvatarInner: { alignItems: "center", gap: 6 },
-  trophy: { fontSize: 44 },
   headlineText: {
     fontSize: 24,
     fontWeight: "700",
