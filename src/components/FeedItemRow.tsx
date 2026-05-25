@@ -101,6 +101,23 @@ function actionPhrase(item: FeedItem): string {
       // route here (TimelineRow conditional routing); the matching phrase
       // mirrors SystemMessageRow's tone for cross-surface consistency.
       return "took the lead 👑";
+    // ── Intentional-sharing Phase 2: manual-share variants ──────────
+    // Rendered by FeedItemRow (NOT routed to SystemMessageRow — these
+    // are user-initiated social posts, not system events). Tone mirrors
+    // the existing auto-post phrasing but framed as a share.
+    case "steps_share":
+      return `shared their ${item.value.toLocaleString()} steps`;
+    case "calories_share":
+      return `shared their ${item.value.toLocaleString()} calories`;
+    case "water_share":
+      return `shared their ${item.value} oz of water`;
+    case "workout_share":
+      // Reuse the category verb when present (e.g. "shared their yoga"),
+      // fall back to a plain "shared a workout" for null/"other".
+      if (item.category && item.category !== "other") {
+        return `shared their ${item.category.replace(/_/g, " ")}`;
+      }
+      return "shared a workout";
     default:
       // all_goals etc. route to SystemMessageRow; this fallback covers any
       // unknown future type.
@@ -230,12 +247,15 @@ export function FeedItemRow({
           </TouchableOpacity>
         )}
 
-        {/* Caption — daily_winner + took_lead enriched posts. Pass
-            25-followup-E.2.b.iii-fix-2 extended the condition so
-            user-authored took_lead captions render. */}
-        {(item.activityType === "daily_winner" ||
-          item.activityType === "took_lead") &&
-        item.caption ? (
+        {/* Caption — render whenever the row has one, regardless of
+            activityType. Phase 2 fix B: the prior gate restricted this
+            to daily_winner + took_lead, which silently swallowed
+            captions on _share rows. A type-gated caption is fragile
+            (every new captioned activity_type has to remember to
+            update the gate); "show the caption if there is one" is
+            the correct rule and is retroactively correct for the
+            existing gated types too. */}
+        {item.caption ? (
           <Text style={s.caption}>{item.caption}</Text>
         ) : null}
 

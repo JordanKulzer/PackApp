@@ -291,7 +291,11 @@ export function usePackTimeline(
       .on(
         "postgres_changes",
         {
-          event: "INSERT",
+          // Phase 2 fix A: was "INSERT" — caught the share's initial row
+          // but missed the post-upload `photo_url` UPDATE, so shared
+          // photos didn't appear until the next manual refetch. Matches
+          // the chat_messages subscription below (which already uses "*").
+          event: "*",
           schema: "public",
           table: "activity_feed",
           filter: `pack_id=eq.${packId}`,

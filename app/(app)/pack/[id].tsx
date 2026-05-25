@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
+  ActionSheetIOS,
   Alert,
   Animated,
   View,
@@ -52,6 +53,9 @@ import { usePackTimeline } from "../../../src/hooks/usePackTimeline";
 import { TimelineRow } from "../../../src/components/TimelineRow";
 import { ChatInputBar } from "../../../src/components/ChatInputBar";
 import { FeedItemRow } from "../../../src/components/FeedItemRow";
+// Intentional-sharing Phase 2: the manual Share composer + its emit shape.
+import { SharePostSheet } from "../../../src/components/SharePostSheet";
+import type { ShareContext, ShareKind } from "../../../src/lib/sharePost";
 import { ReactionPicker } from "../../../src/components/ReactionPicker";
 import {
   MessageActionMenu,
@@ -1679,9 +1683,15 @@ const INITIAL_SETTLE_MS = 1500;
 function ChatTab({
   packId,
   currentUserId,
+  packName,
+  packTimezone,
 }: {
   packId: string;
   currentUserId: string | undefined;
+  // Intentional-sharing Phase 2: SharePostSheet needs packName for the
+  // header subtitle and packTimezone to compute the share's score_date.
+  packName: string;
+  packTimezone: string;
 }) {
   // usePackTimeline owns sort order + chat_messages fetch + writes.
   // useActivityFeed remains the source of truth for activity-row reactions
@@ -1695,6 +1705,11 @@ function ChatTab({
     editMessage,
     softDeleteMessage,
     toggleChatReaction,
+    // Phase 2 fix A: explicit refetch after a share post. Belt-and-
+    // suspenders against the activity_feed realtime path — if the
+    // table isn't in supabase_realtime, the subscription tweak alone
+    // wouldn't deliver the row; the explicit refetch guarantees it.
+    refetch: refetchTimeline,
   } = usePackTimeline(packId, currentUserId);
   const {
     items: activityItems,
@@ -1710,6 +1725,107 @@ function ChatTab({
     useState<ChatMessage | null>(null);
   const [actionMenuAnchor, setActionMenuAnchor] =
     useState<AnchorPosition | null>(null);
+
+  // Intentional-sharing Phase 2: SharePostSheet state. `share` is the
+  // resolved ShareContext (kind + value + category). `openingShare`
+  // flips true while we run the kind-picker → daily_scores fetch round-
+  // trip so the button can show a spinner state.
+  const [share, setShare] = useState<ShareContext | null>(null);
+  const [openingShare, setOpeningShare] = useState(false);
+
+  // Standalone "Share an activity" launcher.
+  //
+  // STUB-LEVEL UX per Phase 2 brief: the primary entry path is Phase 3's
+  // post-log banner (which knows the kind + value from the log). This
+  // standalone launch is a secondary entry — it asks the user which
+  // category, then fetches today's daily_scores to seed the value, and
+  // opens the sheet. Workout subcategory defaults to NULL ("Workout")
+  // here — picking from 15 categories balloons the prompt and is the
+  // banner's job (the banner has the original log's category in scope).
+  //
+  // TODO(Phase 3): replace this with the banner entry path. Keep this
+  // standalone button as a fallback / always-on entry point.
+  const handleOpenShare = useCallback(async () => {
+    if (!currentUserId || openingShare) return;
+
+    const pickKind = (): Promise<ShareKind | null> =>
+      new Promise((resolve) => {
+        if (Platform.OS === "ios") {
+          ActionSheetIOS.showActionSheetWithOptions(
+            {
+              title: "Share an activity",
+              options: ["Steps", "Workout", "Calories", "Water", "Cancel"],
+              cancelButtonIndex: 4,
+            },
+            (idx: number) => {
+              if (idx === 0) resolve("steps_share");
+              else if (idx === 1) resolve("workout_share");
+              else if (idx === 2) resolve("calories_share");
+              else if (idx === 3) resolve("water_share");
+              else resolve(null);
+            },
+          );
+        } else {
+          Alert.alert("Share an activity", undefined, [
+            { text: "Steps", onPress: () => resolve("steps_share") },
+            { text: "Workout", onPress: () => resolve("workout_share") },
+            { text: "Calories", onPress: () => resolve("calories_share") },
+            { text: "Water", onPress: () => resolve("water_share") },
+            { text: "Cancel", style: "cancel", onPress: () => resolve(null) },
+          ]);
+        }
+      });
+
+    const kind = await pickKind();
+    if (!kind) return;
+
+    setOpeningShare(true);
+    try {
+      // Today's day-total for the chosen category, in the pack's tz.
+      // Falls back to 0 if there's no daily_scores row yet — the user
+      // can still share a caption / photo without a numeric anchor.
+      const scoreDate = packToday(packTimezone);
+      const { data: scoreRow } = await supabase
+        .from("daily_scores")
+        .select("steps_count, calories_count, water_oz_count, workout_count")
+        .eq("user_id", currentUserId)
+        .eq("score_date", scoreDate)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const row = scoreRow as
+        | {
+            steps_count: number | null;
+            calories_count: number | null;
+            water_oz_count: number | null;
+            workout_count: number | null;
+          }
+        | null;
+
+      const value =
+        kind === "steps_share"
+          ? row?.steps_count ?? 0
+          : kind === "calories_share"
+            ? row?.calories_count ?? 0
+            : kind === "water_share"
+              ? row?.water_oz_count ?? 0
+              : row?.workout_count ?? 0; // workout_share
+
+      setShare({
+        kind,
+        userId: currentUserId,
+        packId,
+        packName,
+        scoreDate,
+        value,
+        // Standalone path doesn't know the workout subcategory — leave
+        // undefined; SharePostSheet falls back to "Workout".
+      });
+    } finally {
+      setOpeningShare(false);
+    }
+  }, [currentUserId, openingShare, packId, packName, packTimezone]);
 
   // ReactionPicker state — agnostic to target type. The picker fires
   // a single onToggle(emoji) callback; we route to either
@@ -2154,6 +2270,30 @@ function ChatTab({
           opened: Platform.OS === "ios" ? 84 : 64,
         }}
       >
+        {/* Intentional-sharing Phase 2: "Share an activity" launcher.
+            A pill above the chat composer. The primary entry path
+            ships in Phase 3 (post-log banner inside the LogSheet);
+            this is the standalone fallback so the feature is always
+            discoverable from chat. */}
+        <View style={chatTabS.shareLauncherRow}>
+          <TouchableOpacity
+            style={chatTabS.shareLauncher}
+            onPress={handleOpenShare}
+            disabled={openingShare || !currentUserId}
+            activeOpacity={0.7}
+          >
+            {openingShare ? (
+              <ActivityIndicator size="small" color="#8B949E" />
+            ) : (
+              <>
+                <Ionicons name="share-outline" size={14} color="#8B949E" />
+                <Text style={chatTabS.shareLauncherText}>
+                  Share an activity
+                </Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
         <ChatInputBar
           onSend={handleSend}
           onEdit={handleEdit}
@@ -2161,6 +2301,25 @@ function ChatTab({
           onCancelEdit={() => setEditingMessage(null)}
         />
       </KeyboardStickyView>
+      {/* Intentional-sharing Phase 2: SharePostSheet. Rendered when
+          `share` is non-null (resolved by handleOpenShare or, in
+          Phase 3, the post-log banner). */}
+      {share && (
+        <SharePostSheet
+          visible={!!share}
+          onDismiss={() => setShare(null)}
+          onPosted={() => {
+            // Phase 2 fix A: explicit refetch on share success. The
+            // activity_feed realtime path may not deliver (if the table
+            // isn't in supabase_realtime); this guarantees the new row
+            // (with caption + photo_url already settled by createSharePost)
+            // lands in the timeline immediately.
+            setShare(null);
+            refetchTimeline();
+          }}
+          share={share}
+        />
+      )}
       <ReactionPicker
         visible={!!pickerTarget && !!pickerAnchor}
         onClose={closePicker}
@@ -2208,6 +2367,34 @@ const chatTabS = StyleSheet.create({
     fontSize: 14,
     color: "#8A8A8E",
     textAlign: "center",
+  },
+  // Intentional-sharing Phase 2: "Share an activity" launcher above the
+  // chat composer. Centered pill, quiet treatment — the post-log banner
+  // (Phase 3) is the primary entry path; this is a low-emphasis standalone
+  // fallback so the feature is always reachable from chat.
+  shareLauncherRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 4,
+    backgroundColor: "#0B0F14",
+  },
+  shareLauncher: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#30363D",
+    backgroundColor: "#121821",
+  },
+  shareLauncherText: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#8B949E",
   },
 });
 
@@ -2696,7 +2883,12 @@ export default function PackScreen() {
         {/* ChatTab manages its own internal scroll + KeyboardAvoidingView,
             so the page slot is a flex column rather than a ScrollView. */}
         <View style={{ width: screenWidth, flex: 1 }}>
-          <ChatTab packId={pack.id} currentUserId={user?.id} />
+          <ChatTab
+            packId={pack.id}
+            currentUserId={user?.id}
+            packName={pack.name}
+            packTimezone={pack.timezone ?? "UTC"}
+          />
         </View>
 
         {/* ── PAGE 2: HISTORY ────────────────────────────────────────── */}

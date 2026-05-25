@@ -29,7 +29,14 @@ export interface FeedItem {
     | "all_goals"
     | "goals_updated"
     | "pack_renamed"
-    | "daily_winner";
+    | "daily_winner"
+    // Intentional-sharing Phase 2: manual-share variants. The DB CHECK
+    // constraint already accepts these (migration 20260510); rows are
+    // emitted by SharePostSheet via createSharePost.
+    | "steps_share"
+    | "workout_share"
+    | "calories_share"
+    | "water_share";
   value: number;
   pointsEarned: number;
   createdAt: string;
