@@ -63,10 +63,21 @@ export interface Pack {
   // Pending goal-target changes (Pass 20). NULL = no pending change for
   // that field. Applied to the live target at the next run rollover and
   // cleared. pending_changes_at is a single timestamp covering the entire
-  // pending state (D3 — overwrite on re-edit).
+  // pending state (D3 — overwrite on re-edit). Goal-removal Part 1
+  // stopped writing the *_target columns but kept them on the table; the
+  // rollover RPC still clears them defensively.
   pending_step_target: number | null;
   pending_calorie_target: number | null;
   pending_water_target_oz: number | null;
+  // Pending category-enable changes (Phase 2 — migration 20260525).
+  // NULL = no pending change for that category. Applied to the live
+  // *_enabled column at the next run rollover and cleared. Same
+  // pending_changes_at timestamp covers these alongside the goal-target
+  // pendings as a single unit.
+  pending_steps_enabled: boolean | null;
+  pending_workouts_enabled: boolean | null;
+  pending_calories_enabled: boolean | null;
+  pending_water_enabled: boolean | null;
   pending_changes_at: string | null;
 }
 

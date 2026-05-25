@@ -430,11 +430,28 @@ export const packEdit = {
     // Orphan — section header now carries the queueing message. Kept for
     // potential future reuse (e.g., banner on Pack Detail).
     queueHint: "Goal changes apply at the start of next week's run.",
+    // Phase 2 (Edit Pack categories): the four category toggles + the
+    // inline hint shown when any toggle currently differs from the live
+    // value (a pending change exists, queued to apply at rollover).
+    // {period} interpolates "week" or "month" off the pack's
+    // competition_window.
+    categoriesLabel: "Categories",
+    categoriesPendingHint: "Changes take effect at the next {period}.",
   },
   toast: {
     nameUpdated: "Pack name updated",
     goalsApplyAt: "Goal changes apply {date}",
     bothChanged: "Pack updated · Goals apply {date}",
+    // Phase 2 toast variants — category-only and name+category combined.
+    // {period} interpolates "week" or "month". Wording is deliberate:
+    // the rename is IMMEDIATE (update_pack_settings writes the name to
+    // the live column on the spot), and ONLY the category changes are
+    // deferred to rollover. The combined string leads with "Pack
+    // renamed" (past-tense, already-applied) so the trailing "category
+    // changes apply next [period]" clause reads as scoped to the
+    // category changes only, not the entire save.
+    categoriesApplyAt: "Category changes apply next {period}.",
+    bothChangedCategories: "Pack renamed · Category changes apply next {period}.",
     noChanges: "No changes",
   },
   validation: {
@@ -442,6 +459,10 @@ export const packEdit = {
     calorieRange: "Calorie target must be between 100 and 2,000",
     waterRange: "Water target must be between 16 and 256 oz",
     nameRequired: "Pack name can't be empty",
+    // Phase 2: matches the RPC's server-side check
+    // ('At least one category must remain enabled') — client-side guard
+    // blocks the save before the RPC sees an all-disabled payload.
+    atLeastOneCategory: "At least one category must be enabled",
   },
 } as const;
 

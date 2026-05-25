@@ -69,6 +69,7 @@ import type { FeedItem } from "../../../src/hooks/useActivityFeed";
 import { useHealthKit } from "../../../src/hooks/useHealthKit";
 import { RulesSheet } from "../../../src/components/RulesSheet";
 import { InviteSheet } from "../../../src/components/InviteSheet";
+import { PendingCategoryBanner } from "../../../src/components/PendingCategoryBanner";
 import { supabase } from "../../../src/lib/supabase";
 import { formatName } from "../../../src/lib/displayName";
 import { useScoreStore } from "../../../src/stores/scoreStore";
@@ -2890,6 +2891,13 @@ export default function PackScreen() {
           </View>
         </View>
       </View>
+
+      {/* Pending-category-change banner (Phase 2.5). Renders nothing
+          unless the pack has any pending_*_enabled queued. Mounted
+          above the tab bar so the notice appears on every tab page
+          without per-page duplication. Auto-clears at rollover when
+          the RPC nulls the pending columns. */}
+      <PendingCategoryBanner pack={packData.pack} />
 
       {/* In-screen tab bar */}
       <InScreenTabBar
