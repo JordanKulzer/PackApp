@@ -2855,6 +2855,47 @@ export default function PackScreen() {
             />
           }
         >
+          {/* TEMP DEV-ONLY scaffold: pops the orphaned recap screen so we
+              can preview it before designing the real once-per-new-run
+              trigger. __DEV__-gated — cannot ship to production. DELETE
+              this block when the real trigger lands. */}
+          {__DEV__ && (
+            <TouchableOpacity
+              onPress={async () => {
+                const { data, error } = await supabase
+                  .from("runs")
+                  .select("id")
+                  .eq("pack_id", pack.id)
+                  .eq("status", "completed")
+                  .order("end_date", { ascending: false })
+                  .limit(1)
+                  .maybeSingle();
+                if (error || !data) {
+                  Alert.alert("DEV", "No completed run for this pack");
+                  return;
+                }
+                router.push({
+                  pathname: "/pack/recap/[id]",
+                  params: {
+                    id: (data as { id: string }).id,
+                    packId: pack.id,
+                  },
+                } as any);
+              }}
+              style={{
+                backgroundColor: "#7F1D1D",
+                paddingVertical: 10,
+                paddingHorizontal: 16,
+                borderRadius: 6,
+                marginBottom: 12,
+                alignSelf: "flex-start",
+              }}
+            >
+              <Text style={{ color: "#FFF", fontWeight: "700" }}>
+                DEV: View Recap
+              </Text>
+            </TouchableOpacity>
+          )}
           {scoresLoading ? (
             <View style={s.loadingBox}>
               <ActivityIndicator size="small" color={C.textTertiary} />

@@ -4,6 +4,12 @@ import { analytics } from "../lib/analytics";
 import { FEATURE_FLAGS } from "../lib/featureFlags";
 import type { ActivityCategory } from "../lib/activityCategoryMap";
 
+// Monotonic counter — gives each realtime channel a globally-unique name
+// so concurrent hook instances / effect re-runs never share a channel
+// with the memoized-by-name cache supabase-js maintains. Mirrors the
+// proven pattern from usePackCategoryStandings.
+let channelSeq = 0;
+
 // Reaction emoji is now an open string — the picker decides which set to
 // offer. Existing legacy values ('💪' '🔥' '👏') still render in pills if
 // present in old rows; new reactions come from the 6-emoji picker set.
@@ -198,7 +204,7 @@ export function useActivityFeed(packId: string, currentUserId: string | undefine
     fetchFeed();
 
     const channel = supabase
-      .channel(`feed-${packId}`)
+      .channel(`feed-${packId}-${++channelSeq}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "activity_feed", filter: `pack_id=eq.${packId}` },

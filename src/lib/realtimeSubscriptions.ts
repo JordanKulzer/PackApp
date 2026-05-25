@@ -1,5 +1,12 @@
 import { supabase } from "./supabase";
 
+// Monotonic counter — gives each realtime channel a globally-unique name
+// so concurrent hook instances / effect re-runs never share a channel
+// with the memoized-by-name cache supabase-js maintains. Mirrors the
+// proven pattern from usePackCategoryStandings (which calls this
+// channelSeq too) — see its comment block for the bug it prevents.
+let channelSeq = 0;
+
 /**
  * Subscribe to realtime score changes for a single run.
  *
@@ -28,7 +35,7 @@ export function subscribeToRunScores(
   consumerKey: string,
 ): () => void {
   const channel = supabase
-    .channel(`scores-${consumerKey}-${runId}`)
+    .channel(`scores-${consumerKey}-${runId}-${++channelSeq}`)
     .on(
       "postgres_changes",
       {
@@ -89,7 +96,7 @@ export function subscribeToAchievementInserts(
   consumerKey: string,
 ): () => void {
   const channel = supabase
-    .channel(`achievements-${consumerKey}-${userId}`)
+    .channel(`achievements-${consumerKey}-${userId}-${++channelSeq}`)
     .on(
       "postgres_changes",
       {

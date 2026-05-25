@@ -21,6 +21,12 @@ import type { ActivityCategory } from "../lib/activityCategoryMap";
 
 const MAX_BODY_LENGTH = 1000;
 
+// Monotonic counter — gives each realtime channel a globally-unique name
+// so concurrent hook instances / effect re-runs never share a channel
+// with the memoized-by-name cache supabase-js maintains. Mirrors the
+// proven pattern from usePackCategoryStandings.
+let channelSeq = 0;
+
 type ActivityReactionRow = {
   feed_item_id: string;
   user_id: string;
@@ -289,7 +295,7 @@ export function usePackTimeline(
     // both own and other users (own actions go through optimistic state
     // first; realtime echo settles the final state via refetch).
     const channel = supabase
-      .channel(`timeline-${packId}`)
+      .channel(`timeline-${packId}-${++channelSeq}`)
       .on(
         "postgres_changes",
         {
