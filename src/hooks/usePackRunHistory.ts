@@ -30,6 +30,7 @@ export type RunCategoryWinner = {
 export type RunMemberStanding = {
   userId: string;
   displayName: string;
+  avatarUrl: string | null;
   totalWins: number;
   rank: number; // dense rank by totalWins desc (1,1,3,…)
 };
@@ -42,6 +43,7 @@ export type RunMemberStanding = {
 export type ZeroWinMember = {
   userId: string;
   displayName: string;
+  avatarUrl: string | null;
 };
 
 export type CompletedRunHistory = {
@@ -151,15 +153,17 @@ export function usePackRunHistory(packId: string): {
         }
         for (const uid of rosterIds) userIdSet.add(uid);
         const nameMap: Record<string, string> = {};
+        const avatarMap: Record<string, string | null> = {};
         if (userIdSet.size > 0) {
           const usersRes = await supabase
             .from("users")
-            .select("id, display_name")
+            .select("id, display_name, avatar_url")
             .in("id", Array.from(userIdSet));
           if (usersRes.error) throw usersRes.error;
           if (cancelled) return;
           for (const u of usersRes.data ?? []) {
             nameMap[u.id] = u.display_name ?? "Member";
+            avatarMap[u.id] = u.avatar_url ?? null;
           }
         }
 
@@ -219,6 +223,7 @@ export function usePackRunHistory(packId: string): {
             .map(([userId, totalWins]) => ({
               userId,
               displayName: nameMap[userId] ?? "Member",
+              avatarUrl: avatarMap[userId] ?? null,
               totalWins,
             }))
             .sort((a, b) =>
@@ -243,6 +248,7 @@ export function usePackRunHistory(packId: string): {
             .map((uid) => ({
               userId: uid,
               displayName: nameMap[uid] ?? "Member",
+              avatarUrl: avatarMap[uid] ?? null,
             }))
             .sort((a, b) => a.displayName.localeCompare(b.displayName));
 

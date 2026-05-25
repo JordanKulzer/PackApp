@@ -8,10 +8,12 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
+  Image,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import Svg, { Defs, RadialGradient, Stop, Circle } from "react-native-svg";
 import { CategoryIcon } from "../../../../src/components/CategoryIcon";
 import { useAuthStore } from "../../../../src/stores/authStore";
 import { supabase } from "../../../../src/lib/supabase";
@@ -205,6 +207,7 @@ function AvatarCircle({
   size,
   bg,
   ringColor,
+  avatarUrl,
 }: {
   name: string;
   size: number;
@@ -213,6 +216,12 @@ function AvatarCircle({
   // The 4pt border eats into the inner content area; on a 72pt disc that
   // leaves ~64pt of fill, still comfortable for the centered initial.
   ringColor?: string;
+  // When provided, renders the user's profile photo clipped to the disc.
+  // Falls back to the initial letter when null/undefined (or if the
+  // photo fails to load — Image error states aren't surfaced here, but
+  // the initial sits BEHIND the Image so a failed load shows the disc
+  // fill, not a broken-image placeholder; pragmatic for this surface).
+  avatarUrl?: string | null;
 }) {
   const initial = getInitial(name);
   return (
@@ -224,20 +233,31 @@ function AvatarCircle({
         backgroundColor: bg,
         alignItems: "center",
         justifyContent: "center",
+        // overflow:hidden clips the Image to the circular shape.
+        // Without it the Image renders square over the disc.
+        overflow: "hidden",
         ...(ringColor
           ? { borderWidth: 4, borderColor: ringColor }
           : null),
       }}
     >
-      <Text
-        style={{
-          fontSize: Math.round(size * 0.4),
-          fontWeight: "700",
-          color: "#FFFFFF",
-        }}
-      >
-        {initial}
-      </Text>
+      {avatarUrl ? (
+        <Image
+          source={{ uri: avatarUrl }}
+          style={{ width: "100%", height: "100%" }}
+          resizeMode="cover"
+        />
+      ) : (
+        <Text
+          style={{
+            fontSize: Math.round(size * 0.4),
+            fontWeight: "700",
+            color: "#FFFFFF",
+          }}
+        >
+          {initial}
+        </Text>
+      )}
     </View>
   );
 }
@@ -254,6 +274,14 @@ export default function RecapScreen() {
   // Celebration flourish — fires once when the viewer is the overall
   // winner. Built-in Animated only; no confetti dependency.
   const flourish = useRef(new Animated.Value(0)).current;
+  // Continuous PULSE on the winner glow only — a clear swell-and-fade
+  // with a perceptible beat (the prior "breathe" with a 12-20% amplitude
+  // on a 5-7s cycle read as nearly static on device; a pulse with a
+  // wider opacity dip + visible scale grow on a ~2.4s cycle reads as a
+  // calm heartbeat). Multiplied against the entrance transforms so the
+  // entrance plays out normally before the pulse takes over as the
+  // steady-state loop.
+  const pulse = useRef(new Animated.Value(0)).current;
 
   // Recap copy needs "week"/"month" — CompletedRunHistory doesn't carry
   // the pack's competition_window, so fetch it directly. Defaults to
@@ -290,6 +318,32 @@ export default function RecapScreen() {
       }).start();
     }
   }, [viewerResult?.kind, flourish]);
+
+  // Continuous pulse — only when the viewer is the overall winner.
+  // ~2.4s full cycle (1.2s each half), sine-eased so the swell-and-ease
+  // reads as a heartbeat rather than a hard on/off. Native driver so
+  // the loop doesn't contend with the JS thread (it runs forever).
+  useEffect(() => {
+    if (viewerResult?.kind !== "overall-winner") return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 1200,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 1200,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [viewerResult?.kind, pulse]);
 
   if (isLoading) {
     return (
@@ -328,6 +382,10 @@ export default function RecapScreen() {
     viewerResult.kind === "quiet"
       ? winners[0]?.displayName ?? ""
       : viewerResult.standing?.displayName ?? "";
+  const heroAvatarUrl =
+    viewerResult.kind === "quiet"
+      ? winners[0]?.avatarUrl ?? null
+      : viewerResult.standing?.avatarUrl ?? null;
   // Degenerate run (no category wins at all) → no winner to show.
   const showHeroAvatar = !(
     viewerResult.kind === "quiet" && winners.length === 0
@@ -339,10 +397,18 @@ export default function RecapScreen() {
 
   return (
     <ScrollView style={s.scroll} contentContainerStyle={s.content}>
-      {/* Header */}
+      {/* Header — chevron-back + "Back" text + date label below.
+          Matches pack/create.tsx's chevron + text pattern (white,
+          flexDirection: row, gap 4) for cross-screen consistency. */}
       <View style={[s.header, { paddingTop: insets.top + 8 }]}>
-        <TouchableOpacity onPress={() => router.back()} activeOpacity={0.7}>
-          <Text style={s.backText}>← Back</Text>
+        <TouchableOpacity
+          onPress={() => router.back()}
+          activeOpacity={0.7}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          style={s.backBtn}
+        >
+          <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
+          <Text style={s.backText}>Back</Text>
         </TouchableOpacity>
         <Text style={s.weekLabel}>
           {period === "month" ? "Month" : "Week"} of{" "}
@@ -361,24 +427,81 @@ export default function RecapScreen() {
           >
             {isWinnerView && (
               <Animated.View
+                pointerEvents="none"
                 style={[
                   s.goldBurst,
                   {
-                    opacity: flourish.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0, 0.28],
-                    }),
+                    // Entrance opacity × pulse opacity swing.
+                    // The gradient itself defines the visual softness;
+                    // the View's opacity scales the whole halo. Pulse
+                    // band 45→75% gives a clear dip-and-swell that
+                    // reads as a heartbeat (the prior 80→100% breathe
+                    // band was too tight to perceive on device).
+                    opacity: Animated.multiply(
+                      flourish,
+                      pulse.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0.45, 0.75],
+                      }),
+                    ),
                     transform: [
                       {
-                        scale: flourish.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [0.4, 1],
-                        }),
+                        // Entrance scale × pulse scale swell
+                        // (1.00 → 1.12 = 12% — a visible grow each
+                        // beat, paired with the opacity dip so the
+                        // pulse reads as both bigger and brighter at
+                        // its peak).
+                        scale: Animated.multiply(
+                          flourish.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [0.4, 1],
+                          }),
+                          pulse.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [1, 1.12],
+                          }),
+                        ),
                       },
                     ],
                   },
                 ]}
-              />
+              >
+                {/* Real radial gradient — centre-bright gold, fading to
+                    transparent at the bounding-box edge. SVG is sized
+                    140 inside a 120 wrap (no overflow:hidden on the
+                    wrap), so the falloff softly spills past the wrap
+                    boundary instead of clipping. Stops are a reasonable
+                    first pass; expect a visual tuning round on device. */}
+                <Svg width={140} height={140}>
+                  <Defs>
+                    <RadialGradient
+                      id="winnerGlow"
+                      cx="50%"
+                      cy="50%"
+                      r="50%"
+                      fx="50%"
+                      fy="50%"
+                    >
+                      <Stop
+                        offset="0%"
+                        stopColor={colors.leader}
+                        stopOpacity={0.55}
+                      />
+                      <Stop
+                        offset="55%"
+                        stopColor={colors.leader}
+                        stopOpacity={0.18}
+                      />
+                      <Stop
+                        offset="100%"
+                        stopColor={colors.leader}
+                        stopOpacity={0}
+                      />
+                    </RadialGradient>
+                  </Defs>
+                  <Circle cx="70" cy="70" r="70" fill="url(#winnerGlow)" />
+                </Svg>
+              </Animated.View>
             )}
             <Animated.View
               style={[
@@ -408,6 +531,7 @@ export default function RecapScreen() {
                 size={72}
                 bg={heroIsWinner ? colors.leader : colors.accent}
                 ringColor={ringColorForViewer(viewerResult)}
+                avatarUrl={heroAvatarUrl}
               />
             </Animated.View>
           </View>
@@ -511,6 +635,12 @@ export default function RecapScreen() {
                 style={[s.standingRow, isMe && s.rowMe]}
               >
                 <Text style={s.standingRank}>#{standing.rank}</Text>
+                <AvatarCircle
+                  name={standing.displayName}
+                  size={32}
+                  bg={standing.rank === 1 ? colors.leader : colors.accent}
+                  avatarUrl={standing.avatarUrl}
+                />
                 <View style={s.standingInfo}>
                   <View style={s.standingMeta}>
                     <Text style={s.standingName} numberOfLines={1}>
@@ -551,6 +681,12 @@ export default function RecapScreen() {
                 style={[s.standingRow, isMe && s.rowMe]}
               >
                 <Text style={s.standingRank}>#{sharedRank}</Text>
+                <AvatarCircle
+                  name={zwm.displayName}
+                  size={32}
+                  bg={colors.accent}
+                  avatarUrl={zwm.avatarUrl}
+                />
                 <View style={s.standingInfo}>
                   <View style={s.standingMeta}>
                     <Text style={s.standingName} numberOfLines={1}>
@@ -603,10 +739,17 @@ const s = StyleSheet.create({
   // non-notch / smaller-status-bar devices.
   header: {
     paddingHorizontal: 16,
-    paddingBottom: 12,
+    paddingBottom: 6,
     gap: 8,
   },
-  backText: { color: "#9CA3AF", fontSize: 15, fontWeight: "500" },
+  backBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    padding: 4,
+    alignSelf: "flex-start",
+  },
+  backText: { fontSize: 16, color: "#FFFFFF", fontWeight: "400" },
   weekLabel: {
     fontSize: 13,
     color: "#9CA3AF",
@@ -616,16 +759,18 @@ const s = StyleSheet.create({
   // Hero — viewer-adaptive celebration block.
   hero: {
     alignItems: "center",
-    paddingVertical: 16,
+    paddingVertical: 10,
     paddingHorizontal: 24,
     gap: 10,
   },
-  // Wrap is sized for the winner's goldBurst glow (160×160). Non-winner
-  // views override to a tight ~avatar+12 box via heroAvatarWrapTight so
-  // they don't inherit the giant empty halo the glow needs.
+  // Winner wrap shrunk from 160 → 120: with the SVG radial gradient
+  // replacing the flat-disc burst, the feathered halo reads softer-and-
+  // larger than its pixel footprint, so the wrap can compress without
+  // losing celebration weight. Non-winner views still override to the
+  // tight 84 box via heroAvatarWrapTight (Pass 1, unchanged).
   heroAvatarWrap: {
-    width: 160,
-    height: 160,
+    width: 120,
+    height: 120,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -633,14 +778,20 @@ const s = StyleSheet.create({
     width: 84,
     height: 84,
   },
-  // Soft radial gold glow behind the winner avatar — a plain View (no
-  // confetti / blur dependency); opacity + scale animate in via `flourish`.
+  // Centers the SVG radial-gradient layer behind the trophy + avatar.
+  // The SVG (140×140) intentionally overflows the wrap (120×120) by
+  // ~10pt on each side so the gradient's falloff fades softly past the
+  // wrap boundary instead of clipping at the wrap edge. The wrap has
+  // no overflow:hidden, so the spill renders. No backgroundColor here
+  // — the gold comes from the SVG gradient stops.
   goldBurst: {
     position: "absolute",
-    width: 160,
-    height: 160,
-    borderRadius: 80,
-    backgroundColor: colors.leader,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: "center",
+    justifyContent: "center",
   },
   heroAvatarInner: { alignItems: "center", gap: 6 },
   headlineText: {

@@ -1213,6 +1213,7 @@ function PastRunsSection({
   categoryStandings,
   pack,
   memberNameMap,
+  memberAvatarMap,
   isPro,
 }: {
   packId: string;
@@ -1221,6 +1222,7 @@ function PastRunsSection({
   categoryStandings: PackCategoryStandings | null;
   pack: Pack;
   memberNameMap: Map<string, string>;
+  memberAvatarMap: Map<string, string | null>;
   isPro: boolean;
 }) {
   const router = useRouter();
@@ -1263,6 +1265,7 @@ function PastRunsSection({
       .map((m) => ({
         userId: m.userId,
         displayName: memberNameMap.get(m.userId) ?? "Member",
+        avatarUrl: memberAvatarMap.get(m.userId) ?? null,
         totalWins: m.totalWins,
       }))
       .sort((a, b) =>
@@ -2950,6 +2953,7 @@ export default function PackScreen() {
             categoryStandings={categoryStandings}
             pack={pack}
             memberNameMap={memberNameMap}
+            memberAvatarMap={memberAvatarMap}
             isPro={isPro}
           />
           <View style={{ height: 40 }} />
