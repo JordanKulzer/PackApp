@@ -43,7 +43,30 @@ const FEATURES = [
   { icon: "infinite-outline", text: "Unlimited packs" },
   { icon: "people-outline", text: "Up to 25 members per pack" },
   { icon: "calendar-outline", text: "Weekly & monthly competition windows" },
-  { icon: "bar-chart-outline", text: "Full history & trends" },
+  { icon: "bar-chart-outline", text: "Full pack history" },
+];
+
+// Roadmap — planned but not yet built. Rendered in a visually-distinct
+// "Coming Soon" section so TestFlight testers don't mistake them for
+// live features. Muted row treatment + accent "Soon" tag mirrors the
+// integration rows in app/(app)/profile/index.tsx (Fitbit / Oura /
+// Whoop) for app-wide consistency.
+const COMING_SOON = [
+  {
+    icon: "trending-up-outline",
+    label: "Trends",
+    subtitle: "Progress charts and stats over time",
+  },
+  {
+    icon: "ribbon-outline",
+    label: "Badges",
+    subtitle: "Earn achievement badges",
+  },
+  {
+    icon: "color-palette-outline",
+    label: "Cosmetics",
+    subtitle: "Ring colors, profile effects, and more",
+  },
 ];
 
 export default function Paywall() {
@@ -234,6 +257,28 @@ export default function Paywall() {
               <Text style={s.featureText}>{f.text}</Text>
             </View>
           ))}
+        </View>
+
+        {/* Coming Soon — roadmap, visually distinct from current perks so
+            TestFlight testers don't mistake them for live features. */}
+        <View style={s.comingSoonSection}>
+          <Text style={s.comingSoonHeader}>COMING SOON</Text>
+          <View style={s.comingSoonList}>
+            {COMING_SOON.map((c) => (
+              <View key={c.label} style={s.comingSoonRow}>
+                <Ionicons
+                  name={c.icon as "trending-up-outline"}
+                  size={18}
+                  color={C.textSecondary}
+                />
+                <View style={s.comingSoonTextCol}>
+                  <Text style={s.comingSoonLabel}>{c.label}</Text>
+                  <Text style={s.comingSoonSubtitle}>{c.subtitle}</Text>
+                </View>
+                <Text style={s.comingSoonTag}>Soon</Text>
+              </View>
+            ))}
+          </View>
         </View>
 
         {/* Plan selector */}
@@ -449,6 +494,31 @@ const s = StyleSheet.create({
   },
   featureRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   featureText: { fontSize: 14, color: C.textPrimary, flex: 1 },
+
+  // Coming Soon — muted treatment so testers can tell roadmap rows apart
+  // from current perks at a glance. "Soon" tag matches the accent-colored
+  // trailing chip on profile/index.tsx integration rows.
+  comingSoonSection: { gap: 8 },
+  comingSoonHeader: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 1.2,
+    color: C.textTertiary,
+    marginLeft: 4,
+  },
+  comingSoonList: {
+    backgroundColor: C.surface,
+    borderRadius: 14,
+    padding: 16,
+    gap: 14,
+    borderWidth: 0.5,
+    borderColor: C.border,
+  },
+  comingSoonRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  comingSoonTextCol: { flex: 1, gap: 2 },
+  comingSoonLabel: { fontSize: 14, color: C.textSecondary, fontWeight: "600" },
+  comingSoonSubtitle: { fontSize: 12, color: C.textTertiary },
+  comingSoonTag: { fontSize: 14, color: C.accent, fontWeight: "600" },
 
   plans: { gap: 10 },
   planCard: {
