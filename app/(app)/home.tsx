@@ -24,7 +24,7 @@ import {
   type ScoreRow,
 } from "../../src/hooks/usePackCategoryStandings";
 import { packToday } from "../../src/lib/packDates";
-import { usePackRunHistory } from "../../src/hooks/usePackRunHistory";
+import { fetchPreviousRunWinnerIds } from "../../src/hooks/usePackRunHistory";
 import { supabase } from "../../src/lib/supabase";
 import { formatName } from "../../src/lib/displayName";
 import { PackMemberDisplay } from "../../src/components/PackMemberDisplay";
@@ -85,6 +85,13 @@ interface HomePackData {
   // after the card mounts and the hook cold-fetches. null when the
   // pack has no active run (matches the hook's runId-null branch).
   initialStandings: PackCategoryStandings | null;
+  // Pre-fetched rank-1 winners of the pack's most recent completed
+  // run — used to draw the crown overlay on the corresponding member
+  // avatars. Pre-fetching here lets the gate (scoresLoaded) wait for
+  // it so the crown paints correctly on first frame (no cascade).
+  // Empty array for packs with no completed runs yet, or on fetch
+  // error (safe degradation — card shows no crown).
+  previousRunWinnerIds: string[];
 }
 
 // One mini-ring cell — a roster member joined with their wins standing.
@@ -536,14 +543,15 @@ function DarkPackCard({
     data?.initialStandings ?? null,
   );
 
-  // Completed-run history — used to identify the previous run's pack
-  // winner(s) for the Crown signal on each member card. Mirrors the
-  // Compete tab's derivation (pack/[id].tsx → wonPreviousRun on
-  // GridEntry) so the two surfaces agree.
-  const { completedRuns } = usePackRunHistory(pack.id);
-  const previousRunWinnerIds = (completedRuns[0]?.standings ?? [])
-    .filter((s) => s.rank === 1)
-    .map((s) => s.userId);
+  // Previous-run rank-1 winners — drives the crown overlay on member
+  // cards. Pre-fetched by Home's fetchPackMembers via
+  // fetchPreviousRunWinnerIds, passed down on data. Was previously a
+  // per-card usePackRunHistory cold-fetch on mount; hoisting it
+  // eliminates the crown cascade (the rings hoist already eliminated
+  // the ring cascade). Mirrors the Compete tab's derivation
+  // (pack/[id].tsx → wonPreviousRun on GridEntry) so the two surfaces
+  // still agree.
+  const previousRunWinnerIds = data?.previousRunWinnerIds ?? [];
 
   const members = data?.members ?? [];
   const hasActivity = members.length > 0;
@@ -971,7 +979,12 @@ export default function Home() {
         // hook via initialData so rings paint correctly on first
         // frame (no cascade). Realtime subscriptions stay in the hook.
         const today = packToday(pack.timezone);
-        const [usersResult, winnersResult, scoresResult] = await Promise.all([
+        const [
+          usersResult,
+          winnersResult,
+          scoresResult,
+          previousRunWinnerIds,
+        ] = await Promise.all([
           supabase
             .from("users")
             .select("id, display_name, avatar_url")
@@ -988,6 +1001,10 @@ export default function Home() {
             )
             .eq("run_id", run.id)
             .eq("score_date", today),
+          // Crown hoist: rank-1 winners of the pack's most recent
+          // completed run. Pure one-shot helper — no realtime to
+          // preserve. Errors degrade safely to [] inside the helper.
+          fetchPreviousRunWinnerIds(pack.id),
         ]);
 
         const nameMap: Record<string, string> = {};
@@ -1037,6 +1054,7 @@ export default function Home() {
           runEnd: run.end_date,
           runId: run.id,
           initialStandings,
+          previousRunWinnerIds,
         };
       }),
     );

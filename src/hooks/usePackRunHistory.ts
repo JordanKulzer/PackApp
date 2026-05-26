@@ -281,3 +281,85 @@ export function usePackRunHistory(packId: string): {
 
   return { completedRuns, isLoading, error };
 }
+
+// One-shot helper for callers that only need the rank-1 winners of the
+// pack's MOST RECENT completed run (the DarkPackCard's crown overlay).
+// Equivalent to `usePackRunHistory(packId).completedRuns[0].standings
+// .filter(s => s.rank === 1).map(s => s.userId)`, but skips the
+// hook-level overhead: limit(1) instead of limit(10), no roster/users
+// joins (only user IDs are returned), no React state.
+//
+// Used by Home's fetchPackMembers to pre-fetch the crown set so the
+// gate (scoresLoaded) waits for it — same "no cascade on first paint"
+// rationale as the rings hoist. Completed runs are immutable, so this
+// has no realtime subscription to preserve; it's a pure one-shot.
+//
+// Returns [] on any error or when the pack has no completed runs yet —
+// safe degradation: the card simply shows no crowns, no visual fallout.
+export async function fetchPreviousRunWinnerIds(
+  packId: string,
+): Promise<string[]> {
+  try {
+    // 1. Most-recently-ended completed run for this pack. limit(1) is
+    // the only difference from the hook's limit(10) — we don't need
+    // older runs.
+    const { data: runRow, error: runErr } = await supabase
+      .from("runs")
+      .select("id")
+      .eq("pack_id", packId)
+      .eq("status", "completed")
+      .order("end_date", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (runErr) {
+      console.warn(
+        "[fetchPreviousRunWinnerIds] runs select error:",
+        runErr,
+      );
+      return [];
+    }
+    if (!runRow) return []; // no completed runs yet (new pack)
+    const runId = (runRow as { id: string }).id;
+
+    // 2. All daily_winners rows for that run (excluding legacy
+    // category). Same filter as the hook's winnersRes.
+    const { data: winnerRows, error: winErr } = await supabase
+      .from("daily_winners")
+      .select("category, winner_user_ids")
+      .eq("run_id", runId)
+      .neq("category", "legacy");
+    if (winErr) {
+      console.warn(
+        "[fetchPreviousRunWinnerIds] daily_winners select error:",
+        winErr,
+      );
+      return [];
+    }
+    const rows = (winnerRows ?? []) as Array<{
+      category: Category;
+      winner_user_ids: string[];
+    }>;
+    if (rows.length === 0) return []; // run had no winners (degenerate)
+
+    // 3. Same tally as the hook's standings build: count category-day
+    // winner memberships across all categories per user, then return
+    // every uid tied at the max (rank-1 set, ties first-class). Skips
+    // the display-name / avatar joins the hook does — the card only
+    // needs the user IDs.
+    const winsByUser: Record<string, number> = {};
+    for (const r of rows) {
+      for (const uid of r.winner_user_ids) {
+        winsByUser[uid] = (winsByUser[uid] ?? 0) + 1;
+      }
+    }
+    const counts = Object.values(winsByUser);
+    if (counts.length === 0) return [];
+    const maxWins = Math.max(...counts);
+    return Object.entries(winsByUser)
+      .filter(([, wins]) => wins === maxWins)
+      .map(([uid]) => uid);
+  } catch (err) {
+    console.warn("[fetchPreviousRunWinnerIds] error:", err);
+    return [];
+  }
+}
