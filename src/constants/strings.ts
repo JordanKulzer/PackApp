@@ -472,6 +472,23 @@ export const packEdit = {
     // blocks the save before the RPC sees an all-disabled payload.
     atLeastOneCategory: "At least one category must be enabled",
   },
+  // Phase 4: owner-removes-member surface. Section title + per-member
+  // affordance strings + confirmation copy. {name} interpolates the
+  // target member's display name via t().
+  members: {
+    sectionLabel: "Members",
+    removeButton: "Remove",
+    confirmTitle: "Remove {name}?",
+    confirmBody:
+      "They'll lose access to this pack. Past activity stays in the history. They can rejoin via the invite code.",
+    confirmRemove: "Remove",
+    confirmCancel: "Cancel",
+    toastRemoved: "{name} removed",
+    // Mapped from the RPC's "Target user is not an active member..."
+    // exception when the local member list is stale and we send a stale
+    // user id. Surfaced as a softer client-side message.
+    toastAlreadyRemoved: "Already removed",
+  },
 } as const;
 
 /* ============================================================

@@ -34,6 +34,8 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  Alert,
+  Image,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useAuthStore } from "../../../../src/stores/authStore";
@@ -45,6 +47,8 @@ import { packToday } from "../../../../src/lib/packDates";
 import { colors } from "../../../../src/theme/colors";
 import { packEdit, t } from "../../../../src/constants/strings";
 import { ActivityToggleRow } from "../../../../src/components/profile/ActivityToggleRow";
+import { removeMember } from "../../../../src/lib/packLifecycle";
+import { formatName, getInitial } from "../../../../src/lib/displayName";
 
 // Goal-removal Part 1: bounds (STEP_MIN/MAX, CALORIE_MIN/MAX, WATER_MIN/MAX),
 // the formatNextRunDate / computeNextRunStart helpers, and the
@@ -96,7 +100,8 @@ export default function EditPackScreen() {
   const { id: packId } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
-  const { data: packData, isLoading: packLoading } = usePack(packId ?? null);
+  const { data: packData, isLoading: packLoading, refetch: refetchPack } =
+    usePack(packId ?? null);
 
   const [name, setName] = useState("");
   const [stepsEnabled, setStepsEnabled] = useState(true);
@@ -355,6 +360,57 @@ export default function EditPackScreen() {
     router.dismiss();
   };
 
+  // Phase 4: owner removes a member.
+  //
+  // Confirmation: native Alert with destructive style on the confirm
+  // button. The RPC raises if the target isn't a current active member
+  // (stale UI / double-tap race); that's surfaced as a friendly
+  // "Already removed" toast rather than a raw RPC message. All other
+  // RPC errors surface their message verbatim.
+  //
+  // On success: refetchPack to drop the removed row from the list
+  // immediately (usePack auto-refetches on focus but Edit Pack stays
+  // mounted while the user is still here). No optimistic update — the
+  // RPC round-trip is short and the auth gate is server-side, so we
+  // wait for the truth before mutating local state.
+  const handleRemoveMember = (memberUserId: string, memberName: string) => {
+    if (!packData) return;
+    const packId = packData.pack.id;
+    Alert.alert(
+      t(packEdit.members.confirmTitle, { name: memberName }),
+      packEdit.members.confirmBody,
+      [
+        { text: packEdit.members.confirmCancel, style: "cancel" },
+        {
+          text: packEdit.members.confirmRemove,
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await removeMember(packId, memberUserId);
+              await refetchPack();
+              showToast({
+                message: t(packEdit.members.toastRemoved, { name: memberName }),
+                kind: "success",
+              });
+            } catch (e) {
+              const msg = (e as Error).message ?? "";
+              if (/not an active member/i.test(msg)) {
+                showToast({
+                  message: packEdit.members.toastAlreadyRemoved,
+                  kind: "info",
+                });
+                // Refresh so the stale row disappears for the next try.
+                await refetchPack();
+              } else {
+                showToast({ message: msg || "Failed to remove", kind: "error" });
+              }
+            }
+          },
+        },
+      ],
+    );
+  };
+
   // Loading or pending owner-redirect — render the spinner. The owner
   // gate's router.dismiss() runs in an effect; until it does, returning
   // early keeps the form from flashing for non-owners.
@@ -480,6 +536,84 @@ export default function EditPackScreen() {
           )}
         </View>
 
+        {/* Phase 4: Members list. Owner-only screen (the owner gate
+            above bounces non-owners), so every viewer here is the
+            owner. Per-row Remove visible for every member EXCEPT the
+            owner's own row (the RPC rejects self-removal; don't surface
+            an always-erroring button). Data: usePack already fetches
+            members filtered to is_active=true with the joined user
+            row, so no extra fetch is needed. */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>
+            {packEdit.members.sectionLabel}
+          </Text>
+          <View style={styles.memberList}>
+            {packData.members.map((m, idx) => {
+              // The PackMemberWithUser TypeScript interface claims a
+              // nested `.user` object, but the actual SELECT in usePack
+              // is `"*, users(*)"` — PostgREST returns the joined row
+              // under the TABLE name `users` (plural), not `user`. The
+              // interface is a lie at runtime. Pack Detail's
+              // memberNameMap/memberAvatarMap build (pack/[id].tsx
+              // ~lines 2716-2729) uses the same cast — mirroring it
+              // here keeps both consumers reading the field that
+              // actually exists.
+              const u = (
+                m as unknown as {
+                  users: {
+                    display_name: string | null;
+                    avatar_url: string | null;
+                  } | null;
+                }
+              ).users;
+              const rawName = u?.display_name ?? null;
+              const avatarUrl = u?.avatar_url ?? null;
+              const isOwn = m.user_id === user.id;
+              const displayName = formatName(rawName);
+              const initial = getInitial(rawName);
+              return (
+                <View
+                  key={m.user_id}
+                  style={[
+                    styles.memberRow,
+                    idx === packData.members.length - 1 &&
+                      styles.memberRowLast,
+                  ]}
+                >
+                  <View style={styles.memberAvatar}>
+                    {avatarUrl ? (
+                      <Image
+                        source={{ uri: avatarUrl }}
+                        style={styles.memberAvatarImage}
+                      />
+                    ) : (
+                      <Text style={styles.memberAvatarInitial}>
+                        {initial}
+                      </Text>
+                    )}
+                  </View>
+                  <Text style={styles.memberName} numberOfLines={1}>
+                    {displayName}
+                  </Text>
+                  {!isOwn && (
+                    <TouchableOpacity
+                      onPress={() =>
+                        handleRemoveMember(m.user_id, displayName)
+                      }
+                      style={styles.memberRemoveBtn}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Text style={styles.memberRemoveText}>
+                        {packEdit.members.removeButton}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              );
+            })}
+          </View>
+        </View>
+
         {error && (
           <View style={styles.errorBanner}>
             <Text style={styles.errorText}>{error}</Text>
@@ -552,6 +686,61 @@ const styles = StyleSheet.create({
     color: "#9CA3AF",
     marginTop: 4,
     paddingHorizontal: 2,
+  },
+  // Members section: same chrome as categoryList — surface-tinted
+  // container with hairline-separated rows. Avatar 32pt + name + right-
+  // aligned destructive-tinted "Remove" button. The owner's own row
+  // omits the button entirely (RPC rejects self-removal anyway).
+  memberList: {
+    borderWidth: 1,
+    borderColor: "#374151",
+    borderRadius: 12,
+    backgroundColor: "#1F2937",
+    paddingHorizontal: 14,
+  },
+  memberRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#374151",
+  },
+  memberRowLast: {
+    borderBottomWidth: 0,
+  },
+  memberAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#1C2333",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  memberAvatarImage: {
+    width: 32,
+    height: 32,
+  },
+  memberAvatarInitial: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  memberName: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#FFFFFF",
+  },
+  memberRemoveBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  memberRemoveText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#F85149",
   },
   errorBanner: {
     backgroundColor: "rgba(248, 81, 73, 0.12)",

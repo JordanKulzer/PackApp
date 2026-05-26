@@ -72,3 +72,22 @@ export async function transferPackOwnership(
   });
   if (error) throw new Error(`Transfer failed: ${error.message}`);
 }
+
+// Phase 4: owner soft-removes another member. The RPC (SECURITY DEFINER)
+// enforces owner-only access via packs.created_by, rejects self-removal,
+// rejects targets that aren't currently active members. Soft-delete only —
+// the member's history (activity_feed, daily_winners, daily_scores) is
+// preserved by design.
+//
+// Caller is responsible for confirmation UX before invoking — the RPC will
+// happily remove a target if all preconditions pass.
+export async function removeMember(
+  packId: string,
+  userIdToRemove: string,
+): Promise<void> {
+  const { error } = await supabase.rpc("remove_member", {
+    p_pack_id: packId,
+    p_user_id: userIdToRemove,
+  });
+  if (error) throw error;
+}

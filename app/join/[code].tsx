@@ -67,15 +67,20 @@ export default function JoinPack() {
     if (!user || !pack) return;
     setStatus("joining");
 
-    // Check if already a member
+    // Check if a membership row exists. Phase 4: select is_active too —
+    // an INACTIVE row (previously removed or left) is a REACTIVATION
+    // path, not a dead-end. The prior check ignored is_active and
+    // bounced removed members back to the pack screen, where the
+    // is_active=true filtered queries would render nothing.
     const { data: existing } = await supabase
       .from("pack_members")
-      .select("id")
+      .select("id, is_active")
       .eq("pack_id", pack.id)
       .eq("user_id", user.id)
       .maybeSingle();
 
-    if (existing) {
+    // Active membership → already in, just route.
+    if (existing && existing.is_active) {
       router.replace(`/(app)/pack/${pack.id}`);
       return;
     }
@@ -99,32 +104,49 @@ export default function JoinPack() {
       setStatus("found");
       Alert.alert(
         "Pack limit reached",
-        `Free accounts can join up to ${FREE_PACK_LIMIT} packs. Pro upgrade coming soon!`
+        `Free accounts can join up to ${FREE_PACK_LIMIT} packs. Pro upgrade coming soon!`,
       );
       return;
     }
 
-    // Check pack member limit for free packs
+    // Check pack member limit for free packs. Reactivating members
+    // count toward the cap the same as new members — applied here
+    // BEFORE the reactivation UPDATE / fresh INSERT below.
     if (memberCount >= FREE_MEMBER_LIMIT) {
       setStatus("found");
       Alert.alert(
         "Pack is full",
-        `This pack has reached its maximum of ${FREE_MEMBER_LIMIT} members. Larger pack sizes coming with Pro!`
+        `This pack has reached its maximum of ${FREE_MEMBER_LIMIT} members. Larger pack sizes coming with Pro!`,
       );
       return;
     }
 
     await ensureUserProfile(user.id, user);
 
-    const { error } = await supabase.from("pack_members").insert({
-      pack_id: pack.id,
-      user_id: user.id,
-      role: "member",
-      is_active: true,
-    });
+    // Reactivation vs fresh INSERT. A soft-deleted (existing,
+    // is_active=false) row blocks a fresh INSERT on the (pack_id,
+    // user_id) unique constraint — must UPDATE to flip is_active back
+    // to true. No row → INSERT a new one. Permissive rejoin is the
+    // Phase 4 design decision; no is_blocked check.
+    let writeError: { message: string } | null = null;
+    if (existing) {
+      const { error: updErr } = await supabase
+        .from("pack_members")
+        .update({ is_active: true })
+        .eq("id", existing.id);
+      writeError = updErr;
+    } else {
+      const { error: insErr } = await supabase.from("pack_members").insert({
+        pack_id: pack.id,
+        user_id: user.id,
+        role: "member",
+        is_active: true,
+      });
+      writeError = insErr;
+    }
 
-    if (error) {
-      setErrorMessage(error.message);
+    if (writeError) {
+      setErrorMessage(writeError.message);
       setStatus("error");
       return;
     }
