@@ -11,10 +11,11 @@
 // to be updated in one place.
 
 import { supabase } from "./supabase";
-import { packToday, deviceLocalToday } from "./packDates";
+import { packToday, deviceLocalToday, deviceLocalDateOffset } from "./packDates";
 import {
   getStepsForRange,
   getActiveCaloriesForRange,
+  getTodayWorkouts,
   isHealthKitAvailable,
 } from "./healthkit";
 import { Platform } from "react-native";
@@ -75,21 +76,80 @@ export async function seedDailyScoresOnJoin(
       (waterRows ?? []).reduce((sum, r) => sum + r.amount_oz, 0),
     );
 
-    // HK: read today's steps + calories if available. Pack-tz day bounds
-    // for read-range parity with healthkit.ts (which uses packDateRangeUTC).
-    // Joining typically happens during the day, so reading "now" is fine —
-    // the next syncHealthDataForUser will write the canonical absolute.
+    // HK: read today's steps + calories + workouts if available. Pack-tz
+    // day bounds for read-range parity with healthkit.ts (which uses
+    // packDateRangeUTC). Joining typically happens during the day, so
+    // reading "now" is fine — the next syncHealthDataForUser will write
+    // the canonical absolute. Workouts added 2026-05-26 to fix the
+    // join-time backfill gap where the seed hardcoded hk_workout_count=0
+    // and the user's existing HK workouts didn't show up in the new pack
+    // until the next periodic HK sync.
     let hkSteps = 0;
     let hkCalories = 0;
+    let hkWorkouts = 0;
     if (Platform.OS === "ios" && isHealthKitAvailable()) {
       const start = new Date();
       start.setHours(0, 0, 0, 0);
       const end = new Date();
-      [hkSteps, hkCalories] = await Promise.all([
+      [hkSteps, hkCalories, hkWorkouts] = await Promise.all([
         getStepsForRange(start, end),
         getActiveCaloriesForRange(start, end),
+        getTodayWorkouts(),
       ]);
     }
+
+    // Cross-pack manual backfill — for users joining a pack mid-day with
+    // already-logged manual activity (steps, calories, workouts), find
+    // the user's existing daily_scores rows across all their OTHER packs
+    // and take the MAX per category. syncManualActivityToDailyScores
+    // writes the same value to every active pack on each manual log, so
+    // MAX-across is the canonical user-total. Without this, manual
+    // activity logged BEFORE joining would silently NOT count for the
+    // new pack (it never self-heals — manual logs only write to
+    // then-active packs).
+    //
+    // Three-day window (deviceYesterday..deviceTomorrow) covers timezone-
+    // shifted packs whose score_date may differ from this pack's
+    // packToday by ±1 day. MAX across the window collapses cleanly
+    // because manual writes are pack-equivalent — the highest value seen
+    // anywhere in the window is the user's true today total.
+    //
+    // workout_count from this query carries both manual AND HK workout
+    // contributions already credited in other packs (workout_count is
+    // the combined column; hk_workout_count is the HK-only subset). For
+    // users joining their FIRST pack, the cross-query returns no rows —
+    // fall back to the HK workout count (their only signal then).
+    const deviceYesterday = deviceLocalDateOffset(1);
+    const deviceTomorrow = deviceLocalDateOffset(-1);
+    const { data: backfillRows } = await supabase
+      .from("daily_scores")
+      .select("manual_steps_count, manual_calories_count, workout_count")
+      .eq("user_id", userId)
+      .gte("score_date", deviceYesterday)
+      .lte("score_date", deviceTomorrow);
+    type BackfillRow = {
+      manual_steps_count: number | null;
+      manual_calories_count: number | null;
+      workout_count: number | null;
+    };
+    const rows = (backfillRows ?? []) as BackfillRow[];
+    const maxManualSteps = rows.reduce(
+      (max, r) => Math.max(max, r.manual_steps_count ?? 0),
+      0,
+    );
+    const maxManualCalories = rows.reduce(
+      (max, r) => Math.max(max, r.manual_calories_count ?? 0),
+      0,
+    );
+    const maxWorkout = rows.reduce(
+      (max, r) => Math.max(max, r.workout_count ?? 0),
+      0,
+    );
+    // First-pack fallback: no existing rows → cross-query max is 0.
+    // hkWorkouts is then the only signal the user has any workouts at
+    // all today. workout_count = max(crossPack, hkWorkouts) — handles
+    // both first-pack-with-HK-workouts AND subsequent-pack cases.
+    const seedWorkoutCount = Math.max(maxWorkout, hkWorkouts);
 
     // Goal-removal Part 3a: the three *_achieved computes (and the
     // pack.step_target / calorie_target / water_target_oz reads they
@@ -104,11 +164,13 @@ export async function seedDailyScoresOnJoin(
         run_id: activeRunId,
         user_id: userId,
         score_date: today,
+        manual_steps_count: maxManualSteps,
+        manual_calories_count: maxManualCalories,
         manual_water_count: waterOz,
         hk_steps_count: hkSteps,
         hk_calories_count: hkCalories,
-        hk_workout_count: 0,
-        workout_count: 0,
+        hk_workout_count: hkWorkouts,
+        workout_count: seedWorkoutCount,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "run_id,user_id,score_date" },
