@@ -12,7 +12,7 @@
 // missing data. Ties are first-class — winner_user_ids is a uuid[] and
 // todayLeaderIds is a string[].
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import {
   CATEGORIES,
@@ -45,12 +45,15 @@ export type PackCategoryStandings = {
 };
 
 // ── Query row shapes ─────────────────────────────────────────────────────
-type DailyWinnerRow = {
+// Exported so external callers (e.g. Home's fetchPackMembers, which
+// pre-fetches standings to seed `usePackCategoryStandings` via its new
+// `initialData` param) can type their query results identically.
+export type DailyWinnerRow = {
   category: Category;
   winner_user_ids: string[];
 };
 
-type ScoreRow = {
+export type ScoreRow = {
   user_id: string;
   steps_count: number;
   workout_count: number;
@@ -63,6 +66,84 @@ function emptyWinsByCategory(): Record<Category, number> {
   return { steps: 0, workouts: 0, calories: 0, water: 0 };
 }
 
+// Pure derivation: turns raw daily_winners + daily_scores rows + the
+// passed-in member set into the PackCategoryStandings shape consumers
+// render from. Extracted from Effect 1's body so an external caller
+// (Home's fetchPackMembers, hoisting the initial fetch out of the per-
+// card hook) can produce the same shape and seed the hook via
+// `initialData` — no behavior change relative to the prior inline
+// derivation.
+export function buildPackCategoryStandings(
+  winnerRows: DailyWinnerRow[],
+  scoreRows: ScoreRow[],
+  members: string[],
+): PackCategoryStandings {
+  // ── memberWins: tally per-user per-category wins from daily_winners.
+  // winner_user_ids is a uuid[] — a tied day credits every listed
+  // user. Seed every passed-in member at zero so the returned set is
+  // the full roster regardless of who has actually won a day.
+  const winsByUser: Record<string, MemberWinsCount> = {};
+  for (const id of members) {
+    winsByUser[id] = {
+      userId: id,
+      totalWins: 0,
+      winsByCategory: emptyWinsByCategory(),
+    };
+  }
+  for (const row of winnerRows) {
+    for (const uid of row.winner_user_ids) {
+      // A winner outside the passed-in member set (e.g. a member who
+      // has since left the pack) is still counted — create on demand.
+      if (!winsByUser[uid]) {
+        winsByUser[uid] = {
+          userId: uid,
+          totalWins: 0,
+          winsByCategory: emptyWinsByCategory(),
+        };
+      }
+      winsByUser[uid].winsByCategory[row.category] += 1;
+      winsByUser[uid].totalWins += 1;
+    }
+  }
+  const memberWins = Object.values(winsByUser);
+
+  // ── todayByCategory: per-category leader from today's daily_scores.
+  // Every category always appears (Pattern A). Per-user values padded
+  // with 0 for members with no daily_scores row today.
+  const todayByCategory = {} as Record<Category, CategoryStanding>;
+  for (const category of CATEGORIES) {
+    const column = CATEGORY_DAILY_SCORE_COLUMN[category];
+    const todayValuesByUser: Record<string, number> = {};
+    for (const id of members) todayValuesByUser[id] = 0;
+    for (const row of scoreRows) {
+      todayValuesByUser[row.user_id] = row[column] ?? 0;
+    }
+    const values = Object.values(todayValuesByUser);
+    const todayLeaderValue = values.length > 0 ? Math.max(...values) : 0;
+    // A leader only exists once someone has a non-zero value — an
+    // all-zero category has no leader (empty array).
+    const todayLeaderIds =
+      todayLeaderValue > 0
+        ? Object.keys(todayValuesByUser).filter(
+            (id) => todayValuesByUser[id] === todayLeaderValue,
+          )
+        : [];
+    todayByCategory[category] = {
+      category,
+      todayLeaderIds,
+      todayLeaderValue,
+      todayValuesByUser,
+    };
+  }
+
+  // ── rankedMembers: memberWins sorted by total wins desc.
+  const rankedMembers = [...memberWins].sort(
+    (a, b) => b.totalWins - a.totalWins,
+  );
+
+  return { todayByCategory, memberWins, rankedMembers };
+}
+
 // Monotonic counter — gives each realtime channel a globally-unique name
 // so concurrent hook instances / effect re-runs never share a channel.
 let channelSeq = 0;
@@ -72,16 +153,33 @@ export function usePackCategoryStandings(
   runId: string | null,
   packTimezone: string,
   memberIds: string[],
+  // Optional seed — when provided (Home pre-fetches via fetchPackMembers
+  // and hands the already-derived standings down through the card), the
+  // hook starts with this data and SKIPS its first network round-trip so
+  // the card paints correct rings on the first frame. Effect 2's
+  // realtime subscription is untouched; subsequent invalidations re-fetch
+  // normally and override the seed. Backward-compatible: callers that
+  // pass nothing (e.g. the Compete tab in pack/[id].tsx) behave exactly
+  // as before — null start, cold fetch on mount.
+  initialData?: PackCategoryStandings | null,
 ): {
   data: PackCategoryStandings | null;
   isLoading: boolean;
   error: Error | null;
   refetch: () => void;
 } {
-  const [data, setData] = useState<PackCategoryStandings | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [data, setData] = useState<PackCategoryStandings | null>(
+    initialData ?? null,
+  );
+  const [isLoading, setIsLoading] = useState(!initialData);
   const [error, setError] = useState<Error | null>(null);
   const [refetchKey, setRefetchKey] = useState(0);
+
+  // Seed-skip latch: true on mount when initialData is provided; flipped
+  // false after the first Effect 1 invocation. Subsequent dep changes
+  // (refetchKey++ from realtime, logVersion bump from local logs) run
+  // Effect 1 normally — only the very first run is skipped.
+  const skipInitialFetchRef = useRef(initialData != null);
 
   const refetch = useCallback(() => {
     setRefetchKey((k) => k + 1);
@@ -103,6 +201,15 @@ export function usePackCategoryStandings(
       setData(null);
       setIsLoading(false);
       setError(null);
+      return;
+    }
+
+    // Seed-skip: on the very first run when initialData was provided,
+    // return early — `data` is already correct from useState. Flip the
+    // ref so subsequent dep changes (refetchKey++ from realtime,
+    // logVersion bump) run normally.
+    if (skipInitialFetchRef.current) {
+      skipInitialFetchRef.current = false;
       return;
     }
 
@@ -138,71 +245,7 @@ export function usePackCategoryStandings(
         const winnerRows = (winnersRes.data ?? []) as DailyWinnerRow[];
         const scoreRows = (scoresRes.data ?? []) as ScoreRow[];
 
-        // ── memberWins: tally per-user per-category wins from daily_winners.
-        // winner_user_ids is a uuid[] — a tied day credits every listed
-        // user. Seed every passed-in member at zero so the returned set is
-        // the full roster regardless of who has actually won a day.
-        const winsByUser: Record<string, MemberWinsCount> = {};
-        for (const id of members) {
-          winsByUser[id] = {
-            userId: id,
-            totalWins: 0,
-            winsByCategory: emptyWinsByCategory(),
-          };
-        }
-        for (const row of winnerRows) {
-          for (const uid of row.winner_user_ids) {
-            // A winner outside the passed-in member set (e.g. a member who
-            // has since left the pack) is still counted — create on demand.
-            if (!winsByUser[uid]) {
-              winsByUser[uid] = {
-                userId: uid,
-                totalWins: 0,
-                winsByCategory: emptyWinsByCategory(),
-              };
-            }
-            winsByUser[uid].winsByCategory[row.category] += 1;
-            winsByUser[uid].totalWins += 1;
-          }
-        }
-        const memberWins = Object.values(winsByUser);
-
-        // ── todayByCategory: per-category leader from today's daily_scores.
-        // Every category always appears (Pattern A). Per-user values padded
-        // with 0 for members with no daily_scores row today.
-        const todayByCategory = {} as Record<Category, CategoryStanding>;
-        for (const category of CATEGORIES) {
-          const column = CATEGORY_DAILY_SCORE_COLUMN[category];
-          const todayValuesByUser: Record<string, number> = {};
-          for (const id of members) todayValuesByUser[id] = 0;
-          for (const row of scoreRows) {
-            todayValuesByUser[row.user_id] = row[column] ?? 0;
-          }
-          const values = Object.values(todayValuesByUser);
-          const todayLeaderValue =
-            values.length > 0 ? Math.max(...values) : 0;
-          // A leader only exists once someone has a non-zero value — an
-          // all-zero category has no leader (empty array).
-          const todayLeaderIds =
-            todayLeaderValue > 0
-              ? Object.keys(todayValuesByUser).filter(
-                  (id) => todayValuesByUser[id] === todayLeaderValue,
-                )
-              : [];
-          todayByCategory[category] = {
-            category,
-            todayLeaderIds,
-            todayLeaderValue,
-            todayValuesByUser,
-          };
-        }
-
-        // ── rankedMembers: memberWins sorted by total wins desc.
-        const rankedMembers = [...memberWins].sort(
-          (a, b) => b.totalWins - a.totalWins,
-        );
-
-        setData({ todayByCategory, memberWins, rankedMembers });
+        setData(buildPackCategoryStandings(winnerRows, scoreRows, members));
         setIsLoading(false);
       } catch (err) {
         if (cancelled) return;

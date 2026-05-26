@@ -17,8 +17,13 @@ import { useUserPacks } from "../../src/hooks/usePack";
 import { useIsPro } from "../../src/hooks/useIsPro";
 import {
   usePackCategoryStandings,
+  buildPackCategoryStandings,
   type MemberWinsCount,
+  type PackCategoryStandings,
+  type DailyWinnerRow,
+  type ScoreRow,
 } from "../../src/hooks/usePackCategoryStandings";
+import { packToday } from "../../src/lib/packDates";
 import { usePackRunHistory } from "../../src/hooks/usePackRunHistory";
 import { supabase } from "../../src/lib/supabase";
 import { formatName } from "../../src/lib/displayName";
@@ -74,6 +79,12 @@ interface HomePackData {
   runStart: string;
   runEnd: string;
   runId: string | null;
+  // Pre-derived standings, hoisted from usePackCategoryStandings's
+  // initial fetch. Seeded into the per-card hook via initialData so
+  // rings paint correctly on the first frame instead of cascading in
+  // after the card mounts and the hook cold-fetches. null when the
+  // pack has no active run (matches the hook's runId-null branch).
+  initialStandings: PackCategoryStandings | null;
 }
 
 // One mini-ring cell — a roster member joined with their wins standing.
@@ -509,11 +520,20 @@ function DarkPackCard({
 }) {
   // One card = one pack = one legal hook call. Standings load per-card;
   // the hook returns null while runId is null (no active run / not loaded).
+  //
+  // initialData: Home's fetchPackMembers pre-fetches the standings and
+  // passes them down via data.initialStandings. The hook seeds its
+  // initial useState from this and skips its first Effect-1 fetch — the
+  // card paints correct rings on the first frame instead of cold-
+  // fetching on mount. Realtime (Effect 2) is unchanged: any
+  // daily_winners / daily_scores change bumps refetchKey and the hook
+  // re-derives normally, overriding the seed.
   const { data: standings } = usePackCategoryStandings(
     pack.id,
     data?.runId ?? null,
     pack.timezone,
     (data?.members ?? []).map((m) => m.user_id),
+    data?.initialStandings ?? null,
   );
 
   // Completed-run history — used to identify the previous run's pack
@@ -919,7 +939,7 @@ export default function Home() {
 
     await Promise.all(
       packList.map(async (pack) => {
-        // Fetch active run + all active pack members in parallel
+        // Round 1: active run + pack roster.
         const [runResult, membersResult] = await Promise.all([
           supabase
             .from("runs")
@@ -941,13 +961,34 @@ export default function Home() {
         const memberIds = (membersResult.data ?? []).map((m) => m.user_id);
         if (memberIds.length === 0) return;
 
-        // Resolve display name + avatar for every active member. The
-        // categories-model standings are loaded per-card by 3e-core via
-        // usePackCategoryStandings — this layer only builds the roster.
-        const usersResult = await supabase
-          .from("users")
-          .select("id, display_name, avatar_url")
-          .in("id", memberIds);
+        // Round 2: user display data + pre-fetched standings data
+        // (hoisted from usePackCategoryStandings's Effect 1). Runs in
+        // parallel — both depend only on values resolved in Round 1
+        // (memberIds, run.id, pack.timezone). The two standings queries
+        // are the exact ones the hook would otherwise fire on card
+        // mount; we run them here so scoresLoaded only latches after
+        // every pack's ring data is in hand, and seed the per-card
+        // hook via initialData so rings paint correctly on first
+        // frame (no cascade). Realtime subscriptions stay in the hook.
+        const today = packToday(pack.timezone);
+        const [usersResult, winnersResult, scoresResult] = await Promise.all([
+          supabase
+            .from("users")
+            .select("id, display_name, avatar_url")
+            .in("id", memberIds),
+          supabase
+            .from("daily_winners")
+            .select("category, winner_user_ids")
+            .eq("run_id", run.id)
+            .neq("category", "legacy"),
+          supabase
+            .from("daily_scores")
+            .select(
+              "user_id, steps_count, workout_count, calories_count, water_oz_count",
+            )
+            .eq("run_id", run.id)
+            .eq("score_date", today),
+        ]);
 
         const nameMap: Record<string, string> = {};
         const avatarMap: Record<string, string | null> = {};
@@ -969,11 +1010,33 @@ export default function Home() {
           avatar_url: avatarMap[uid] ?? null,
         }));
 
+        // Derive standings via the same pure helper the hook uses —
+        // single source of truth, no risk of the hoisted derivation
+        // drifting from the per-card hook's. Errors on either query
+        // fall back to null (the seed is best-effort; if it's null the
+        // hook cold-fetches normally on mount, same as today).
+        let initialStandings: PackCategoryStandings | null = null;
+        if (!winnersResult.error && !scoresResult.error) {
+          const winnerRows = (winnersResult.data ?? []) as DailyWinnerRow[];
+          const scoreRows = (scoresResult.data ?? []) as ScoreRow[];
+          initialStandings = buildPackCategoryStandings(
+            winnerRows,
+            scoreRows,
+            memberIds,
+          );
+        } else {
+          console.warn(
+            "[fetchPackMembers] standings pre-fetch failed; card will cold-fetch on mount",
+            winnersResult.error ?? scoresResult.error,
+          );
+        }
+
         result[pack.id] = {
           members,
           runStart: run.start_date,
           runEnd: run.end_date,
           runId: run.id,
+          initialStandings,
         };
       }),
     );
