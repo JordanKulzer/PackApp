@@ -24,6 +24,7 @@ import { useNavigation, CommonActions } from "@react-navigation/native";
 import { useConsumeSuppressFlag } from "../../../src/context/ModalMutationContext";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ConfirmDialog } from "../../../src/components/ConfirmDialog";
+import { PackBrandLoadingState } from "../../../src/components/PackBrandLoadingState";
 import {
   leavePack,
   deletePack,
@@ -2417,22 +2418,32 @@ export default function PackScreen() {
   const { syncNow } = useHealthKit(user?.id ?? null);
 
   // Categories-pivot standings (Stage 3d) — feeds PackGridView's GridEntry[].
-  const { data: categoryStandings, refetch: refetchCategoryStandings } =
-    usePackCategoryStandings(
-      packData?.pack.id ?? "",
-      packData?.activeRun?.id ?? null,
-      packData?.pack.timezone ?? "UTC",
-      (packData?.members ?? []).map((m) => m.user_id),
-    );
+  // Capture isLoading so the Compete spinner can wait for it (see the
+  // combined `showCompeteLoading` gate below). Without this the spinner
+  // can clear while `categoryStandings` is still null → `gridEntries`
+  // falls back to [] → empty grid renders → fills in late.
+  const {
+    data: categoryStandings,
+    isLoading: categoryStandingsLoading,
+    refetch: refetchCategoryStandings,
+  } = usePackCategoryStandings(
+    packData?.pack.id ?? "",
+    packData?.activeRun?.id ?? null,
+    packData?.pack.timezone ?? "UTC",
+    (packData?.members ?? []).map((m) => m.user_id),
+  );
 
   // Completed-run history — used here to identify the previous run's
   // overall pack winner(s) for the Crown signal on each gridEntry. The
   // separate PastRunsSection has its own usePackRunHistory call; the
   // hook is cheap (read-only, cached on packId) so the duplication is
   // intentional rather than threading the same data down two paths.
-  const { completedRuns: completedRunsForCrown } = usePackRunHistory(
-    packData?.pack.id ?? "",
-  );
+  // Capture isLoading for the same reason as above — crowns lag if the
+  // spinner clears before this resolves.
+  const {
+    completedRuns: completedRunsForCrown,
+    isLoading: crownLoading,
+  } = usePackRunHistory(packData?.pack.id ?? "");
 
   const { width: screenWidth } = useWindowDimensions();
   const { top: topInset } = useSafeAreaInsets();
@@ -2443,6 +2454,27 @@ export default function PackScreen() {
 
   const [scores, setScores] = useState<MemberScore[]>([]);
   const [scoresLoading, setScoresLoading] = useState(true);
+
+  // Compete tab loading gate — combines all three data sources the
+  // grid renders from: scoresLoading (fetchWeekly's today daily_scores),
+  // categoryStandingsLoading (usePackCategoryStandings — the rings'
+  // wins counts + today values), and crownLoading (usePackRunHistory —
+  // previous-run rank-1 winners for the crown overlay). Without this
+  // combined gate the spinner can clear while the other two are still
+  // mid-fetch, producing an empty grid that fills in late (same shape
+  // as Home's pre-fix cascade).
+  //
+  // hasCompeteLoadedOnce latches true after the first all-clear so
+  // subsequent refetches (back-nav, pull-to-refresh, scoresLoading
+  // toggling back to true on pack/data change at line 2574) render
+  // the existing grid with stale-but-present data instead of flashing
+  // the spinner. Mirrors home.tsx's hasLoadedOnce pattern exactly.
+  const competeDataLoading =
+    scoresLoading || categoryStandingsLoading || crownLoading;
+  const hasCompeteLoadedOnce = useRef(false);
+  if (!competeDataLoading) hasCompeteLoadedOnce.current = true;
+  const showCompeteLoading =
+    competeDataLoading && !hasCompeteLoadedOnce.current;
   const [activeTab, setActiveTab] = useState<TabId>("compete");
 
   // Pack lifecycle state
@@ -2943,9 +2975,17 @@ export default function PackScreen() {
             />
           }
         >
-          {scoresLoading ? (
+          {showCompeteLoading ? (
+            // PackBrandLoadingState matches Home's loading visual. Its
+            // own container is flex:1 + center-aligned, designed to
+            // fill a flex-sized parent (Home does that). Here we keep
+            // the existing s.loadingBox wrapper (paddingVertical: 40
+            // + alignItems: center) so the logo gets a defined-height
+            // slot inside the Compete ScrollView. The inner flex:1
+            // collapses to the logo's intrinsic 128pt size in this
+            // non-flex parent; the breath animation runs unaffected.
             <View style={s.loadingBox}>
-              <ActivityIndicator size="small" color={C.textTertiary} />
+              <PackBrandLoadingState />
             </View>
           ) : packData.activeRun ? (
             <PackGridView
