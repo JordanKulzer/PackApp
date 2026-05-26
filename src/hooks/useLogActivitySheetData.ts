@@ -44,6 +44,15 @@ export interface DailyScoreSnapshot {
   // has_manual_* booleans dropped in migration 20260513b).
   manual_steps_count: number;
   manual_calories_count: number;
+  // Streak agreement (2026-05-26): manuallyLoggedToday is derived from the
+  // same signals computeUserStreak uses (manual_*_count > 0 OR
+  // workout_count - hk_workout_count > 0). Adding manual_water_count +
+  // hk_workout_count to this snapshot lets the LogSheet hook compute the
+  // exact same satisfied-set entry as the streak compute — UI gate and
+  // server-side streak count agree on what counts as "today's manual
+  // activity."
+  manual_water_count: number;
+  hk_workout_count: number;
 }
 
 export interface LogActivitySheetData {
@@ -139,9 +148,16 @@ export function useLogActivitySheetData(
     }
 
     const fetchId = ++fetchIdRef.current;
-    // Only show skeleton on genuine first load (data is null); stale data stays visible
-    if (!_cache || _cache.userId !== userId) {
-      setData(null);
+    // Only show skeleton on genuine first load — gated on COMPONENT
+    // `data`, not the module `_cache`. invalidateLogActivitySheetCache()
+    // nulls `_cache` to force the cache-hit early return to skip and
+    // re-fetch; the prior gate then read `!_cache` and wiped `data` too,
+    // which made the parent's `!hookData` gate drop to RowSkeleton
+    // mid-refetch. With `!data` as the gate, stale data stays visible
+    // until the new fetch lands — true stale-while-revalidate matching
+    // the comment's stated intent. (userId changes typically remount
+    // the consumer, so a per-user reset isn't needed here.)
+    if (!data) {
       setIsLoading(true);
     }
     setError(null);
@@ -159,15 +175,23 @@ export function useLogActivitySheetData(
       const hkAuthorized = hkAvailable ? await getHealthKitAuthStatus() : false;
 
       // Round 1: all independent sources in parallel. The HealthKit reads
-      // run only when iOS reports the prompt has been answered. The three
-      // streak-surface queries (Stage 3) ride this round too — they're
+      // run only when iOS reports the prompt has been answered. The
+      // streak-surface queries (Stage 3) ride this round — they're
       // user-global (no pack/run dependency) and the EXISTS-style queries
       // are cheap (head: true returns count only, no row data).
+      //
+      // 2026-05-26: dropped the activity_feed entry_method='manual'
+      // existence query that used to derive `manuallyLoggedToday`.
+      // Intentional-Sharing Phase 1 stopped writing those rows, so the
+      // count was always 0 and the LogSheet "satisfied" gate never
+      // registered a manual log. The derivation now happens AFTER Round 3
+      // from the data the hook already loads (localScore manual_* cols +
+      // workout/hk_workout derivation + totalOz) — same signals
+      // computeUserStreak now uses, so UI and server-side streak agree.
       const [
         logsResult,
         memberResult,
         hkValues,
-        manualFeedExistsResult,
         checkinExistsResult,
         userStreakResult,
       ] = await Promise.all([
@@ -187,17 +211,6 @@ export function useLogActivitySheetData(
         hkAvailable && hkAuthorized
           ? (Promise.all([getTodaySteps(), getTodayActiveCalories()]) as Promise<[number, number]>)
           : (Promise.resolve([0, 0]) as Promise<[number, number]>),
-        // Stage 3: did the user manually log anything today? Cross-pack
-        // (no pack_id filter) so the result matches Stage 2's
-        // computeUserStreak exactly. score_date is in pack-tz; the flagged
-        // far-shifted-pack midnight-boundary edge case applies here too,
-        // and the check-in box is the user's safety net for it.
-        supabase
-          .from("activity_feed")
-          .select("score_date", { count: "exact", head: true })
-          .eq("user_id", userId!)
-          .eq("entry_method", "manual")
-          .eq("score_date", deviceToday),
         // Stage 3: did the user already check in today?
         supabase
           .from("daily_checkins")
@@ -224,9 +237,11 @@ export function useLogActivitySheetData(
       const stepsToday = hkAvailable && hkAuthorized ? stepsRaw : null;
       const caloriesToday = hkAvailable && hkAuthorized ? calsRaw : null;
 
-      // Stage 3: derive the three streak-surface fields. User-global, so
-      // included in every return path below (early returns + happy path).
-      const manuallyLoggedToday = (manualFeedExistsResult.count ?? 0) > 0;
+      // Stage 3: derive the streak-surface fields user-global enough to
+      // share across all return paths. `manuallyLoggedToday` is no
+      // longer here — it's derived AFTER Round 3 from localScore +
+      // totalOz so we can mirror computeUserStreak's signals exactly.
+      // Early returns (no pack / no run) set it to false explicitly.
       const checkedInToday = (checkinExistsResult.count ?? 0) > 0;
       const currentStreak =
         (userStreakResult.data as { current_streak?: number } | null)
@@ -238,12 +253,17 @@ export function useLogActivitySheetData(
       const today = packToday(packTimezone);
 
       if (!packId) {
+        // No active pack membership → manuallyLoggedToday is false by
+        // spec. A water_log alone (with no pack) could legitimately
+        // satisfy the streak in computeUserStreak, but without a pack
+        // there's no scoring context for the LogSheet's gate anyway —
+        // the slight UI/streak mismatch in this edge case is accepted.
         return {
           entries, workoutLogs: [], totalOz,
           stepsEntries: [], caloriesEntries: [],
           hkAuthorized, stepsToday, caloriesToday,
           packRun: null, localScore: null, localWeeklyPoints: 0,
-          manuallyLoggedToday, checkedInToday, currentStreak,
+          manuallyLoggedToday: false, checkedInToday, currentStreak,
         };
       }
 
@@ -256,12 +276,15 @@ export function useLogActivitySheetData(
         .maybeSingle();
 
       if (!run) {
+        // Pack exists but no active run → no scoring context. Same
+        // rationale as the no-pack branch: manuallyLoggedToday is false
+        // by spec for the LogSheet's gate.
         return {
           entries, workoutLogs: [], totalOz,
           stepsEntries: [], caloriesEntries: [],
           hkAuthorized, stepsToday, caloriesToday,
           packRun: null, localScore: null, localWeeklyPoints: 0,
-          manuallyLoggedToday, checkedInToday, currentStreak,
+          manuallyLoggedToday: false, checkedInToday, currentStreak,
         };
       }
 
@@ -272,7 +295,7 @@ export function useLogActivitySheetData(
         supabase
           .from("daily_scores")
           .select(
-            "total_points, water_oz_count, steps_count, calories_count, workout_count, streak_multiplier, manual_steps_count, manual_calories_count",
+            "total_points, water_oz_count, steps_count, calories_count, workout_count, streak_multiplier, manual_steps_count, manual_calories_count, manual_water_count, hk_workout_count",
           )
           .eq("run_id", run.id)
           .eq("user_id", userId!)
@@ -327,6 +350,25 @@ export function useLogActivitySheetData(
       const caloriesEntries: ManualLogEntry[] = manualRows
         .filter((r) => r.activity_type === "calories")
         .map((r) => ({ value: r.value, created_at: r.created_at }));
+
+      // Manual-activity derivation — same signals as computeUserStreak
+      // (steps/calories/water manual_*_count > 0 OR manual workout
+      // derived as workout_count - hk_workout_count > 0). Water also
+      // accepts totalOz > 0 from water_logs so a fresh water log shows
+      // "satisfied" even before syncWater's daily_scores upsert lands.
+      // Both signals normally agree — water log writes both water_logs
+      // (instant) and daily_scores.manual_water_count (via syncWater);
+      // the OR is defense in depth.
+      const manualWorkoutDerived =
+        (localScore?.workout_count ?? 0) -
+          (localScore?.hk_workout_count ?? 0) >
+        0;
+      const manuallyLoggedToday =
+        (localScore?.manual_steps_count ?? 0) > 0 ||
+        (localScore?.manual_calories_count ?? 0) > 0 ||
+        (localScore?.manual_water_count ?? 0) > 0 ||
+        totalOz > 0 ||
+        manualWorkoutDerived;
 
       return {
         entries, workoutLogs, totalOz,

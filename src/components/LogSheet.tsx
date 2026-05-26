@@ -1308,13 +1308,31 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                       vertical rhythm (paddingVertical 12 vs the rows' 16)
                       so it reads as context, not the hero of the sheet. */}
                   {(() => {
+                    // Gate values are OR-merged across local (optimistic)
+                    // state and hookData (canonical floor). On first paint
+                    // after hookData lands, the locals are still their
+                    // useState defaults (false/false/0) for one render
+                    // frame before the sync useEffect runs — reading
+                    // hookData here makes that frame render the correct
+                    // state instead of the "no streak, show button" State
+                    // C, which then immediately flipped on the next
+                    // render. The locals still win when truthy so the
+                    // optimistic check-in tap (setManuallyLoggedTodayLocal
+                    // true) takes effect instantly.
                     const satisfied =
-                      manuallyLoggedTodayLocal || checkedInTodayLocal;
+                      manuallyLoggedTodayLocal ||
+                      checkedInTodayLocal ||
+                      hookData.manuallyLoggedToday ||
+                      hookData.checkedInToday;
+                    const effectiveStreak =
+                      currentStreakLocal > 0
+                        ? currentStreakLocal
+                        : hookData.currentStreak;
                     return (
                       <View style={s.streakModule}>
                         {satisfied ? (
                           <>
-                            {currentStreakLocal > 0 && (
+                            {effectiveStreak > 0 && (
                               <View style={s.streakHeadline}>
                                 <MaterialCommunityIcons
                                   name="lightning-bolt"
@@ -1322,7 +1340,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                                   color={C.streak}
                                 />
                                 <Text style={s.streakHeadlineText}>
-                                  {currentStreakLocal} day streak
+                                  {effectiveStreak} day streak
                                 </Text>
                               </View>
                             )}
@@ -1337,7 +1355,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                               </Text>
                             </View>
                           </>
-                        ) : currentStreakLocal > 0 ? (
+                        ) : effectiveStreak > 0 ? (
                           // State B — has a streak, not yet satisfied today.
                           // Lower-stakes than the invitation: the user is
                           // already in the habit. Compact flex-start pill.
@@ -1349,7 +1367,7 @@ export function LogSheet({ visible, onClose }: LogSheetProps) {
                                 color={C.streak}
                               />
                               <Text style={s.streakHeadlineText}>
-                                {currentStreakLocal} day streak
+                                {effectiveStreak} day streak
                               </Text>
                             </View>
                             <TouchableOpacity
