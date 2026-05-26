@@ -34,7 +34,6 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
-  Alert,
   Image,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -49,6 +48,7 @@ import { packEdit, t } from "../../../../src/constants/strings";
 import { ActivityToggleRow } from "../../../../src/components/profile/ActivityToggleRow";
 import { removeMember } from "../../../../src/lib/packLifecycle";
 import { formatName, getInitial } from "../../../../src/lib/displayName";
+import { ConfirmDialog } from "../../../../src/components/ConfirmDialog";
 
 // Goal-removal Part 1: bounds (STEP_MIN/MAX, CALORIE_MIN/MAX, WATER_MIN/MAX),
 // the formatNextRunDate / computeNextRunStart helpers, and the
@@ -362,53 +362,58 @@ export default function EditPackScreen() {
 
   // Phase 4: owner removes a member.
   //
-  // Confirmation: native Alert with destructive style on the confirm
-  // button. The RPC raises if the target isn't a current active member
-  // (stale UI / double-tap race); that's surfaced as a friendly
-  // "Already removed" toast rather than a raw RPC message. All other
-  // RPC errors surface their message verbatim.
+  // Confirmation: ConfirmDialog (the app's reusable destructive-action
+  // modal — same one used for sign-out and "Leave this pack?"). A single
+  // state slot `pendingRemoval` holds the target's userId + display name;
+  // visibility derives from it being non-null. The RPC's "not an active
+  // member" exception (stale UI / double-tap race) surfaces as a friendly
+  // "Already removed" toast rather than a raw RPC message. All other RPC
+  // errors surface their message verbatim.
   //
   // On success: refetchPack to drop the removed row from the list
   // immediately (usePack auto-refetches on focus but Edit Pack stays
   // mounted while the user is still here). No optimistic update — the
   // RPC round-trip is short and the auth gate is server-side, so we
   // wait for the truth before mutating local state.
+  const [pendingRemoval, setPendingRemoval] = useState<{
+    userId: string;
+    name: string;
+  } | null>(null);
+
   const handleRemoveMember = (memberUserId: string, memberName: string) => {
     if (!packData) return;
+    setPendingRemoval({ userId: memberUserId, name: memberName });
+  };
+
+  // Confirm handler: clears the pending state FIRST so the modal
+  // dismisses immediately, then runs the same try/refetch/toast logic
+  // that previously lived inside the Alert's onPress. The toast
+  // communicates success or failure asynchronously.
+  const confirmRemoval = async () => {
+    if (!packData || !pendingRemoval) return;
     const packId = packData.pack.id;
-    Alert.alert(
-      t(packEdit.members.confirmTitle, { name: memberName }),
-      packEdit.members.confirmBody,
-      [
-        { text: packEdit.members.confirmCancel, style: "cancel" },
-        {
-          text: packEdit.members.confirmRemove,
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await removeMember(packId, memberUserId);
-              await refetchPack();
-              showToast({
-                message: t(packEdit.members.toastRemoved, { name: memberName }),
-                kind: "success",
-              });
-            } catch (e) {
-              const msg = (e as Error).message ?? "";
-              if (/not an active member/i.test(msg)) {
-                showToast({
-                  message: packEdit.members.toastAlreadyRemoved,
-                  kind: "info",
-                });
-                // Refresh so the stale row disappears for the next try.
-                await refetchPack();
-              } else {
-                showToast({ message: msg || "Failed to remove", kind: "error" });
-              }
-            }
-          },
-        },
-      ],
-    );
+    const { userId: memberUserId, name: memberName } = pendingRemoval;
+    setPendingRemoval(null);
+    try {
+      await removeMember(packId, memberUserId);
+      await refetchPack();
+      showToast({
+        message: t(packEdit.members.toastRemoved, { name: memberName }),
+        kind: "success",
+      });
+    } catch (e) {
+      const msg = (e as Error).message ?? "";
+      if (/not an active member/i.test(msg)) {
+        showToast({
+          message: packEdit.members.toastAlreadyRemoved,
+          kind: "info",
+        });
+        // Refresh so the stale row disappears for the next try.
+        await refetchPack();
+      } else {
+        showToast({ message: msg || "Failed to remove", kind: "error" });
+      }
+    }
   };
 
   // Loading or pending owner-redirect — render the spinner. The owner
@@ -443,6 +448,7 @@ export default function EditPackScreen() {
     packData.pack.competition_window === "monthly" ? "month" : "week";
 
   return (
+    <>
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -621,6 +627,22 @@ export default function EditPackScreen() {
         )}
       </ScrollView>
     </KeyboardAvoidingView>
+    {/* Phase 4: removal-confirmation modal. Mounted as a Fragment sibling
+        so its full-screen overlay isn't constrained by the keyboard-
+        avoiding layout above. Mirrors the "Leave this pack?" usage at
+        pack/[id].tsx ~3114. */}
+    <ConfirmDialog
+      visible={pendingRemoval !== null}
+      title={t(packEdit.members.confirmTitle, {
+        name: pendingRemoval?.name ?? "",
+      })}
+      message={packEdit.members.confirmBody}
+      confirmLabel={packEdit.members.confirmRemove}
+      confirmDestructive
+      onConfirm={confirmRemoval}
+      onCancel={() => setPendingRemoval(null)}
+    />
+    </>
   );
 }
 
