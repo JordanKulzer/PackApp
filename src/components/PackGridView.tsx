@@ -151,6 +151,18 @@ export function PackGridView({
   }, []);
   const totalMembers = entries.length;
 
+  // Per-pack enabled categories — filters out any category the pack has
+  // disabled. CATEGORIES.filter preserves source order so the left-to-
+  // right visual order (steps → workouts → calories → water) stays
+  // stable; disabled entries just drop out. Computed once at this
+  // level and threaded into both RankRow + RankRowExpanded so the two
+  // render sites can't drift. Reads the LIVE *_enabled columns (NOT
+  // pending_*_enabled — a category disabled for next week must still
+  // show this week, per the Phase 2 design).
+  const enabledCategories = CATEGORIES.filter((c) =>
+    categoryEnabled(pack, c),
+  );
+
   // Group all entries by rank for the unified vertical list. Every member,
   // including rank 1, renders in this list. Members within a group are
   // sorted alphabetically (mirrors tie order).
@@ -220,12 +232,14 @@ export function PackGridView({
                     currentUserId={currentUserId}
                     isExpanded={expandedUserId === entry.user_id}
                     onPress={() => toggleExpand(entry.user_id)}
+                    enabledCategories={enabledCategories}
                   />
                   {expandedUserId === entry.user_id && (
                     <RankRowExpanded
                       entry={entry}
                       entries={entries}
                       currentUserId={currentUserId}
+                      enabledCategories={enabledCategories}
                     />
                   )}
                 </View>
@@ -273,12 +287,19 @@ function RankRow({
   currentUserId,
   isExpanded,
   onPress,
+  enabledCategories,
 }: {
   entry: GridEntry;
   activeRun: Run;
   currentUserId: string | undefined;
   isExpanded: boolean;
   onPress: () => void;
+  // Pack-config-filtered subset of CATEGORIES. Computed at the
+  // PackGridView level so RankRow and RankRowExpanded share one source
+  // of truth and can't drift. Iterating this (instead of the raw
+  // CATEGORIES constant) hides per-category icons for categories the
+  // pack has disabled.
+  enabledCategories: Category[];
 }) {
   const isMe = entry.user_id === currentUserId;
   const isLeader = entry.rank === 1;
@@ -369,7 +390,7 @@ function RankRow({
           <Text style={s.rowNoWins}>No category wins yet</Text>
         ) : (
           <View style={s.rowCategoryWins}>
-            {CATEGORIES.map((category, i) => (
+            {enabledCategories.map((category, i) => (
               <React.Fragment key={category}>
                 {i > 0 && <Text style={s.rowCategorySep}>·</Text>}
                 <View style={s.rowCategoryItem}>
@@ -505,10 +526,17 @@ function RankRowExpanded({
   entry,
   entries,
   currentUserId,
+  enabledCategories,
 }: {
   entry: GridEntry;
   entries: GridEntry[];
   currentUserId: string | undefined;
+  // Pack-config-filtered subset of CATEGORIES — see RankRow for the
+  // rationale. Used to gate the per-category bars below; the internal
+  // `leaderTodayValues` reduce still iterates all CATEGORIES (max-per-
+  // category scaling reference) and disabled-category entries there
+  // are simply never read.
+  enabledCategories: Category[];
 }) {
   const isMe = entry.user_id === currentUserId;
   const useLeaderAccent = !isMe && entry.rank === 1;
@@ -556,7 +584,7 @@ function RankRowExpanded({
         </Text>
       </View>
 
-      {CATEGORIES.map((category) => (
+      {enabledCategories.map((category) => (
         <CategoryBar
           key={category}
           category={category}

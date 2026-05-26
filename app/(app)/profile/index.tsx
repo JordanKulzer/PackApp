@@ -614,6 +614,18 @@ export default function Profile() {
             }
           />
           <NavRow
+            icon={
+              <Ionicons
+                name="watch-outline"
+                size={22}
+                color={C.textSecondary}
+              />
+            }
+            label="Fitbit"
+            subtitle="Coming soon"
+            trailing={<Text style={styles.integrationStatus}>Soon</Text>}
+          />
+          <NavRow
             icon={<OuraIcon />}
             label="Oura Ring"
             subtitle="Coming soon"
