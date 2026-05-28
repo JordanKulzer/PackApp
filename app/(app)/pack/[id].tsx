@@ -2214,12 +2214,14 @@ function ChatTab({
                 onToggleReaction={toggleReaction}
                 onOpenPicker={handleOpenActivityPicker}
                 removePhotoFromItem={removePhotoFromItem}
+                packId={packId}
               />
             );
           }}
           onActionMenuOpen={handleActionMenuOpen}
           onOpenPicker={handleOpenMessagePicker}
           onToggleChatReaction={toggleChatReaction}
+          packId={packId}
         />,
       );
 

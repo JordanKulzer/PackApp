@@ -28,6 +28,7 @@ import {
   CATEGORY_LABELS,
   type Category,
 } from "../lib/categories";
+import { categoryEnabled } from "../lib/packCategories";
 import { CategoryIcon } from "./CategoryIcon";
 import { colors } from "../theme/colors";
 import { den } from "../constants/strings";
@@ -83,21 +84,6 @@ function ringFillPct(totalWins: number, run: Run): number {
   const rawDays = Math.floor((Date.now() - start) / msPerDay) + 1;
   const daysElapsed = Math.min(7, Math.max(1, rawDays));
   return Math.min(100, Math.max(0, (totalWins / daysElapsed) * 100));
-}
-
-// pack enable-flags aren't keyed by Category — map explicitly. The exhaustive
-// switch means adding a Category surfaces a compile error here.
-function categoryEnabled(pack: Pack, category: Category): boolean {
-  switch (category) {
-    case "steps":
-      return pack.steps_enabled;
-    case "workouts":
-      return pack.workouts_enabled;
-    case "calories":
-      return pack.calories_enabled;
-    case "water":
-      return pack.water_enabled;
-  }
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -233,6 +219,7 @@ export function PackGridView({
                     isExpanded={expandedUserId === entry.user_id}
                     onPress={() => toggleExpand(entry.user_id)}
                     enabledCategories={enabledCategories}
+                    packId={pack.id}
                   />
                   {expandedUserId === entry.user_id && (
                     <RankRowExpanded
@@ -288,6 +275,7 @@ function RankRow({
   isExpanded,
   onPress,
   enabledCategories,
+  packId,
 }: {
   entry: GridEntry;
   activeRun: Run;
@@ -300,6 +288,9 @@ function RankRow({
   // CATEGORIES constant) hides per-category icons for categories the
   // pack has disabled.
   enabledCategories: Category[];
+  // Threaded through so the avatar-tap → /user/[id] navigation can carry
+  // pack context for the public profile screen's pack-scoped Trends.
+  packId: string;
 }) {
   const isMe = entry.user_id === currentUserId;
   const isLeader = entry.rank === 1;
@@ -337,7 +328,7 @@ function RankRow({
       <TouchableOpacity
         style={s.rowAvatar}
         onPress={() => {
-          router.push(`/user/${entry.user_id}` as any);
+          router.push(`/user/${entry.user_id}?packId=${packId}` as any);
         }}
         activeOpacity={0.7}
         accessibilityRole="button"

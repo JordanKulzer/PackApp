@@ -41,6 +41,12 @@ interface Props {
   onActionMenuOpen?: (message: ChatMessage, anchor: AnchorPosition) => void;
   onOpenPicker?: (messageId: string, anchor: AnchorPosition) => void;
   onToggleReaction?: (messageId: string, emoji: string) => void;
+  // Optional pack context, forwarded to the avatar-tap navigation so the
+  // public profile screen can scope its Trends section to this pack. Chat
+  // messages are always rendered inside a pack today, so callers in
+  // ChatTab pass it; the prop stays optional so the component degrades
+  // cleanly if rendered in a pack-less surface.
+  packId?: string;
 }
 
 export function ChatMessageRow({
@@ -50,6 +56,7 @@ export function ChatMessageRow({
   onActionMenuOpen,
   onOpenPicker,
   onToggleReaction,
+  packId,
 }: Props) {
   const isMe = message.user_id === currentUserId;
   const router = useRouter();
@@ -188,7 +195,10 @@ export function ChatMessageRow({
         <Pressable
           style={s.avatar}
           onPress={() => {
-            router.push(`/user/${message.user_id}` as any);
+            const href = packId
+              ? `/user/${message.user_id}?packId=${packId}`
+              : `/user/${message.user_id}`;
+            router.push(href as any);
           }}
           hitSlop={4}
           accessibilityRole="button"

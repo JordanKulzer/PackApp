@@ -34,6 +34,12 @@ interface Props {
   onActionMenuOpen: (message: ChatMessage, anchor: AnchorPosition) => void;
   onOpenPicker: (messageId: string, anchor: AnchorPosition) => void;
   onToggleChatReaction: (messageId: string, emoji: string) => void;
+  // Optional pack context, forwarded to ChatMessageRow so its avatar-tap
+  // can include ?packId= for the public profile's pack-scoped Trends.
+  // Activity rows reach FeedItemRow via the renderActivity callback —
+  // their pack context is captured in the caller's closure, so this
+  // prop doesn't need to forward into that branch.
+  packId?: string;
 }
 
 export function TimelineRow({
@@ -44,6 +50,7 @@ export function TimelineRow({
   onActionMenuOpen,
   onOpenPicker,
   onToggleChatReaction,
+  packId,
 }: Props) {
   if (item.kind === "activity") {
     // Pass 25-followup-E.2.b.iii-fix-2: photo-bearing took_lead rows route
@@ -72,6 +79,7 @@ export function TimelineRow({
       onActionMenuOpen={onActionMenuOpen}
       onOpenPicker={onOpenPicker}
       onToggleReaction={onToggleChatReaction}
+      packId={packId}
     />
   );
 }

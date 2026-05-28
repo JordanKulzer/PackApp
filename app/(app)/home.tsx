@@ -153,6 +153,7 @@ function MemberCard({
   currentUserId,
   leaderId,
   currentUser,
+  packId,
 }: {
   entry: MiniRingEntry;
   runStart: string;
@@ -163,6 +164,9 @@ function MemberCard({
     displayName: string;
     avatarUrl: string | null;
   } | null;
+  // Threaded so the avatar-tap → /user/[id] carries pack context for the
+  // public profile's pack-scoped Trends section.
+  packId: string;
 }) {
   const router = useRouter();
   const pct = winsRingPct(entry.total_wins, runStart);
@@ -183,7 +187,7 @@ function MemberCard({
       <View style={miniRingS.avatarWrap}>
         <TouchableOpacity
           onPress={() => {
-            router.push(`/user/${entry.user_id}` as any);
+            router.push(`/user/${entry.user_id}?packId=${packId}` as any);
           }}
           activeOpacity={0.7}
           // Pass 25-followup-E.2.a-home-polish-3-fix: delay press-in capture
@@ -251,12 +255,16 @@ function MiniRings({
   previousRunWinnerIds,
   runStart,
   currentUserId,
+  packId,
 }: {
   members: HomeMember[];
   rankedMembers: MemberWinsCount[];
   previousRunWinnerIds: string[];
   runStart: string;
   currentUserId: string | undefined;
+  // Forwarded to each MemberCard so avatar-tap navigation includes
+  // ?packId= for the public profile's pack-scoped Trends.
+  packId: string;
 }) {
   const { user: currentUser } = useCurrentUser();
 
@@ -308,6 +316,7 @@ function MiniRings({
             currentUserId={currentUserId}
             leaderId={leaderId}
             currentUser={currentUser}
+            packId={packId}
           />
         </View>
       </View>
@@ -329,6 +338,7 @@ function MiniRings({
             currentUserId={currentUserId}
             leaderId={leaderId}
             currentUser={currentUser}
+            packId={packId}
           />
         ))}
       </ScrollView>
@@ -604,6 +614,7 @@ function DarkPackCard({
             previousRunWinnerIds={previousRunWinnerIds}
             runStart={data.runStart}
             currentUserId={currentUserId}
+            packId={pack.id}
           />
 
           {/* Row 3 — Status: where you stand in the wins race */}

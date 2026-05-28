@@ -51,6 +51,11 @@ interface Props {
   onToggleReaction: (feedItemId: string, emoji: string) => void;
   onOpenPicker: (item: FeedItem, anchor: AnchorPosition) => void;
   removePhotoFromItem: (id: string) => void;
+  // Optional pack context, forwarded to the avatar-tap navigation so the
+  // public profile screen can scope its Trends section to this pack.
+  // Activity feed rows always render inside ChatTab today, which has
+  // packId; the prop stays optional for pack-less surfaces.
+  packId?: string;
 }
 
 function ManualBadge() {
@@ -138,6 +143,7 @@ export function FeedItemRow({
   onToggleReaction,
   onOpenPicker,
   removePhotoFromItem,
+  packId,
 }: Props) {
   const [signedPhotoUrl, setSignedPhotoUrl] = useState<string | null>(null);
   // Bug C fix: native aspect ratio of the signed photo, read via
@@ -238,7 +244,10 @@ export function FeedItemRow({
       <TouchableOpacity
         style={s.avatar}
         onPress={() => {
-          router.push(`/user/${item.userId}` as any);
+          const href = packId
+            ? `/user/${item.userId}?packId=${packId}`
+            : `/user/${item.userId}`;
+          router.push(href as any);
         }}
         activeOpacity={0.7}
         accessibilityRole="button"

@@ -33,6 +33,8 @@ import {
   PackRow,
   type SharedPackDetail,
 } from "../../src/components/profile/PackRow";
+import type { Pack } from "../../src/types/database";
+import { getEnabledCategories } from "../../src/lib/packCategories";
 
 const C = {
   bg: "#0B0F14",
@@ -118,7 +120,15 @@ export default function UserProfileScreen() {
   // ─────────────────────────────────────────────────────────────────────
   const cancelSuppressionOnNav = useSuppressParentRefetchOnDismiss();
 
-  const { id: targetUserId } = useLocalSearchParams<{ id: string }>();
+  // packId is optional — set by in-app callers (PackGridView avatar, Home
+  // MemberCard, Chat avatars) so the (upcoming) Trends section can pack-
+  // scope its data. Direct deep links may omit it; the pack-fetch effect
+  // below no-ops when packId is undefined and enabledCategories falls
+  // back to [], so every existing section still renders cleanly.
+  const { id: targetUserId, packId } = useLocalSearchParams<{
+    id: string;
+    packId?: string;
+  }>();
   const router = useRouter();
   const currentUser = useAuthStore((s) => s.user);
   const [packsExpanded, setPacksExpanded] = useState(false);
@@ -142,6 +152,13 @@ export default function UserProfileScreen() {
   const [profile, setProfile] = useState<PublicProfileData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Pack context for the (upcoming) Trends section. Fetched only when
+  // packId is in the route — pack-less opens leave this null and the
+  // derived enabledCategories empty, which Trends will read as "no
+  // section to render". Failure is swallowed (the existing sections are
+  // unaffected — Trends just won't appear).
+  const [pack, setPack] = useState<Pack | null>(null);
 
   const load = useCallback(async () => {
     if (!targetUserId) return;
@@ -179,6 +196,46 @@ export default function UserProfileScreen() {
       cancelled = true;
     };
   }, [targetUserId]);
+
+  // Pack-context fetch. Separate effect (and separate state) from the
+  // profile fetch so a missing packId, an RLS rejection, or a transient
+  // failure on this query never blocks the existing profile sections
+  // from rendering. Same cancelled-flag pattern as the profile fetch
+  // above. Narrow column list — Trends only needs the enable flags +
+  // timezone; the row is cast to Pack because getEnabledCategories
+  // structurally reads only the four enable booleans.
+  useEffect(() => {
+    if (!packId) {
+      setPack(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data, error: packErr } = await supabase
+        .from("packs")
+        .select(
+          "id, steps_enabled, workouts_enabled, calories_enabled, water_enabled, timezone",
+        )
+        .eq("id", packId)
+        .single();
+      if (cancelled) return;
+      if (packErr || !data) {
+        setPack(null);
+        return;
+      }
+      setPack(data as unknown as Pack);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [packId]);
+
+  // Derived for the (upcoming) Trends section: which category tabs to
+  // show. Empty when there is no pack context (pack-less open, fetch
+  // failure, or RLS rejection) — Trends will read empty as "do not
+  // render".
+  const enabledCategories = pack ? getEnabledCategories(pack) : [];
+  void enabledCategories;
 
   return (
     <SafeAreaView style={s.safe}>
