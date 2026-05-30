@@ -131,6 +131,12 @@ const C = {
   textSecondary: "#8B949E",
   textTertiary: "#484F58",
   accent: colors.self,
+  // Indigo today/active-day highlight — used as the BACKGROUND fill for
+  // the History day-picker's active day. Distinct from C.accent (which
+  // is aliased to colors.self in this file) so a self-ring on top of an
+  // active-day card reads clearly. Shared with DailyWinnerStrip's
+  // cardToday so the two surfaces match.
+  todayHighlight: colors.todayHighlight,
   success: "#3FB950",
   danger: "#F85149",
 } as const;
@@ -1091,7 +1097,7 @@ const wdS = StyleSheet.create({
     minWidth: 42,
     gap: 1,
   },
-  dayBtnActive: { backgroundColor: C.accent },
+  dayBtnActive: { backgroundColor: C.todayHighlight },
   dayBtnDisabled: {
     opacity: 0.35,
     backgroundColor: "transparent",

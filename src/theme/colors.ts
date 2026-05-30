@@ -39,4 +39,11 @@ export const colors = {
   // accent (chrome) and trend (data viz) are also separated so a future
   // restyle of chrome doesn't accidentally repaint every chart.
   trend:        "#22C55E",
+  // Today / active-day highlight — indigo, used as the BACKGROUND fill
+  // for "this is today" cards (winner-strip today card, History day-
+  // picker active day). Deliberately INDIGO not blue so the self-ring
+  // (colors.self #2F81F7) reads clearly when a self-as-winner chip sits
+  // on top of a today card. Distinct from accent (chrome #2563EB),
+  // self (#2F81F7), trend (#22C55E), and leader (#E3A000).
+  todayHighlight: "#4F46E5",
 } as const;
