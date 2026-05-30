@@ -1154,14 +1154,14 @@ const wdS = StyleSheet.create({
   noActivityText: {
     fontSize: 12,
     color: C.textTertiary,
-    marginLeft: 34,
+    marginLeft: 0,
     marginTop: 2,
   },
   // Goal-removal Stage A: per-category breakdown rows. actLeft holds the
   // CategoryIcon + label; actRight holds (optional ManualBadge) + raw
   // value + (optional "Won" pill). actValueDone / actCheck / dayGoals
   // were goal-hit affordances and are gone.
-  actList: { marginLeft: 34, marginTop: 6, gap: 6 },
+  actList: { marginLeft: 0, marginTop: 6, gap: 6 },
   actRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1324,7 +1324,11 @@ function PastRunsSection({
               activeOpacity={0.8}
             >
               <View style={pbS.currentHeader}>
-                <Text style={pbS.currentLabel}>This Week</Text>
+                <Text style={pbS.currentLabel}>
+                  {pack.competition_window === "monthly"
+                    ? "This Month"
+                    : "This Week"}
+                </Text>
                 <View style={pbS.activeBadge}>
                   <Text style={pbS.activeBadgeText}>In Progress</Text>
                 </View>
