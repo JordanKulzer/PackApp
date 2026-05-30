@@ -34,4 +34,9 @@ export const colors = {
   // doubling as bar decoration.
   barNeutral:   "#4B5563",
   accent:       "#2563EB",               // UI chrome: buttons, toggles, active states
+  // Trend line — green, "progress over time." Deliberately distinct from
+  // leader (gold) and self (blue), which carry their own semantic loads;
+  // accent (chrome) and trend (data viz) are also separated so a future
+  // restyle of chrome doesn't accidentally repaint every chart.
+  trend:        "#22C55E",
 } as const;

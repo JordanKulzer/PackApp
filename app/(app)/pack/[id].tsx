@@ -76,7 +76,8 @@ import { formatName } from "../../../src/lib/displayName";
 import { useScoreStore } from "../../../src/stores/scoreStore";
 import type { Pack, Run } from "../../../src/types/database";
 import { colors } from "../../../src/theme/colors";
-import { PackGridView, type GridEntry } from "../../../src/components/PackGridView";
+import { type GridEntry } from "../../../src/components/PackGridView";
+import { PackCompeteView } from "../../../src/components/PackCompeteView";
 import {
   usePackCategoryStandings,
   type PackCategoryStandings,
@@ -2990,7 +2991,7 @@ export default function PackScreen() {
               <PackBrandLoadingState />
             </View>
           ) : packData.activeRun ? (
-            <PackGridView
+            <PackCompeteView
               entries={gridEntries}
               pack={pack}
               activeRun={packData.activeRun}
