@@ -75,14 +75,23 @@ const C = {
 // the daily category-contests won so far this run: total_wins / daysElapsed.
 // total_wins spans all 4 categories, so a member sweeping every category
 // every day can exceed 1.0 — the result is intentionally clamped to 100%.
-// daysElapsed is 1-indexed (run start = day 1) and capped at 7 (weekly runs).
-// The divisor floor of 1 covers the just-started / clock-skew edge case
-// (a fresh run reads as an empty ring for a 0-win member, which is correct).
+// daysElapsed is 1-indexed (run start = day 1) and capped at the REAL run
+// length (weekly = 7, monthly = 28..31 — derived from run.end_date), not
+// the legacy hardcoded 7. Previously a monthly pack past day 7 had its
+// denominator stuck at 7 while wins kept accruing, inflating rings toward
+// 100% by mid-month. The divisor floor of 1 covers the just-started /
+// clock-skew edge case (a fresh run reads as an empty ring for a 0-win
+// member, which is correct).
 function ringFillPct(totalWins: number, run: Run): number {
   const msPerDay = 1000 * 60 * 60 * 24;
   const start = new Date(run.start_date + "T12:00:00").getTime();
+  const end = new Date(run.end_date + "T12:00:00").getTime();
+  const totalRunDays = Math.max(
+    1,
+    Math.round((end - start) / msPerDay) + 1,
+  );
   const rawDays = Math.floor((Date.now() - start) / msPerDay) + 1;
-  const daysElapsed = Math.min(7, Math.max(1, rawDays));
+  const daysElapsed = Math.min(totalRunDays, Math.max(1, rawDays));
   return Math.min(100, Math.max(0, (totalWins / daysElapsed) * 100));
 }
 

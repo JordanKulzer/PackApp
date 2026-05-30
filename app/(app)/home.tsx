@@ -118,13 +118,24 @@ interface MiniRingEntry {
 // two screens decoupled. A member's ring shows their share of the daily
 // category-contests won so far this run: total_wins / daysElapsed. wins
 // span all 4 categories, so the ratio can exceed 1.0 — clamped to 100%.
-// daysElapsed is 1-indexed (run start = day 1), capped at 7 (weekly runs),
-// divisor floored at 1 for the just-started / clock-skew edge case.
-function winsRingPct(totalWins: number, runStart: string): number {
+// daysElapsed is 1-indexed (run start = day 1), capped at the REAL run
+// length (weekly = 7, monthly = 28..31 — derived from runEnd), not the
+// legacy hardcoded 7. divisor floored at 1 for the just-started /
+// clock-skew edge case.
+function winsRingPct(
+  totalWins: number,
+  runStart: string,
+  runEnd: string,
+): number {
   const msPerDay = 1000 * 60 * 60 * 24;
   const start = new Date(runStart + "T12:00:00").getTime();
+  const end = new Date(runEnd + "T12:00:00").getTime();
+  const totalRunDays = Math.max(
+    1,
+    Math.round((end - start) / msPerDay) + 1,
+  );
   const rawDays = Math.floor((Date.now() - start) / msPerDay) + 1;
-  const daysElapsed = Math.min(7, Math.max(1, rawDays));
+  const daysElapsed = Math.min(totalRunDays, Math.max(1, rawDays));
   return Math.min(100, Math.max(0, (totalWins / daysElapsed) * 100));
 }
 
@@ -150,6 +161,7 @@ const MEMBER_RING_STROKE = 6;
 function MemberCard({
   entry,
   runStart,
+  runEnd,
   currentUserId,
   leaderId,
   currentUser,
@@ -157,6 +169,7 @@ function MemberCard({
 }: {
   entry: MiniRingEntry;
   runStart: string;
+  runEnd: string;
   currentUserId: string | undefined;
   leaderId: string | undefined;
   currentUser: {
@@ -169,7 +182,7 @@ function MemberCard({
   packId: string;
 }) {
   const router = useRouter();
-  const pct = winsRingPct(entry.total_wins, runStart);
+  const pct = winsRingPct(entry.total_wins, runStart, runEnd);
   const isMe = entry.user_id === currentUser?.id;
   const displayName =
     isMe && currentUser ? currentUser.displayName : entry.display_name;
@@ -254,6 +267,7 @@ function MiniRings({
   rankedMembers,
   previousRunWinnerIds,
   runStart,
+  runEnd,
   currentUserId,
   packId,
 }: {
@@ -261,6 +275,7 @@ function MiniRings({
   rankedMembers: MemberWinsCount[];
   previousRunWinnerIds: string[];
   runStart: string;
+  runEnd: string;
   currentUserId: string | undefined;
   // Forwarded to each MemberCard so avatar-tap navigation includes
   // ?packId= for the public profile's pack-scoped Trends.
@@ -313,6 +328,7 @@ function MiniRings({
           <MemberCard
             entry={entries[0]}
             runStart={runStart}
+            runEnd={runEnd}
             currentUserId={currentUserId}
             leaderId={leaderId}
             currentUser={currentUser}
@@ -335,6 +351,7 @@ function MiniRings({
             key={entry.user_id}
             entry={entry}
             runStart={runStart}
+            runEnd={runEnd}
             currentUserId={currentUserId}
             leaderId={leaderId}
             currentUser={currentUser}
@@ -613,6 +630,7 @@ function DarkPackCard({
             rankedMembers={standings?.rankedMembers ?? []}
             previousRunWinnerIds={previousRunWinnerIds}
             runStart={data.runStart}
+            runEnd={data.runEnd}
             currentUserId={currentUserId}
             packId={pack.id}
           />
