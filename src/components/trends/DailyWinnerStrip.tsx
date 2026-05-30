@@ -1,45 +1,53 @@
-// DailyWinnerStrip — pure presentational row of per-day winner chips
-// aligned to the chart's x columns. Settled days show a colored chip
-// with the winner's initial; tied days stack two chips with a "+N" if
-// there are 3+; zero-winner days show a muted dash; today renders a
-// hollow pulsing chip for the live leader.
+// DailyWinnerStrip — horizontal scrollable row of day-cards, one per
+// day in the active run. Replaces the prior fixed-tick chart-aligned
+// strip (which crammed ~30 dots into the chart width on monthly packs).
 //
-// Layout uses absolute positioning to match the chart's tick math
-// exactly: tick d sits at xLeft + d/(totalDays-1) * chartWidth, with
-// xLeft = 36 (chart y-axis pad) and right pad = 12. Cell centers land
-// on those tick positions so the chip lines up directly under the
-// chart's data point for that day. No flex-justify approximation —
-// that would offset centers by half a cell width.
+// Each card carries the SAME winner semantics the prior strip encoded:
+//   • settled day, 1 winner → SolidChip in winner's stable color
+//   • settled day, 2 winners → two overlapping small chips
+//   • settled day, 3+ winners → two small chips + "+N"
+//   • zero day (no winner) → muted dash
+//   • today, live leader → LiveChip (hollow + pulsing)
+//   • today, no live leader → muted dash
+//   • self winner → blue identity ring on the chip (per chip, including
+//     tie sub-chips and live)
+// Only the LAYOUT changed:
+//   • Cards instead of fixed-x ticks. Date is the day-of-month number
+//     ("30"), no weekday letter. Weekly + monthly use the same component.
+//   • Today's card adopts the History day-picker's accent-bg highlight.
+//   • ScrollView auto-positions to today (rightmost) on mount via
+//     onContentSizeChange → scrollToEnd({ animated: false }).
 //
-// Reduce-motion: a steady-opacity treatment replaces the pulse loop
-// when the OS setting is on; the hollow style alone still distinguishes
-// live from settled.
+// No chart-x-alignment math — the chart computes its own domain; this
+// strip is independent. width, PAD_LEFT, PAD_RIGHT, xForIndex are gone.
+//
+// Reduce-motion: the LiveChip still respects AccessibilityInfo
+// .isReduceMotionEnabled() (replaces the pulse with a steady 0.7
+// opacity).
 
 import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
+  ScrollView,
   Animated,
   Easing,
   AccessibilityInfo,
 } from "react-native";
+import { colors } from "../../theme/colors";
 
-// Layout mirrors PackTrendChart's plot bounds — keep these in sync
-// with that file's PADDING_LEFT / PADDING_RIGHT (36 / 12).
-const PAD_LEFT = 36;
-const PAD_RIGHT = 12;
-const CELL_W = 36;
-const CHIP_LARGE = 22;
-const CHIP_SMALL = 17;
-const STRIP_HEIGHT = 50;
 const NO_DATA_COLOR = "#8B949E";
 const TERTIARY_TEXT = "#484F58";
-// Self-identity blue, matches src/theme/colors.ts colors.self. Inlined
-// here per the local-C convention used across this codebase rather
-// than importing the token (the rest of this file is also literal-
-// color presentational).
+const SURFACE_RAISED = "#1C2333";
+const TEXT_SECONDARY = "#8B949E";
+// Self-identity blue, matches src/theme/colors.ts colors.self.
 const SELF_RING_COLOR = "#2F81F7";
+
+const CHIP_LARGE = 22;
+const CHIP_SMALL = 17;
+const CARD_MIN_WIDTH = 48;
+const CARD_GAP = 6;
 
 export interface WinnerDay {
   date: string; // YYYY-MM-DD
@@ -52,7 +60,6 @@ interface Props {
   days: WinnerDay[];
   nameByUser: Map<string, string>;
   colorByUser: Map<string, string>;
-  width: number;
   // Optional category label for the title row (e.g. "Steps"). Generic
   // "Daily winner" used when omitted.
   categoryLabel?: string;
@@ -64,12 +71,12 @@ interface Props {
   currentUserId?: string;
 }
 
-// Day-letter (M T W T F S S) from a YYYY-MM-DD via noon-parse to dodge
-// UTC-midnight shifts. getDay(): 0=Sun..6=Sat.
-const DAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
-function dayLetter(date: string): string {
-  const d = new Date(date + "T12:00:00");
-  return DAY_LETTERS[d.getDay()];
+// Day-of-month from a YYYY-MM-DD without locale parsing. No zero-pad —
+// single-digit days read more naturally ("5" not "05"). Weekly +
+// monthly both use this same one-format-fits-all date label.
+function dayOfMonth(date: string): string {
+  const [, , d] = date.split("-");
+  return String(parseInt(d, 10));
 }
 
 function initialFor(userId: string, nameByUser: Map<string, string>): string {
@@ -81,7 +88,7 @@ function initialFor(userId: string, nameByUser: Map<string, string>): string {
 // small (member of a tie pair). `isSelf` adds a thin blue identity
 // ring around the chip without changing the fill (so the winner color
 // language is preserved for everyone else, AND a self-+-overall-winner
-// shows gold fill + blue ring).
+// shows gold fill + blue ring). Logic unchanged from the prior strip.
 function SolidChip({
   initial,
   color,
@@ -124,6 +131,7 @@ function SolidChip({
 // hollow ring is drawn in the self-blue regardless of the resolved
 // color, so a live self-leader chip reads as "yours + live" without
 // the gold/blue ambiguity of a winner-color ring on a self chip.
+// Logic unchanged from the prior strip.
 function LiveChip({
   initial,
   color,
@@ -206,7 +214,7 @@ function LiveChip({
   );
 }
 
-// Empty / today-with-no-leader cell content.
+// Empty / today-with-no-leader cell content. Logic unchanged.
 function Dash({ live }: { live?: boolean }) {
   return (
     <Text
@@ -221,9 +229,9 @@ function Dash({ live }: { live?: boolean }) {
 }
 
 // Settled-day cell: 1 winner → large solid chip; 2 winners → two small
-// chips overlapping; 3+ → two small chips + "+N". Empty → dash.
-// Tie days only ring the tied sub-chip whose winner is the current
-// user — others keep their plain winner-color treatment.
+// chips overlapping; 3+ → two small chips + "+N". Empty → dash. Tie
+// days only ring the tied sub-chip whose winner is the current user.
+// Logic unchanged from the prior strip.
 function SettledCell({
   winnerUserIds,
   nameByUser,
@@ -247,7 +255,6 @@ function SettledCell({
       />
     );
   }
-  // Ties — show first 2 with overlap. 3+ → tack on "+N" text.
   const first = winnerUserIds[0];
   const second = winnerUserIds[1];
   const extra = winnerUserIds.length - 2;
@@ -292,41 +299,51 @@ export function DailyWinnerStrip({
   days,
   nameByUser,
   colorByUser,
-  width,
   categoryLabel,
   currentUserId,
 }: Props) {
+  const scrollRef = useRef<ScrollView>(null);
+
   if (days.length === 0) {
     return null;
   }
-
-  const chartWidth = Math.max(0, width - PAD_LEFT - PAD_RIGHT);
-  const xForIndex = (i: number): number => {
-    if (days.length === 1) return PAD_LEFT;
-    return PAD_LEFT + (i / (days.length - 1)) * chartWidth;
-  };
 
   const title = categoryLabel
     ? `DAILY ${categoryLabel.toUpperCase()} WINNER`
     : "DAILY WINNER";
 
-  // Two parallel layers, both keyed to the same column x via the same
-  // tick math the chart uses. Each chip-box and each letter-box is a
-  // fixed CELL_W wide and centered on tickX (left = tickX - CELL_W/2).
-  // This makes letter alignment independent of chip width — a tie
-  // day's wider chip pair no longer shifts its letter off the column.
   return (
-    <View style={{ width }}>
+    <View>
       <Text style={styles.title}>{title}</Text>
-      <View style={[styles.strip, { width, height: STRIP_HEIGHT }]}>
-        {/* Chip layer */}
-        {days.map((d, i) => {
-          const left = xForIndex(i) - CELL_W / 2;
-          return (
-            <View
-              key={`chip-${d.date}`}
-              style={[styles.chipBox, { left, width: CELL_W }]}
+      <ScrollView
+        ref={scrollRef}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.row}
+        // Auto-position to today (the rightmost card) on mount. Firing on
+        // content-size-change is the canonical "scroll to end after
+        // layout" pattern — runs once after the cards measure their
+        // intrinsic widths, then no-ops on subsequent identical sizes.
+        // `animated: false` so the user doesn't see the scroll animation
+        // when the strip first appears.
+        onContentSizeChange={() =>
+          scrollRef.current?.scrollToEnd({ animated: false })
+        }
+      >
+        {days.map((d) => (
+          <View
+            key={d.date}
+            style={[styles.card, d.isToday && styles.cardToday]}
+          >
+            <Text
+              style={[
+                styles.dateNum,
+                d.isToday && styles.dateNumToday,
+              ]}
             >
+              {dayOfMonth(d.date)}
+            </Text>
+            <View style={styles.chipSlot}>
               {d.isToday ? (
                 d.liveLeaderIds && d.liveLeaderIds.length > 0 ? (
                   <LiveChip
@@ -351,30 +368,9 @@ export function DailyWinnerStrip({
                 />
               )}
             </View>
-          );
-        })}
-        {/* Letter layer — same left/width as the chip layer above, so
-            letter i sits exactly under chip i's column center
-            regardless of chip width. */}
-        {days.map((d, i) => {
-          const left = xForIndex(i) - CELL_W / 2;
-          return (
-            <View
-              key={`letter-${d.date}`}
-              style={[styles.letterBox, { left, width: CELL_W }]}
-            >
-              <Text
-                style={[
-                  styles.dayLetter,
-                  d.isToday && styles.dayLetterToday,
-                ]}
-              >
-                {dayLetter(d.date)}
-              </Text>
-            </View>
-          );
-        })}
-      </View>
+          </View>
+        ))}
+      </ScrollView>
     </View>
   );
 }
@@ -386,33 +382,46 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     color: NO_DATA_COLOR,
     marginBottom: 6,
-    paddingLeft: PAD_LEFT,
   },
-  strip: {
-    position: "relative",
+  // Mirrors the History day-picker's row styling
+  // (pack/[id].tsx:1083-1114) — same gap, same card padding/bg/radius,
+  // same minWidth — so the two surfaces feel consistent.
+  row: {
+    flexDirection: "row",
+    gap: CARD_GAP,
+    paddingBottom: 2,
   },
-  // Chip and letter layers share the same `left + width` per column so
-  // both center on the same tick x — independent of chip width. The
-  // chip layer occupies the top portion of STRIP_HEIGHT (~28pt) and
-  // the letter layer sits below it. Heights are loose; chips have
-  // their own fixed dimensions and the letter is a single Text line.
-  chipBox: {
-    position: "absolute",
-    top: 0,
-    height: 28,
+  card: {
+    minWidth: CARD_MIN_WIDTH,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: SURFACE_RAISED,
+    alignItems: "center",
+    gap: 4,
+  },
+  cardToday: {
+    // Indigo today-highlight (colors.todayHighlight) — deliberately NOT
+    // colors.accent (#2563EB) which is too close to colors.self
+    // (#2F81F7), the self-ring color. A self-as-live-leader chip on top
+    // of this card needs the ring to read clearly.
+    backgroundColor: colors.todayHighlight,
+  },
+  dateNum: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: TEXT_SECONDARY,
+  },
+  dateNumToday: {
+    color: "#FFFFFF",
+  },
+  // Vertical slot for the winner chip / dash. Fixed height so cards
+  // align across the row regardless of which cell type renders
+  // (LiveChip + SettledCell are both CHIP_LARGE-tall; Dash is shorter
+  // but centered in the slot).
+  chipSlot: {
+    height: CHIP_LARGE + 2,
     alignItems: "center",
     justifyContent: "center",
-  },
-  letterBox: {
-    position: "absolute",
-    top: 34,
-    alignItems: "center",
-  },
-  dayLetter: {
-    fontSize: 10,
-    color: TERTIARY_TEXT,
-  },
-  dayLetterToday: {
-    color: NO_DATA_COLOR,
   },
 });

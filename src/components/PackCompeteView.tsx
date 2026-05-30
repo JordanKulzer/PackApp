@@ -995,7 +995,6 @@ export function PackCompeteView({
               days={days}
               nameByUser={nameById}
               colorByUser={resolvedColorByUser}
-              width={chartWidth}
               categoryLabel={CATEGORY_LABELS[selectedCategory]}
               currentUserId={currentUserId}
             />
