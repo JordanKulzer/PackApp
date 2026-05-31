@@ -548,6 +548,22 @@ export function PackCompeteView({
     }
     return out;
   })();
+
+  // Selected day — drives the strip's selection ring and (Step 2+) the
+  // upcoming bar graph. Defaults to today-in-pack-tz; falls back to the
+  // last day in `days` if today happens to fall outside the run window
+  // (defensive — effectiveEndDate already clamps that case, but a
+  // brand-new run with no settled days yet could in principle place
+  // today outside the enumerated range). Initializer runs once on
+  // mount; subsequent days/today changes don't auto-re-clamp — the
+  // selector UX is fine without it for Step 1, and a true mid-session
+  // day-rollover is rare. Revisit if needed in later steps.
+  const [selectedDate, setSelectedDate] = useState<string>(() =>
+    days.some((d) => d.date === todayInPackTz)
+      ? todayInPackTz
+      : (days[days.length - 1]?.date ?? todayInPackTz),
+  );
+
   const formatValue =
     selectedCategory === "steps"
       ? (nVal: number) =>
@@ -997,6 +1013,8 @@ export function PackCompeteView({
               colorByUser={resolvedColorByUser}
               categoryLabel={CATEGORY_LABELS[selectedCategory]}
               currentUserId={currentUserId}
+              selectedDate={selectedDate}
+              onSelectDate={setSelectedDate}
             />
             {hasAnyData && (
               <ScrollView

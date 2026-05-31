@@ -31,6 +31,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  TouchableOpacity,
   Animated,
   Easing,
   AccessibilityInfo,
@@ -69,6 +70,16 @@ interface Props {
   // user. If self is also the overall winner (gold-filled chip), the
   // blue ring stacks on top — gold fill + blue ring = "winner + you".
   currentUserId?: string;
+  // Step 1 of the bar-pivot: the strip is now a tappable day selector.
+  // When provided, the card whose date matches selectedDate renders with
+  // a blue selection ring (cardSelected style) — distinct from cardToday
+  // (indigo bg). The two coexist (different style properties): when
+  // today IS selected, the card shows BOTH treatments stacked.
+  // onSelectDate fires on card tap; consumer owns the selectedDate
+  // state. Both props optional so existing callers that don't pass
+  // them get unselectable strip (existing behavior).
+  selectedDate?: string;
+  onSelectDate?: (date: string) => void;
 }
 
 // Day-of-month from a YYYY-MM-DD without locale parsing. No zero-pad —
@@ -301,6 +312,8 @@ export function DailyWinnerStrip({
   colorByUser,
   categoryLabel,
   currentUserId,
+  selectedDate,
+  onSelectDate,
 }: Props) {
   const scrollRef = useRef<ScrollView>(null);
 
@@ -330,46 +343,57 @@ export function DailyWinnerStrip({
           scrollRef.current?.scrollToEnd({ animated: false })
         }
       >
-        {days.map((d) => (
-          <View
-            key={d.date}
-            style={[styles.card, d.isToday && styles.cardToday]}
-          >
-            <Text
+        {days.map((d) => {
+          const isSelected = !!selectedDate && d.date === selectedDate;
+          return (
+            <TouchableOpacity
+              key={d.date}
               style={[
-                styles.dateNum,
-                d.isToday && styles.dateNumToday,
+                styles.card,
+                d.isToday && styles.cardToday,
+                isSelected && styles.cardSelected,
               ]}
+              onPress={() => onSelectDate?.(d.date)}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityState={{ selected: isSelected }}
             >
-              {dayOfMonth(d.date)}
-            </Text>
-            <View style={styles.chipSlot}>
-              {d.isToday ? (
-                d.liveLeaderIds && d.liveLeaderIds.length > 0 ? (
-                  <LiveChip
-                    initial={initialFor(d.liveLeaderIds[0], nameByUser)}
-                    color={
-                      colorByUser.get(d.liveLeaderIds[0]) ?? NO_DATA_COLOR
-                    }
-                    isSelf={
-                      !!currentUserId &&
-                      d.liveLeaderIds[0] === currentUserId
-                    }
-                  />
+              <Text
+                style={[
+                  styles.dateNum,
+                  d.isToday && styles.dateNumToday,
+                ]}
+              >
+                {dayOfMonth(d.date)}
+              </Text>
+              <View style={styles.chipSlot}>
+                {d.isToday ? (
+                  d.liveLeaderIds && d.liveLeaderIds.length > 0 ? (
+                    <LiveChip
+                      initial={initialFor(d.liveLeaderIds[0], nameByUser)}
+                      color={
+                        colorByUser.get(d.liveLeaderIds[0]) ?? NO_DATA_COLOR
+                      }
+                      isSelf={
+                        !!currentUserId &&
+                        d.liveLeaderIds[0] === currentUserId
+                      }
+                    />
+                  ) : (
+                    <Dash live />
+                  )
                 ) : (
-                  <Dash live />
-                )
-              ) : (
-                <SettledCell
-                  winnerUserIds={d.winnerUserIds}
-                  nameByUser={nameByUser}
-                  colorByUser={colorByUser}
-                  currentUserId={currentUserId}
-                />
-              )}
-            </View>
-          </View>
-        ))}
+                  <SettledCell
+                    winnerUserIds={d.winnerUserIds}
+                    nameByUser={nameByUser}
+                    colorByUser={colorByUser}
+                    currentUserId={currentUserId}
+                  />
+                )}
+              </View>
+            </TouchableOpacity>
+          );
+        })}
       </ScrollView>
     </View>
   );
@@ -406,6 +430,13 @@ const styles = StyleSheet.create({
     // (#2F81F7), the self-ring color. A self-as-live-leader chip on top
     // of this card needs the ring to read clearly.
     backgroundColor: colors.todayHighlight,
+  },
+  // Selected-day ring — applied on the tapped card. Uses different style
+  // properties (border) than cardToday (background), so the two stack
+  // cleanly when today IS the selected day: indigo bg + blue ring.
+  cardSelected: {
+    borderWidth: 1.5,
+    borderColor: colors.self,
   },
   dateNum: {
     fontSize: 14,
