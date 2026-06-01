@@ -23,6 +23,7 @@
 
 import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { userProfile, t } from "../../constants/strings";
+import type { CompetitionWindow } from "../../types/database";
 
 const C = {
   border: "#30363D",
@@ -47,6 +48,13 @@ export interface SharedPackDetail {
   // Target's points on the active run's "today" (pack-timezone date).
   // 0 is meaningful (logged nothing today vs. logged & scored 0).
   target_today_points: number;
+  // Pack's competition window — used to label the run-total stat on the
+  // profile pack-context summary ("This week" / "This month"). Optional
+  // at the type level because the RPC field is added via migration
+  // 20260601b_profile_competition_window.sql which is review-only —
+  // until applied, the field is absent on rows and consumers must
+  // default. Once applied, every row carries it.
+  competition_window?: CompetitionWindow;
   member_count: number;
 }
 

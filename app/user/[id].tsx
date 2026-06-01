@@ -262,10 +262,7 @@ export default function UserProfileScreen() {
           {/* Avatar + identity */}
           <View style={s.avatarSection}>
             {profile.avatar_url ? (
-              <Image
-                source={{ uri: profile.avatar_url }}
-                style={s.avatar}
-              />
+              <Image source={{ uri: profile.avatar_url }} style={s.avatar} />
             ) : (
               <View style={[s.avatar, s.avatarFallback]}>
                 <Text style={s.avatarInitial}>
@@ -286,10 +283,15 @@ export default function UserProfileScreen() {
           {/* Pack-context summary — when the caller passed `?packId=...`
               AND that pack is in the viewer's shared list AND has an
               active run, show the target's standing in that pack's
-              current run (rank, run points, today's points). Lands the
+              current run (rank + competition-window total). Lands the
               viewer in competition context after tapping a Compete
               bar/card. Suppressed cleanly when packId is absent or the
-              pack has no active run. */}
+              pack has no active run.
+              `target_today_points` is still on the row (returned by the
+              RPC) but no longer rendered — a single member's today
+              points has no reference point to compare against, so it
+              reads as noise here. Left server-side in case a future
+              streak/today-highlight feature needs it. */}
           {(() => {
             const packStat = packId
               ? profile.shared_packs_detail.find((r) => r.pack_id === packId)
@@ -297,12 +299,20 @@ export default function UserProfileScreen() {
             if (!packStat || !packStat.has_active_run) return null;
             // All-zero guard mirrors Compete's start-of-run treatment:
             // showing "1st" on a fresh run when nobody has scored yet is
-            // misleading. Today's value is shown as-is — 0 today is
-            // meaningful, distinct from a fresh-run rank artifact.
+            // misleading.
             const rankDisplay =
               packStat.target_points === 0
                 ? "—"
                 : ordinal(packStat.target_rank);
+            // Window label defaults to "This week" when competition_window
+            // is missing (e.g., before the 20260601b_profile_competition_window
+            // RPC SQL is applied in Studio, the field is undefined on the
+            // row). The ternary's else-branch catches that case + any
+            // future window values cleanly.
+            const windowLabel =
+              packStat.competition_window === "monthly"
+                ? "This month"
+                : "This week";
             return (
               <View style={s.section}>
                 <Text style={s.sectionHeader}>{packStat.pack_name}</Text>
@@ -313,15 +323,9 @@ export default function UserProfileScreen() {
                   </View>
                   <View style={s.packSummaryStat}>
                     <Text style={s.packSummaryValue}>
-                      {packStat.target_points}
+                      {packStat.target_points} pts
                     </Text>
-                    <Text style={s.packSummaryLabel}>Run points</Text>
-                  </View>
-                  <View style={s.packSummaryStat}>
-                    <Text style={s.packSummaryValue}>
-                      {packStat.target_today_points}
-                    </Text>
-                    <Text style={s.packSummaryLabel}>Today</Text>
+                    <Text style={s.packSummaryLabel}>{windowLabel}</Text>
                   </View>
                 </View>
               </View>
@@ -399,9 +403,7 @@ export default function UserProfileScreen() {
               all four icons consistently this can change, but one colored
               icon among three monochrome icons is visual noise. */}
           <View style={s.section}>
-            <Text style={s.sectionHeader}>
-              {userProfile.section.lifetime}
-            </Text>
+            <Text style={s.sectionHeader}>{userProfile.section.lifetime}</Text>
             <StatSheetRow
               icon={
                 <MaterialCommunityIcons

@@ -82,6 +82,8 @@ import {
   usePackCategoryStandings,
   type PackCategoryStandings,
 } from "../../../src/hooks/usePackCategoryStandings";
+import { usePackCategoryTrend } from "../../../src/hooks/usePackCategoryTrend";
+import { usePackDailyWinners } from "../../../src/hooks/usePackDailyWinners";
 import { Crown } from "lucide-react-native";
 import {
   CATEGORIES,
@@ -2458,6 +2460,36 @@ export default function PackScreen() {
     isLoading: crownLoading,
   } = usePackRunHistory(packData?.pack.id ?? "");
 
+  // Compete tab trend + winners — LIFTED here (2026-06-01) from inside
+  // PackCompeteView. Previously these two hooks lived in the child and
+  // therefore couldn't fire until the loading gif cleared and the child
+  // mounted — producing a staggered paint (cards instant → bars pop →
+  // winner dots pop). Fetching them at the parent runs them in parallel
+  // with the gif's own 3 hooks. Both tolerate an undefined runId (idle
+  // until activeRun is known), so it's safe to call them before
+  // packData resolves.
+  //
+  // Note: deliberately NOT folded into showCompeteLoading. The gif's
+  // job is to gate the score strip + grid (the original 3 hooks);
+  // adding these two would delay the fast-strip paint. The bars region
+  // has its OWN scoped gate inside PackCompeteView (chartLoading) that
+  // waits for both of these — so the bars and the winner-dot strip
+  // appear together once they resolve, while the cards above stay
+  // instant.
+  const {
+    seriesByCategory,
+    isLoading: trendLoading,
+    error: trendError,
+  } = usePackCategoryTrend({
+    packId: packData?.pack.id ?? "",
+    runId: packData?.activeRun?.id ?? undefined,
+  });
+  const { winnersByCategoryByDate, isLoading: winnersLoading } =
+    usePackDailyWinners({
+      packId: packData?.pack.id ?? "",
+      runId: packData?.activeRun?.id ?? undefined,
+    });
+
   const { width: screenWidth } = useWindowDimensions();
   const { top: topInset } = useSafeAreaInsets();
   const pageScrollRef = React.useRef<ScrollView>(null);
@@ -3007,6 +3039,10 @@ export default function PackScreen() {
               activeRun={packData.activeRun}
               currentUserId={user?.id}
               onInvite={handleInvite}
+              seriesByCategory={seriesByCategory}
+              winnersByCategoryByDate={winnersByCategoryByDate}
+              chartLoading={trendLoading || winnersLoading}
+              chartError={trendError}
             />
           ) : null}
 
