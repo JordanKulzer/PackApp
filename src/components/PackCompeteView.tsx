@@ -61,6 +61,7 @@ import {
   DailyWinnerStrip,
   type WinnerDay,
 } from "./trends/DailyWinnerStrip";
+import { PackDailyBars, type DailyBar } from "./trends/PackDailyBars";
 
 // Replicates the local C object pattern at the top of PackGridView —
 // these are inlined per-file across the app rather than centralized as
@@ -582,6 +583,59 @@ export function PackCompeteView({
   const nameById = new Map(
     entries.map((e) => [e.user_id, formatName(e.display_name).split(/\s+/)[0]]),
   );
+
+  // Avatar map — entries already carry avatarUrl per member; build the
+  // lookup once so PackDailyBars can render avatars on wide-slot
+  // packs. Falls back to initials when the URL is null/undefined.
+  const avatarById = new Map<string, string | null>(
+    entries.map((e) => [e.user_id, e.avatarUrl]),
+  );
+
+  // Real bars for the selected (date, category) — the data-layer
+  // transpose. Each member of memberTrends becomes a DailyBar whose
+  // value is their point for selectedDate (0 if absent). Sorted
+  // descending by value so the winner is leftmost; ties resolve in
+  // stable map order. Falls back to a muted grey when a member is
+  // missing from the resolved color map (defensive — every entry
+  // should be present).
+  const dailyBars: DailyBar[] = (() => {
+    const series = seriesByCategory[selectedCategory] ?? [];
+    return series
+      .map((m): DailyBar => {
+        const pt = m.points.find((p) => p.date === selectedDate);
+        return {
+          userId: m.userId,
+          value: pt?.value ?? 0,
+          color: resolvedColorByUser.get(m.userId) ?? colors.member,
+          name: nameById.get(m.userId) ?? "—",
+          avatarUrl: avatarById.get(m.userId) ?? undefined,
+        };
+      })
+      .sort((a, b) => b.value - a.value);
+  })();
+
+  // Per-category unit suffix. Only water carries one in the current
+  // category set; steps/workouts/calories are dimensionless integers
+  // already conveyed by the bar height + value label.
+  const unitSuffix: string | undefined =
+    selectedCategory === "water" ? "oz" : undefined;
+
+  // Empty-state copy for the all-zero case. Today gets the "yet today"
+  // framing (it's still open); past days get a date-specific framing.
+  // Date formatted "May 27" from the YYYY-MM-DD without locale parsing.
+  const SHORT_MONTHS = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ];
+  const formatShortDate = (date: string): string => {
+    const [, m, d] = date.split("-").map(Number);
+    return `${SHORT_MONTHS[(m ?? 1) - 1]} ${d}`;
+  };
+  const catWord = CATEGORY_LABELS[selectedCategory].toLowerCase();
+  const isTodaySelected = selectedDate === todayInPackTz;
+  const emptyLabel = isTodaySelected
+    ? `No ${catWord} logged yet today`
+    : `No ${catWord} logged on ${formatShortDate(selectedDate)}`;
   type LegendItem = {
     key: string;
     userId?: string;
@@ -1016,6 +1070,21 @@ export function PackCompeteView({
               selectedDate={selectedDate}
               onSelectDate={setSelectedDate}
             />
+
+            {/* Real bars for the selected (date, category). Reacts to
+                both day-card taps in the strip above (selectedDate)
+                and category-tab switches (selectedCategory). The chart
+                + mode-toggle + legend below stay mounted in step 3 for
+                an agreement check (winner-dot ↔ tallest-bar ↔ chart
+                peak should all identify the same member on a given
+                day). The chart unmounts in step 4. */}
+            <View style={{ marginTop: 12 }}>
+              <PackDailyBars
+                bars={dailyBars}
+                unitSuffix={unitSuffix}
+                emptyLabel={emptyLabel}
+              />
+            </View>
             {hasAnyData && (
               <ScrollView
                 horizontal
