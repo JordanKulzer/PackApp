@@ -116,29 +116,13 @@ interface MiniRingEntry {
 
 // Mini-ring fill for the categories model. Mirrors PackGridView's
 // ringFillPct — intentionally duplicated rather than imported, to keep the
-// two screens decoupled. A member's ring shows their share of the daily
-// category-contests won so far this run: total_wins / daysElapsed. wins
-// span all 4 categories, so the ratio can exceed 1.0 — clamped to 100%.
-// daysElapsed is 1-indexed (run start = day 1), capped at the REAL run
-// length (weekly = 7, monthly = 28..31 — derived from runEnd), not the
-// legacy hardcoded 7. divisor floored at 1 for the just-started /
-// clock-skew edge case.
-function winsRingPct(
-  totalWins: number,
-  runStart: string,
-  runEnd: string,
-): number {
-  const msPerDay = 1000 * 60 * 60 * 24;
-  const start = new Date(runStart + "T12:00:00").getTime();
-  const end = new Date(runEnd + "T12:00:00").getTime();
-  const totalRunDays = Math.max(
-    1,
-    Math.round((end - start) / msPerDay) + 1,
-  );
-  const rawDays = Math.floor((Date.now() - start) / msPerDay) + 1;
-  const daysElapsed = Math.min(totalRunDays, Math.max(1, rawDays));
-  return Math.min(100, Math.max(0, (totalWins / daysElapsed) * 100));
-}
+// Home rings now render as identity-only (progressPct={100}) — full
+// palette circle per member, matching Compete. The prior `winsRingPct`
+// helper (share of category-contests won) was retired when the ring
+// stopped being a progress meter: a partial arc on a 0-wins member
+// fell through to the bare grey track (since PackMemberDisplay gates
+// the colored ring on hasPts = progressPct > 0). The wins context
+// still surfaces in the "N wins" caption below each ring.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mini Rings Row — horizontal-scrolling list of all pack members.
@@ -161,8 +145,6 @@ const MEMBER_RING_STROKE = 6;
 // route.
 function MemberCard({
   entry,
-  runStart,
-  runEnd,
   currentUserId,
   currentUser,
   packId,
@@ -170,8 +152,6 @@ function MemberCard({
   allZeroWins,
 }: {
   entry: MiniRingEntry;
-  runStart: string;
-  runEnd: string;
   currentUserId: string | undefined;
   currentUser: {
     id: string;
@@ -193,7 +173,6 @@ function MemberCard({
   allZeroWins: boolean;
 }) {
   const router = useRouter();
-  const pct = winsRingPct(entry.total_wins, runStart, runEnd);
   const isMe = entry.user_id === currentUser?.id;
   const displayName =
     isMe && currentUser ? currentUser.displayName : entry.display_name;
@@ -233,7 +212,10 @@ function MemberCard({
           <PackMemberDisplay
             userId={entry.user_id}
             displayName={displayName}
-            progressPct={pct}
+            // progressPct={100} = full ring; identity-only (color
+            // signal via ringColor below), NOT a progress meter.
+            // Mirrors Compete's strip rings — PackCompeteView line 589.
+            progressPct={100}
             rank={entry.rank}
             currentUserId={currentUserId}
             // leaderId intentionally undefined — ringColor below drives
@@ -289,16 +271,12 @@ function MiniRings({
   members,
   rankedMembers,
   previousRunWinnerIds,
-  runStart,
-  runEnd,
   currentUserId,
   packId,
 }: {
   members: HomeMember[];
   rankedMembers: MemberWinsCount[];
   previousRunWinnerIds: string[];
-  runStart: string;
-  runEnd: string;
   currentUserId: string | undefined;
   // Forwarded to each MemberCard so avatar-tap navigation includes
   // ?packId= for the public profile's pack-scoped Trends.
@@ -360,8 +338,6 @@ function MiniRings({
         <View style={miniRingS.solo}>
           <MemberCard
             entry={entries[0]}
-            runStart={runStart}
-            runEnd={runEnd}
             currentUserId={currentUserId}
             currentUser={currentUser}
             packId={packId}
@@ -384,8 +360,6 @@ function MiniRings({
           <MemberCard
             key={entry.user_id}
             entry={entry}
-            runStart={runStart}
-            runEnd={runEnd}
             currentUserId={currentUserId}
             currentUser={currentUser}
             packId={packId}
@@ -664,8 +638,6 @@ function DarkPackCard({
             members={members}
             rankedMembers={standings?.rankedMembers ?? []}
             previousRunWinnerIds={previousRunWinnerIds}
-            runStart={data.runStart}
-            runEnd={data.runEnd}
             currentUserId={currentUserId}
             packId={pack.id}
           />
