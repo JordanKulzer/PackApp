@@ -28,6 +28,7 @@ import React, {
   useState,
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useRouter } from "expo-router";
 import {
   View,
   Text,
@@ -156,6 +157,18 @@ export function PackCompeteView({
   currentUserId,
   onInvite,
 }: PackCompeteViewProps) {
+  // Profile-open navigation — same pattern PackGridView (line 340),
+  // home.tsx (line 203), ChatMessageRow, and FeedItemRow already use.
+  // packId carries pack context to the (future) Piece-3 pack-context
+  // stats on the profile screen.
+  const router = useRouter();
+  const openMemberProfile = useCallback(
+    (userId: string) => {
+      router.push(`/user/${userId}?packId=${pack.id}` as any);
+    },
+    [router, pack.id],
+  );
+
   // Enabled categories drive the tab row. Memoised so the tab list
   // ref is stable across renders that don't change pack config.
   const enabledCategories = useMemo(
@@ -539,18 +552,22 @@ export function PackCompeteView({
           // isLeader gold treatment is suppressed in the all-zero
           // state — nobody leads when everyone is at 0 wins.
           const isLeader = !allZeroWins && entry.rank === 1;
-          // Score-strip cards are non-interactive on tap in the bar-
-          // pivot world (isolate's been removed; the chart it gated
-          // is no longer mounted). A future "tap → member detail
-          // sheet" replaces this gesture — see TODO log 2026-05-30.
+          // Score-strip cards open the member's profile modal — same
+          // /user/[id]?packId=... pattern PackGridView, Home,
+          // ChatMessageRow, and FeedItemRow already use. (Replaces
+          // the removed isolate gesture; same TODO from 2026-05-30
+          // is now resolved.)
           return (
-            <View
+            <TouchableOpacity
               key={entry.user_id}
               style={[
                 s.card,
                 { width: cardWidth },
                 isMe && s.cardSelf,
               ]}
+              onPress={() => openMemberProfile(entry.user_id)}
+              activeOpacity={0.7}
+              accessibilityRole="button"
             >
               <Text
                 style={[
@@ -604,7 +621,7 @@ export function PackCompeteView({
               >
                 {entry.total_wins}
               </Text>
-            </View>
+            </TouchableOpacity>
           );
         })}
       </ScrollView>
@@ -692,6 +709,7 @@ export function PackCompeteView({
                 bars={dailyBars}
                 unitSuffix={unitSuffix}
                 emptyLabel={emptyLabel}
+                onBarPress={openMemberProfile}
               />
             </View>
             {hasAnyData && (

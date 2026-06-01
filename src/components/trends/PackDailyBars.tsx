@@ -27,6 +27,7 @@ import {
   Text,
   StyleSheet,
   Image,
+  TouchableOpacity,
   type LayoutChangeEvent,
 } from "react-native";
 
@@ -95,6 +96,13 @@ interface Props {
   // bar's value is 0 — mixed days render normally with floor stubs.
   // Fallback "No activity yet." used when omitted.
   emptyLabel?: string;
+  // Optional bar-tap handler. When provided, each bar's full column
+  // (the bar + value label + identity circle + name) becomes a
+  // TouchableOpacity that calls back with the bar's userId. The
+  // all-zero empty state has no bars and so no tap surface — that's
+  // fine; the consumer's category caption and the day selector above
+  // remain the only interactive elements in that case.
+  onBarPress?: (userId: string) => void;
 }
 
 // Value formatting:
@@ -119,6 +127,7 @@ export function PackDailyBars({
   plotHeight = DEFAULT_PLOT_HEIGHT,
   unitSuffix,
   emptyLabel,
+  onBarPress,
 }: Props) {
   // Track measured layout width to switch identity-circle treatment
   // (avatar/large vs initial-only/small) AND to size bars responsively.
@@ -211,8 +220,15 @@ export function PackDailyBars({
           const ratio = dayMax > 0 ? b.value / dayMax : 0;
           const rawHeight = ratio * plotHeight;
           const barHeight = b.value === 0 ? FLOOR_STUB : Math.max(FLOOR_STUB, rawHeight);
-          return (
-            <View key={b.userId} style={styles.barSlot}>
+          // The bar's column (this slot) + the identity-row slot below
+          // + the name-row slot under that all share onPress so the
+          // member's whole vertical column is a single tap target,
+          // not just the thin colored bar. Particularly important for
+          // 0-height non-loggers — their column is mostly empty space
+          // around a 3pt floor stub; if only the floor were tappable
+          // they'd be effectively unreachable.
+          const slotContent = (
+            <>
               <Text
                 style={styles.valueLabel}
                 numberOfLines={1}
@@ -235,6 +251,21 @@ export function PackDailyBars({
                   },
                 ]}
               />
+            </>
+          );
+          return onBarPress ? (
+            <TouchableOpacity
+              key={b.userId}
+              style={styles.barSlot}
+              onPress={() => onBarPress(b.userId)}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+            >
+              {slotContent}
+            </TouchableOpacity>
+          ) : (
+            <View key={b.userId} style={styles.barSlot}>
+              {slotContent}
             </View>
           );
         })}
@@ -243,44 +274,57 @@ export function PackDailyBars({
       {/* Baseline — thin horizontal axis line under the bars. */}
       <View style={styles.baseline} />
 
-      {/* Identity row — circles align under each bar's slot center. */}
+      {/* Identity row — circles align under each bar's slot center.
+          Tappable when onBarPress is provided (same handler as the
+          bar slot above; full column reads as one tap target). */}
       <View style={styles.identityRow}>
         {bars.map((b) => {
           const useAvatar = useLargeIdentity && !!b.avatarUrl;
-          return (
+          const identityContent = useAvatar ? (
+            <Image
+              source={{ uri: b.avatarUrl ?? undefined }}
+              style={{
+                width: idSize,
+                height: idSize,
+                borderRadius: idSize / 2,
+              }}
+            />
+          ) : (
+            <View
+              style={[
+                styles.initialCircle,
+                {
+                  width: idSize,
+                  height: idSize,
+                  borderRadius: idSize / 2,
+                  backgroundColor: b.color,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.initialText,
+                  { fontSize: idSize <= 20 ? 10 : 12 },
+                ]}
+                allowFontScaling={false}
+              >
+                {initialFor(b.name)}
+              </Text>
+            </View>
+          );
+          return onBarPress ? (
+            <TouchableOpacity
+              key={b.userId}
+              style={styles.identitySlot}
+              onPress={() => onBarPress(b.userId)}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+            >
+              {identityContent}
+            </TouchableOpacity>
+          ) : (
             <View key={b.userId} style={styles.identitySlot}>
-              {useAvatar ? (
-                <Image
-                  source={{ uri: b.avatarUrl ?? undefined }}
-                  style={{
-                    width: idSize,
-                    height: idSize,
-                    borderRadius: idSize / 2,
-                  }}
-                />
-              ) : (
-                <View
-                  style={[
-                    styles.initialCircle,
-                    {
-                      width: idSize,
-                      height: idSize,
-                      borderRadius: idSize / 2,
-                      backgroundColor: b.color,
-                    },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.initialText,
-                      { fontSize: idSize <= 20 ? 10 : 12 },
-                    ]}
-                    allowFontScaling={false}
-                  >
-                    {initialFor(b.name)}
-                  </Text>
-                </View>
-              )}
+              {identityContent}
             </View>
           );
         })}
@@ -301,8 +345,8 @@ export function PackDailyBars({
           },
         ]}
       >
-        {bars.map((b) => (
-          <View key={b.userId} style={styles.nameSlot}>
+        {bars.map((b) => {
+          const nameContent = (
             <Text
               style={[
                 styles.nameLabel,
@@ -314,8 +358,23 @@ export function PackDailyBars({
             >
               {b.name}
             </Text>
-          </View>
-        ))}
+          );
+          return onBarPress ? (
+            <TouchableOpacity
+              key={b.userId}
+              style={styles.nameSlot}
+              onPress={() => onBarPress(b.userId)}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+            >
+              {nameContent}
+            </TouchableOpacity>
+          ) : (
+            <View key={b.userId} style={styles.nameSlot}>
+              {nameContent}
+            </View>
+          );
+        })}
       </View>
 
     </View>
