@@ -8,7 +8,7 @@
 // Modal close MUST use router.dismiss() per the layout file convention
 // (see app/(app)/pack/_layout.tsx for precedent).
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -18,7 +18,6 @@ import {
   ActivityIndicator,
   ScrollView,
   SafeAreaView,
-  useWindowDimensions,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -34,12 +33,14 @@ import {
   PackRow,
   type SharedPackDetail,
 } from "../../src/components/profile/PackRow";
-import type { Pack } from "../../src/types/database";
-import { getEnabledCategories } from "../../src/lib/packCategories";
-import { CATEGORY_LABELS, type Category } from "../../src/lib/categories";
-import { CategoryIcon } from "../../src/components/CategoryIcon";
-import { useUserCategoryTrend } from "../../src/hooks/useUserCategoryTrend";
-import { CategoryTrendChart } from "../../src/components/trends/CategoryTrendChart";
+
+// Trends section removed 2026-06-01 — it was self-contained, broken
+// (misplaced on the public profile), and the chart will live in a
+// premium feature later. The orphaned hook + chart files
+// (src/hooks/useUserCategoryTrend.ts +
+// src/components/trends/CategoryTrendChart.tsx) are LEFT DORMANT here
+// for that future feature. Compete's banked PackTrendChart /
+// usePackCategoryTrend are a SEPARATE code path and untouched.
 
 const C = {
   bg: "#0B0F14",
@@ -125,15 +126,19 @@ export default function UserProfileScreen() {
   // ─────────────────────────────────────────────────────────────────────
   const cancelSuppressionOnNav = useSuppressParentRefetchOnDismiss();
 
-  // packId is optional — set by in-app callers (PackGridView avatar, Home
-  // MemberCard, Chat avatars) so the (upcoming) Trends section can pack-
-  // scope its data. Direct deep links may omit it; the pack-fetch effect
-  // below no-ops when packId is undefined and enabledCategories falls
-  // back to [], so every existing section still renders cleanly.
+  // packId is currently unused but intentionally retained. The four
+  // in-app callers (PackGridView avatar, Home MemberCard, Chat /
+  // FeedItemRow avatars) still pass `?packId=...` in their navigation
+  // URLs, and the upcoming pack-context-stats (Piece 3) will read it
+  // here — keeping the destructure now means that next pass is a
+  // one-line addition with no re-plumbing of the four callers. The
+  // `void packId;` below makes the "intentionally unused" status
+  // explicit without a lint-suppression directive.
   const { id: targetUserId, packId } = useLocalSearchParams<{
     id: string;
     packId?: string;
   }>();
+  void packId;
   const router = useRouter();
   const currentUser = useAuthStore((s) => s.user);
   const [packsExpanded, setPacksExpanded] = useState(false);
@@ -158,21 +163,8 @@ export default function UserProfileScreen() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Pack context for the Trends section. Fetched only when packId is in
-  // the route — pack-less opens leave this null and the derived
-  // enabledCategories empty, which Trends reads as "no section to
-  // render". Failure is swallowed (the existing sections are unaffected
-  // — Trends just won't appear).
-  const [pack, setPack] = useState<Pack | null>(null);
-  // The pack's active runId — Trends chart fetches this run's daily_scores.
-  // null = no active run (or fetch failed) → section doesn't render.
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  // Selected category tab inside the Trends section. Initialised by the
-  // sync effect below once enabledCategories is known; reset if the
-  // current selection becomes disabled (e.g. the pack's config changes).
-  const [selectedCategory, setSelectedCategory] = useState<Category | null>(
-    null,
-  );
+  // Trends-only state (pack / activeRunId / selectedCategory) removed
+  // 2026-06-01 along with the Trends section.
 
   const load = useCallback(async () => {
     if (!targetUserId) return;
@@ -211,119 +203,10 @@ export default function UserProfileScreen() {
     };
   }, [targetUserId]);
 
-  // Pack-context fetch. Separate effect (and separate state) from the
-  // profile fetch so a missing packId, an RLS rejection, or a transient
-  // failure on this query never blocks the existing profile sections
-  // from rendering. Same cancelled-flag pattern as the profile fetch
-  // above. Narrow column list — Trends only needs the enable flags +
-  // timezone; the row is cast to Pack because getEnabledCategories
-  // structurally reads only the four enable booleans.
-  useEffect(() => {
-    if (!packId) {
-      setPack(null);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      const { data, error: packErr } = await supabase
-        .from("packs")
-        .select(
-          "id, steps_enabled, workouts_enabled, calories_enabled, water_enabled, timezone",
-        )
-        .eq("id", packId)
-        .single();
-      if (cancelled) return;
-      if (packErr || !data) {
-        setPack(null);
-        return;
-      }
-      setPack(data as unknown as Pack);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [packId]);
-
-  // Active-run fetch — mirrors usePack.ts's pattern (eq("status","active"),
-  // newest first, maybeSingle). Drives the Trends chart's runId. null
-  // here = section doesn't render (no run = nothing to chart).
-  useEffect(() => {
-    if (!packId) {
-      setActiveRunId(null);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      const { data, error: runErr } = await supabase
-        .from("runs")
-        .select("id")
-        .eq("pack_id", packId)
-        .eq("status", "active")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (cancelled) return;
-      if (runErr || !data) {
-        setActiveRunId(null);
-        return;
-      }
-      setActiveRunId(data.id);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [packId]);
-
-  // Memoised so the reference stays stable per pack value — otherwise
-  // the sync effect below would re-fire on every render.
-  const enabledCategories = useMemo(
-    () => (pack ? getEnabledCategories(pack) : []),
-    [pack],
-  );
-
-  // Keep selectedCategory in sync with what the pack currently enables.
-  // Reset when the list empties (pack cleared / fetch failed); preserve
-  // the current selection if still valid; otherwise fall to the first
-  // enabled category.
-  useEffect(() => {
-    if (enabledCategories.length === 0) {
-      setSelectedCategory(null);
-      return;
-    }
-    setSelectedCategory((cur) => {
-      if (cur && enabledCategories.includes(cur)) return cur;
-      return enabledCategories[0];
-    });
-  }, [enabledCategories]);
-
-  // Trends-section visibility: only when we have a pack, at least one
-  // enabled category, an active run, and a chosen tab. Below this gate
-  // the section returns null up the tree and the hook short-circuits
-  // (null runId → no fetch).
-  const trendsSectionEligible =
-    !!pack &&
-    enabledCategories.length > 0 &&
-    !!activeRunId &&
-    !!selectedCategory;
-
-  // Always-called per rules-of-hooks; null runId makes the hook a no-op
-  // so we don't fetch when the section won't render. The "steps"
-  // placeholder for category is never observed in that case.
-  const trend = useUserCategoryTrend(
-    targetUserId ?? "",
-    trendsSectionEligible ? activeRunId : null,
-    (selectedCategory ?? "steps") as Category,
-  );
-
-  // Chart sizing — useWindowDimensions is the codebase convention
-  // (pack/[id].tsx:2450, ReactionPicker.tsx:60). Content padding on
-  // s.content is 16 each side, so chart width = screenWidth - 32.
-  const { width: screenWidth } = useWindowDimensions();
-  const CONTENT_HORIZONTAL_PADDING = 16;
-  const chartWidth = Math.max(
-    0,
-    screenWidth - CONTENT_HORIZONTAL_PADDING * 2,
-  );
+  // Trends-only effects (pack fetch / active-run fetch /
+  // selectedCategory sync), the enabledCategories memo, the
+  // trendsSectionEligible boolean, the useUserCategoryTrend hook call,
+  // and the chartWidth screenWidth derivation all removed 2026-06-01.
 
   return (
     <SafeAreaView style={s.safe}>
@@ -446,61 +329,6 @@ export default function UserProfileScreen() {
                     </Text>
                   </TouchableOpacity>
                 )}
-            </View>
-          )}
-
-          {/* Trends — per-category daily values over the pack's active run.
-              Renders only with full pack context (pack + at least one
-              enabled category + an active run + a chosen tab). A pack-
-              less open or fetch failure leaves this null; the other
-              sections render unchanged. */}
-          {trendsSectionEligible && selectedCategory && (
-            <View style={s.section}>
-              <Text style={s.sectionHeader}>Trends</Text>
-              <View style={s.trendsTabRow}>
-                {enabledCategories.map((cat) => {
-                  const isActive = cat === selectedCategory;
-                  return (
-                    <TouchableOpacity
-                      key={cat}
-                      style={[s.trendsTab, isActive && s.trendsTabActive]}
-                      onPress={() => setSelectedCategory(cat)}
-                      activeOpacity={0.7}
-                      accessibilityRole="button"
-                    >
-                      <CategoryIcon
-                        category={cat}
-                        size={14}
-                        color={isActive ? C.accent : C.textSecondary}
-                      />
-                      <Text
-                        style={[
-                          s.trendsTabLabel,
-                          isActive && s.trendsTabLabelActive,
-                        ]}
-                      >
-                        {CATEGORY_LABELS[cat]}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-              {trend.isLoading ? (
-                <View
-                  style={[
-                    s.trendsLoadingBox,
-                    { width: chartWidth, height: 160 },
-                  ]}
-                >
-                  <ActivityIndicator size="small" color={C.textSecondary} />
-                </View>
-              ) : (
-                <CategoryTrendChart
-                  points={trend.points}
-                  color={colors.trend}
-                  width={chartWidth}
-                />
-              )}
             </View>
           )}
 
@@ -670,38 +498,7 @@ const s = StyleSheet.create({
     fontWeight: "500",
     color: C.accent,
   },
-  // ── Trends section (Milestone 1: current-run line chart per category)
-  trendsTabRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginBottom: 4,
-  },
-  trendsTab: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: C.surface,
-    borderWidth: 0.5,
-    borderColor: C.border,
-  },
-  trendsTabActive: {
-    borderColor: C.accent,
-    backgroundColor: C.surfaceRaised,
-  },
-  trendsTabLabel: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: C.textSecondary,
-  },
-  trendsTabLabelActive: {
-    color: C.textPrimary,
-  },
-  trendsLoadingBox: {
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  // Trends-section styles (trendsTabRow / trendsTab / trendsTabActive /
+  // trendsTabLabel / trendsTabLabelActive / trendsLoadingBox) removed
+  // 2026-06-01 with the Trends section.
 });
