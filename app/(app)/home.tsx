@@ -28,6 +28,7 @@ import { fetchPreviousRunWinnerIds } from "../../src/hooks/usePackRunHistory";
 import { supabase } from "../../src/lib/supabase";
 import { formatName } from "../../src/lib/displayName";
 import { PackMemberDisplay } from "../../src/components/PackMemberDisplay";
+import { stableColorForUser } from "../../src/lib/memberPalette";
 import type { Pack } from "../../src/types/database";
 import { JoinPackModal } from "../../src/components/JoinPackModal";
 import { colors } from "../../src/theme/colors";
@@ -163,15 +164,15 @@ function MemberCard({
   runStart,
   runEnd,
   currentUserId,
-  leaderId,
   currentUser,
   packId,
+  allMemberIds,
+  allZeroWins,
 }: {
   entry: MiniRingEntry;
   runStart: string;
   runEnd: string;
   currentUserId: string | undefined;
-  leaderId: string | undefined;
   currentUser: {
     id: string;
     displayName: string;
@@ -180,6 +181,16 @@ function MemberCard({
   // Threaded so the avatar-tap → /user/[id] carries pack context for the
   // public profile's pack-scoped Trends section.
   packId: string;
+  // Stable-color helper input — the pack's full active-member roster id
+  // set, identical to the set Compete's PackCompeteView passes. Threaded
+  // from MiniRings (which builds entries from the same rankedRoster) so
+  // a member's ring color here matches Compete's bars/dots/ring for the
+  // same user.
+  allMemberIds: string[];
+  // True when every roster member is at 0 wins (fresh week). Suppresses
+  // the gold "#1" rank-badge claim — mirrors Compete's allZeroWins
+  // treatment (PackCompeteView line 548).
+  allZeroWins: boolean;
 }) {
   const router = useRouter();
   const pct = winsRingPct(entry.total_wins, runStart, runEnd);
@@ -193,8 +204,16 @@ function MemberCard({
   // everyone else — echoes the Compete tab's #N treatment, sized down
   // for the avatar overlay. PackMemberDisplay's built-in below-ring pill
   // stays suppressed (showRank={false}) — this overlay replaces it at a
-  // new position.
-  const isFirst = entry.rank === 1;
+  // new position. Gold treatment is suppressed in the all-zero-wins
+  // state (fresh week, nobody scored yet) — mirrors Compete's
+  // allZeroWins → "—" rendering (PackCompeteView line 567 + 592).
+  const isFirst = !allZeroWins && entry.rank === 1;
+  // Stable per-member ring color (sorted-userId palette). Wins over
+  // PackMemberDisplay's internal leader/self/member derivation; the ring
+  // becomes pure identity (matches Compete bars/dots/rings for this
+  // user). Leader emphasis on Home is now the rank BADGE only, not the
+  // ring.
+  const ringColor = stableColorForUser(entry.user_id, allMemberIds);
   return (
     <View style={miniRingS.memberCard}>
       <View style={miniRingS.avatarWrap}>
@@ -217,7 +236,11 @@ function MemberCard({
             progressPct={pct}
             rank={entry.rank}
             currentUserId={currentUserId}
-            leaderId={leaderId}
+            // leaderId intentionally undefined — ringColor below drives
+            // the ring; we don't want PackMemberDisplay's leader/self
+            // derivation to compete with the palette identity.
+            leaderId={undefined}
+            ringColor={ringColor}
             size={MEMBER_RING_SIZE}
             strokeWidth={MEMBER_RING_STROKE}
             avatarUrl={avatarUrl}
@@ -235,7 +258,7 @@ function MemberCard({
               isFirst && miniRingS.rankBadgeTextFirst,
             ]}
           >
-            #{entry.rank}
+            {allZeroWins ? "—" : `#${entry.rank}`}
           </Text>
         </View>
       </View>
@@ -313,10 +336,20 @@ function MiniRings({
 
   if (entries.length === 0) return null;
 
-  // Gold ring identity goes to the top-of-list member, but only when there
-  // are real wins (mirrors the crown + status-line "No wins yet").
-  const leaderId =
-    entries[0].total_wins > 0 ? entries[0].user_id : undefined;
+  // The pack's full active-member roster id set. Same set Compete's
+  // PackCompeteView builds (gridEntries → entries.map(e => e.user_id)),
+  // so stableColorForUser yields the same color per user on both
+  // surfaces. Pre-computed once here and threaded down to MemberCard
+  // rather than recomputed per row.
+  const allMemberIds = entries.map((e) => e.user_id);
+
+  // True when the whole roster is at 0 wins (fresh week, nobody scored
+  // yet). Drives the rank-badge "#1" → "—" + gold suppression in
+  // MemberCard — mirrors Compete's allZeroWins treatment. The prior
+  // leaderId gold-ring zero-guard is no longer needed (ring color is
+  // now the stable palette via ringColor); leader emphasis on Home is
+  // the rank badge only, gated on allZeroWins.
+  const allZeroWins = entries.every((e) => e.total_wins === 0);
 
   // Solo-pack: center a single card. ScrollView with one child left-aligns
   // and looks broken; the standalone <View> matches the prior solo layout
@@ -330,9 +363,10 @@ function MiniRings({
             runStart={runStart}
             runEnd={runEnd}
             currentUserId={currentUserId}
-            leaderId={leaderId}
             currentUser={currentUser}
             packId={packId}
+            allMemberIds={allMemberIds}
+            allZeroWins={allZeroWins}
           />
         </View>
       </View>
@@ -353,9 +387,10 @@ function MiniRings({
             runStart={runStart}
             runEnd={runEnd}
             currentUserId={currentUserId}
-            leaderId={leaderId}
             currentUser={currentUser}
             packId={packId}
+            allMemberIds={allMemberIds}
+            allZeroWins={allZeroWins}
           />
         ))}
       </ScrollView>

@@ -66,6 +66,7 @@ import {
   type WinnerDay,
 } from "./trends/DailyWinnerStrip";
 import { PackDailyBars, type DailyBar } from "./trends/PackDailyBars";
+import { MEMBER_PALETTE, stableColorForUser } from "../lib/memberPalette";
 
 // Replicates the local C object pattern at the top of PackGridView —
 // these are inlined per-file across the app rather than centralized as
@@ -99,23 +100,12 @@ const MAX_CARD = 150;
 // Gold (#E3A000) is intentionally NOT in this palette so the leader
 // can't be visually duplicated by another member.
 const GHOST_STROKE = "rgba(255,255,255,0.16)";
-// Palette hues for non-winner, non-self members. Deliberately excludes
-// gold (#E3A000 — reserved for the overall winner override) AND the
-// self-blue (#2F81F7 — reserved for the current user). The previous
-// amber/orange tones (#E0A52E, #F0997B) read as the winner gold under
-// the dim chart background, making a regular member look crowned —
-// hence the swap to greens/violets/magentas/reds that are obviously
-// not gold.
-const ALL_MODE_PALETTE = [
-  "#22C55E", // green
-  "#7F77DD", // blue-violet
-  "#D4537E", // magenta
-  "#1D9E75", // teal-green
-  "#5DCAA5", // mint
-  "#5AA9E6", // sky (distinct from self-blue)
-  "#C77DFF", // lavender
-  "#E2484A", // red
-];
+// Member palette + stable-color helper now live in src/lib/memberPalette.ts
+// (shared with Home's mini-rings so a given user has the same identity
+// color on every surface). The prior inline ALL_MODE_PALETTE has moved
+// there as MEMBER_PALETTE; the dormant ChartView's colorByUser
+// derivation below references MEMBER_PALETTE directly, and the live
+// stableColorByUser is built via stableColorForUser.
 
 const C = {
   bg: "#0B0F14",
@@ -271,7 +261,7 @@ export function PackCompeteView({
       } else {
         map.set(
           e.user_id,
-          ALL_MODE_PALETTE[p++ % ALL_MODE_PALETTE.length],
+          MEMBER_PALETTE[p++ % MEMBER_PALETTE.length],
         );
       }
     }
@@ -301,20 +291,20 @@ export function PackCompeteView({
 
   // Stable palette-only color map for the BARS + WINNER-DOTS. NO
   // gold-overall-winner override, NO blue-self override — every
-  // member, including the current user, gets a fixed palette slot
-  // assigned by rank order. This decouples bars/dots from the gold/
-  // blue identity reservations: gold stays exclusively in the top
-  // score strip's #1 rank/wins text; self-blue lives only in the
-  // user's display-name color. ALL_MODE_PALETTE already excludes
-  // both gold (#E3A000) and self-blue (#2F81F7) per the audit, so
-  // no member's stable color can collide with the reserved
+  // member, including the current user, gets a fixed palette slot.
+  // Keyed by SORTED user_id (via stableColorForUser) so a member's
+  // color is identical here, on Home's mini-rings, and across any
+  // category-tab / sort-order shift on this surface. The prior
+  // rank-index keying caused colors to reshuffle when standings
+  // moved (a member overtaking another swapped both their colors);
+  // the sorted-userId keying eliminates that drift entirely.
+  // MEMBER_PALETTE excludes gold (#E3A000) and self-blue (#2F81F7)
+  // so no member's stable color can collide with the reserved
   // identity colors. `resolvedColorByUser` (with overrides) is kept
   // for the dormant ChartView; do NOT swap them.
+  const memberIds = entries.map((e) => e.user_id);
   const stableColorByUser = new Map<string, string>(
-    entries.map((e, i) => [
-      e.user_id,
-      ALL_MODE_PALETTE[i % ALL_MODE_PALETTE.length],
-    ]),
+    memberIds.map((id) => [id, stableColorForUser(id, memberIds)]),
   );
 
   // chartSeries, hasAnyData (for the chart's load gate), chartWidth,
