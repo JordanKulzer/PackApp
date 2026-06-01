@@ -55,8 +55,24 @@ const AVATAR_THRESHOLD = 40; // slot width >= → ID_LARGE + optional avatar
 const VALUE_LABEL_HEIGHT = 16;
 const VALUE_LABEL_GAP = 4;
 const IDENTITY_GAP = 6; // space between baseline and identity row
+const NAME_GAP = 4; // space between identity circle and name label
+// Name-zone heights for the two regimes — narrow slots rotate -45° so
+// the name needs a taller box. Component's total height stays roughly
+// stable across pack sizes by absorbing the difference into the name
+// zone (the bars themselves don't shrink).
+const NAME_ZONE_HORIZONTAL = 16;
+const NAME_ZONE_ROTATED = 36;
+// Width below which names rotate to fit narrow slots. Slightly higher
+// than AVATAR_THRESHOLD so the horizontal-name regime stays roomy and
+// rotation kicks in only when the slot genuinely can't fit a
+// horizontal first name.
+const ROTATE_THRESHOLD = 50;
 
 const DEFAULT_PLOT_HEIGHT = 150;
+// Reduced height for the all-zero empty state — keeps a sensible
+// presence (so the surrounding layout doesn't collapse on tab) without
+// marooning a one-line message in the full plot's void.
+const EMPTY_BOX_HEIGHT = 90;
 
 export interface DailyBar {
   userId: string;
@@ -149,6 +165,13 @@ export function PackDailyBars({
         )
       : BAR_MIN;
 
+  // Rotate name labels when slots are too narrow for a horizontal
+  // first-name to fit comfortably. Pre-layout (slotWidth = 0) starts
+  // with rotated so the first frame doesn't show overlapping names
+  // that may not exist after the real measurement; flips to
+  // horizontal on the next render if the slot turns out roomy enough.
+  const rotateNames = slotWidth > 0 ? slotWidth < ROTATE_THRESHOLD : true;
+
   // All-zero empty state. Keeps the overall component the same vertical
   // footprint (plotHeight + label headroom) so flipping between a logged
   // day and an all-zero day doesn't reflow the surrounding layout.
@@ -160,7 +183,7 @@ export function PackDailyBars({
         <View
           style={[
             styles.emptyBox,
-            { height: plotHeight + VALUE_LABEL_HEIGHT + VALUE_LABEL_GAP },
+            { height: EMPTY_BOX_HEIGHT },
           ]}
         >
           <Text style={styles.emptyText}>
@@ -262,6 +285,39 @@ export function PackDailyBars({
           );
         })}
       </View>
+
+      {/* Name row — first name below each identity circle, colored in
+          the member's stable color. ROTATES -45° when the slot is too
+          narrow for a horizontal label (ROTATE_THRESHOLD). Reserved
+          name-zone height differs per regime so the component's
+          overall footprint shifts smoothly between many-member
+          (rotated, taller name zone) and few-member (horizontal,
+          shorter name zone) packs. */}
+      <View
+        style={[
+          styles.nameRow,
+          {
+            height: rotateNames ? NAME_ZONE_ROTATED : NAME_ZONE_HORIZONTAL,
+          },
+        ]}
+      >
+        {bars.map((b) => (
+          <View key={b.userId} style={styles.nameSlot}>
+            <Text
+              style={[
+                styles.nameLabel,
+                { color: b.color },
+                rotateNames && styles.nameLabelRotated,
+              ]}
+              numberOfLines={1}
+              allowFontScaling={false}
+            >
+              {b.name}
+            </Text>
+          </View>
+        ))}
+      </View>
+
     </View>
   );
 }
@@ -329,5 +385,31 @@ const styles = StyleSheet.create({
   initialText: {
     fontWeight: "700",
     color: "#0B0F14",
+  },
+  // Name row — sits below the identity row. Same gap/flex math so
+  // labels align under their bar's column. Height set inline per the
+  // current rotation regime.
+  nameRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: NAME_GAP,
+  },
+  nameSlot: {
+    flex: 1,
+    alignItems: "center",
+    overflow: "visible",
+  },
+  nameLabel: {
+    fontSize: 10,
+    fontWeight: "600",
+    // Color set inline per-bar (member's stable color).
+  },
+  // -45° rotation keeps the name centered on its slot's column. Each
+  // slot's `overflow: "visible"` (above) lets the rotated text spill
+  // sideways into the adjacent slots' visual space — fine because
+  // they're all rotating the same way, so they slot together rather
+  // than collide.
+  nameLabelRotated: {
+    transform: [{ rotate: "-45deg" }],
   },
 });

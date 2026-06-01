@@ -51,7 +51,11 @@ import { getEnabledCategories } from "../lib/packCategories";
 import { packToday } from "../lib/packDates";
 import { colors } from "../theme/colors";
 import { formatName } from "../lib/displayName";
-import { usePackCategoryTrend } from "../hooks/usePackCategoryTrend";
+import {
+  usePackCategoryTrend,
+  type MemberCategoryTrend,
+  type PackTrendPoint,
+} from "../hooks/usePackCategoryTrend";
 import { usePackDailyWinners } from "../hooks/usePackDailyWinners";
 import {
   PackTrendChart,
@@ -189,92 +193,12 @@ export function PackCompeteView({
   });
 
   // Mode resolution: small packs default to All (all members visible
-  // in distinct colors), bigger packs default to Focus (you + winner
-  // bold, others ghosted). A manual override via the segmented control
-  // below takes precedence — null means "follow the adaptive default."
-  // Persisted per (user, pack) in AsyncStorage so a manual choice on
-  // pack X doesn't bleed into pack Y, and pack X reopens to the same
-  // choice across app restarts.
-  const adaptiveMode: "all" | "focus" =
-    entries.length <= 5 ? "all" : "focus";
-  const [modeOverride, setModeOverride] = useState<null | "all" | "focus">(
-    null,
-  );
+  // Mode resolution (All / Focus), the per-(user, pack) AsyncStorage
+  // hydration useEffect, and the persisting setter were here. Moved
+  // into ChartView (dormant) since they only feed chart-side branches.
 
-  // Hydrate the override from storage on mount and whenever
-  // (userId, packId) changes. Non-blocking — render proceeds with
-  // modeOverride=null (adaptive default visible) and the stored
-  // value, if any, lands as soon as the async read resolves. Race
-  // guard: the cancelled flag prevents stale reads from a previous
-  // pack from clobbering the current pack's override. The keyRef
-  // also tracks which key the latest in-flight read is for, so when
-  // packs switch mid-flight, the resolved value from the OLD key
-  // won't apply to the NEW pack.
-  const hydrationKeyRef = useRef<string | null>(null);
-  useEffect(() => {
-    const key = competeModeKey(currentUserId, pack.id);
-    hydrationKeyRef.current = key;
-    if (!key) {
-      // Logged-out / missing-pack: no key to hydrate against. Reset
-      // override to null so the adaptive default applies in-session.
-      setModeOverride(null);
-      return;
-    }
-    let cancelled = false;
-    AsyncStorage.getItem(key)
-      .then((raw) => {
-        if (cancelled) return;
-        // Reject the read if the pack changed mid-flight — the key
-        // ref will have moved on.
-        if (hydrationKeyRef.current !== key) return;
-        if (raw === "all" || raw === "focus") {
-          // setModeOverride is used here for HYDRATION ONLY — does
-          // not trigger a write back to storage (writes only happen
-          // via setModeOverridePersist below, on user taps).
-          setModeOverride(raw);
-        } else {
-          // No stored value yet → adaptive default applies.
-          setModeOverride(null);
-        }
-      })
-      .catch(() => {
-        // Storage failure → fall back to adaptive default. Silent;
-        // matches the .catch(() => {}) pattern from useIsPro.ts.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [currentUserId, pack.id]);
-
-  // User-driven toggle. Sets state AND persists fire-and-forget. Wraps
-  // setModeOverride so the segmented-control onPress handlers below
-  // just call this — the only "raw" setModeOverride call is the
-  // hydration path above, which deliberately bypasses persistence to
-  // avoid a write loop.
-  const setModeOverridePersist = useCallback(
-    (next: "all" | "focus") => {
-      setModeOverride(next);
-      const key = competeModeKey(currentUserId, pack.id);
-      if (!key) return;
-      AsyncStorage.setItem(key, next).catch(() => {});
-    },
-    [currentUserId, pack.id],
-  );
-
-  const mode = modeOverride ?? adaptiveMode;
-
-  // Category leader = the member with the most wins in the currently
-  // selected category. Drives the crown overlay (per-category signal).
-  // Ties resolve to the first encountered (entries is rank-sorted by
-  // overall total_wins, so this is a stable, sensible fallback).
-  const categoryLeaderId = entries.reduce(
-    (best, e) =>
-      (e.wins_by_category[selectedCategory] ?? 0) >
-      (best.wins_by_category[selectedCategory] ?? 0)
-        ? e
-        : best,
-    entries[0] ?? null,
-  )?.user_id;
+  // Category leader / crown derivation moved into ChartView with the
+  // rest of the chart-only state.
 
   // Overall winner = the rank-1 entry, but ONLY when uncontested. A
   // tie for #1 means there's no single winner yet → nobody gold.
@@ -323,42 +247,11 @@ export function PackCompeteView({
     return map;
   }, [entries, currentUserId]);
 
-  // Tap-to-isolate state (Step 4b). Holds ONLY explicitly-tapped OTHER
-  // members — never the current user. "You" is always part of the
-  // shown set when isolation is active (see isShown below). This keeps
-  // the Set's meaning honest: "extra members the user pinned into
-  // focus alongside themselves." Transient — resets on remount /
-  // pack switch. NOT cleared on category-tab change: the user
-  // isolated *people*, not a category view.
-  const [isolatedIds, setIsolatedIds] = useState<Set<string>>(
-    () => new Set<string>(),
-  );
-  const toggleIsolate = useCallback(
-    (userId: string) => {
-      // Tap-own-card is a no-op: you are always shown when isolating,
-      // so toggling yourself in/out makes no sense. Tap "Show all" to
-      // exit isolation entirely.
-      if (userId === currentUserId) return;
-      setIsolatedIds((prev) => {
-        const next = new Set(prev);
-        if (next.has(userId)) {
-          next.delete(userId);
-        } else {
-          next.add(userId);
-        }
-        return next;
-      });
-    },
-    [currentUserId],
-  );
-  const isolateActive = isolatedIds.size > 0;
-  // Effective shown set when isolation is active: you ∪ tapped. A card
-  // is bold-bordered iff its line is bold on the chart — both branches
-  // read this single predicate so the invariant can't drift.
-  const isShown = (uid: string) =>
-    uid === currentUserId || isolatedIds.has(uid);
-  const cardIsShown = (uid: string) =>
-    isolateActive ? isShown(uid) : false;
+  // Tap-to-isolate state was here. Removed in the 2026-05-30 bar-pivot
+  // pass: isolate existed to manage line overlap on the chart, and the
+  // chart is no longer mounted on this tab. Score-strip cards are now
+  // non-interactive on tap (future: tap a card / bar → member detail
+  // sheet, replacing the removed isolate gesture).
 
   // Resolved identity color per member — stable color PLUS the gold
   // override for the uncontested overall winner. Single source of
@@ -375,101 +268,30 @@ export function PackCompeteView({
     ]),
   );
 
-  const chartSeries: PackTrendSeries[] = entries.map((e) => {
-    const points = pointsByUser.get(e.user_id) ?? [];
-    const isYou = e.user_id === currentUserId;
-    const isCategoryLeader = e.user_id === categoryLeaderId;
-    const isOverallWinner = e.user_id === overallWinnerId;
-    const stable = colorByUser.get(e.user_id) ?? GHOST_STROKE;
-    const resolved =
-      resolvedColorByUser.get(e.user_id) ?? GHOST_STROKE;
+  // Stable palette-only color map for the BARS + WINNER-DOTS. NO
+  // gold-overall-winner override, NO blue-self override — every
+  // member, including the current user, gets a fixed palette slot
+  // assigned by rank order. This decouples bars/dots from the gold/
+  // blue identity reservations: gold stays exclusively in the top
+  // score strip's #1 rank/wins text; self-blue lives only in the
+  // user's display-name color. ALL_MODE_PALETTE already excludes
+  // both gold (#E3A000) and self-blue (#2F81F7) per the audit, so
+  // no member's stable color can collide with the reserved
+  // identity colors. `resolvedColorByUser` (with overrides) is kept
+  // for the dormant ChartView; do NOT swap them.
+  const stableColorByUser = new Map<string, string>(
+    entries.map((e, i) => [
+      e.user_id,
+      ALL_MODE_PALETTE[i % ALL_MODE_PALETTE.length],
+    ]),
+  );
 
-    // ISOLATE OVERRIDE — takes precedence over mode + gold/winner
-    // logic while any cards are isolated. Shown members (= you ∪
-    // tapped) lift to their resolved identity color (gold stays gold
-    // for the winner when they're among the shown); everyone else
-    // goes ghost. "You" is implicitly in the shown set so your own
-    // line never disappears mid-isolation — the honest read on
-    // overlapping/tied lines without losing your own trajectory.
-    if (isolateActive) {
-      if (isShown(e.user_id)) {
-        return {
-          userId: e.user_id,
-          points,
-          strokeColor: resolved,
-          strokeWidth: 2.5,
-          emphasized: true,
-        };
-      }
-      return {
-        userId: e.user_id,
-        points,
-        strokeColor: GHOST_STROKE,
-        strokeWidth: 1.5,
-        emphasized: false,
-      };
-    }
-
-    // Gold OVERRIDE — overall (uncontested rank-1) winner. Stable
-    // across category tabs because it depends on total_wins, not on
-    // selectedCategory. Takes precedence over the you-blue treatment
-    // (if YOU are the winner, your line goes gold — matches the gold
-    // ring on your strip card). The crown overlay (per-category) is a
-    // separate signal that can coexist on this same line.
-    if (isOverallWinner) {
-      return {
-        userId: e.user_id,
-        points,
-        strokeColor: colors.leader,
-        strokeWidth: 2.5,
-        emphasized: true,
-      };
-    }
-
-    if (mode === "focus") {
-      // Focus emphasis: you (blue) + category leader (their stable
-      // color — the crown does the "leader" signal, not the color).
-      // Everyone else stays grey. Up to three emphasized lines: the
-      // gold-winner above, you, the category leader.
-      if (isYou || isCategoryLeader) {
-        return {
-          userId: e.user_id,
-          points,
-          strokeColor: stable,
-          strokeWidth: 2.5,
-          emphasized: true,
-        };
-      }
-      return {
-        userId: e.user_id,
-        points,
-        strokeColor: GHOST_STROKE,
-        strokeWidth: 1.5,
-        emphasized: false,
-      };
-    }
-    // All mode — equal-weight stable-colored lines.
-    return {
-      userId: e.user_id,
-      points,
-      strokeColor: stable,
-      strokeWidth: 1.8,
-      emphasized: false,
-    };
-  });
-
+  // chartSeries, hasAnyData (for the chart's load gate), chartWidth,
+  // leaderWins, and crownUserId moved into ChartView. The bars use
+  // dailyBars (built below) directly from seriesByCategory; the strip
+  // uses days + winnersByCategoryByDate. Nothing chart-specific
+  // remains in the parent's derivation chain.
   const hasAnyData = memberTrends.some((m) => m.points.length > 0);
-  const chartWidth = availWidth; // reuse the strip's measured width
-
-
-  // Crown target — only when the category leader actually has ≥1 win
-  // in the selected category. The reduce above resolves a fallback to
-  // entries[0] when nobody has any wins; we don't want to crown that
-  // person, so guard on real wins.
-  const leaderWins =
-    entries.find((e) => e.user_id === categoryLeaderId)
-      ?.wins_by_category[selectedCategory] ?? 0;
-  const crownUserId = leaderWins > 0 ? categoryLeaderId : undefined;
 
   // Effective end date — clamp pack-tz today between the run's start
   // and end so the chart spans only what's lived through, not an
@@ -565,13 +387,8 @@ export function PackCompeteView({
       : (days[days.length - 1]?.date ?? todayInPackTz),
   );
 
-  const formatValue =
-    selectedCategory === "steps"
-      ? (nVal: number) =>
-          nVal >= 1000
-            ? (nVal / 1000).toFixed(1).replace(/\.0$/, "") + "k"
-            : String(Math.round(nVal))
-      : (nVal: number) => String(Math.round(nVal));
+  // formatValue (chart y-axis number formatter) moved into ChartView.
+  // PackDailyBars has its own internal value formatter.
 
   // Legend items — dot colors read directly from chartSeries / the
   // stable colorByUser map so they can't drift from rendered line
@@ -599,18 +416,26 @@ export function PackCompeteView({
   // missing from the resolved color map (defensive — every entry
   // should be present).
   const dailyBars: DailyBar[] = (() => {
-    const series = seriesByCategory[selectedCategory] ?? [];
-    return series
-      .map((m): DailyBar => {
-        const pt = m.points.find((p) => p.date === selectedDate);
-        return {
-          userId: m.userId,
-          value: pt?.value ?? 0,
-          color: resolvedColorByUser.get(m.userId) ?? colors.member,
-          name: nameById.get(m.userId) ?? "—",
-          avatarUrl: avatarById.get(m.userId) ?? undefined,
-        };
-      })
+    // Iterate the FULL active-member roster (entries), not just the
+    // members who have a series in seriesByCategory. A member with no
+    // daily_scores rows yet (brand-new member, or a pack where they
+    // haven't opened the app since joining) is absent from
+    // seriesByCategory but is still an active member — they belong
+    // in the bars as a 0-height stub. Pre-build a value lookup per
+    // member so the loop is O(N) on the roster, O(M) on the series.
+    const valueByUser = new Map<string, number>();
+    for (const m of seriesByCategory[selectedCategory] ?? []) {
+      const pt = m.points.find((p) => p.date === selectedDate);
+      if (pt) valueByUser.set(m.userId, pt.value);
+    }
+    return entries
+      .map((e): DailyBar => ({
+        userId: e.user_id,
+        value: valueByUser.get(e.user_id) ?? 0,
+        color: stableColorByUser.get(e.user_id) ?? colors.member,
+        name: nameById.get(e.user_id) ?? "—",
+        avatarUrl: avatarById.get(e.user_id) ?? undefined,
+      }))
       .sort((a, b) => b.value - a.value);
   })();
 
@@ -636,135 +461,8 @@ export function PackCompeteView({
   const emptyLabel = isTodaySelected
     ? `No ${catWord} logged yet today`
     : `No ${catWord} logged on ${formatShortDate(selectedDate)}`;
-  type LegendItem = {
-    key: string;
-    userId?: string;
-    label: string;
-    color: string;
-    // Optional override for the label text color. Used to mark the
-    // current user's item in blue (colors.self) so the legend matches
-    // the strip card's "real name, blue text" self treatment. Other
-    // items omit this and fall back to the muted s.legendLabel color.
-    textColor?: string;
-  };
-  // Resolve legend dot colors directly from chartSeries so the gold
-  // override (overall winner) flows through Focus mode too — no
-  // hardcoded blue/gold that could drift from what the lines actually
-  // draw.
-  const chartColorByUser = new Map(
-    chartSeries.map((cs) => [cs.userId, cs.strokeColor]),
-  );
-  const legendItems: LegendItem[] = (() => {
-    // ISOLATE branch — one item per SHOWN member (you ∪ tapped),
-    // each at its resolved color; trailing "{k} hidden" with the
-    // honest count (NOT entries.length - isolatedIds.size — that
-    // counted you as hidden when you weren't). Mirrors chart output:
-    // shown member ↔ legend item ↔ bold-bordered card.
-    if (isolateActive) {
-      const items: LegendItem[] = [];
-      for (const e of entries) {
-        if (isShown(e.user_id)) {
-          const isYou = e.user_id === currentUserId;
-          items.push({
-            key: e.user_id,
-            userId: e.user_id,
-            label: nameById.get(e.user_id) ?? "Member",
-            color:
-              resolvedColorByUser.get(e.user_id) ?? GHOST_STROKE,
-            textColor: isYou ? colors.self : undefined,
-          });
-        }
-      }
-      const shownCount = entries.filter((e) => isShown(e.user_id)).length;
-      const hidden = entries.length - shownCount;
-      if (hidden > 0) {
-        items.push({
-          key: "hidden",
-          label: `${hidden} hidden`,
-          color: GHOST_STROKE,
-        });
-      }
-      return items;
-    }
-    if (mode === "all") {
-      return chartSeries.map((cs) => ({
-        key: cs.userId,
-        userId: cs.userId,
-        label: nameById.get(cs.userId) ?? "Member",
-        color: cs.strokeColor,
-        textColor:
-          cs.userId === currentUserId ? colors.self : undefined,
-      }));
-    }
-    // Focus mode
-    const items: LegendItem[] = [];
-    const youInPack = currentUserId
-      ? entries.some((e) => e.user_id === currentUserId)
-      : false;
-    const youAreCategoryLeader =
-      !!currentUserId && currentUserId === categoryLeaderId;
-    const youAreOverallWinner =
-      !!currentUserId && currentUserId === overallWinnerId;
-    if (youInPack && currentUserId) {
-      // Real first name (no "You") + blue text — same identity rule the
-      // strip card uses. The crown next to the name (when you're the
-      // category leader) replaces the prior "(leading)" suffix.
-      items.push({
-        key: "you",
-        userId: currentUserId,
-        label: nameById.get(currentUserId) ?? "Member",
-        color: chartColorByUser.get(currentUserId) ?? colors.self,
-        textColor: colors.self,
-      });
-    }
-    // Separate "Winner · X" row when the overall winner is neither
-    // YOU nor the category leader — otherwise gold would only show
-    // up under "{N} others" with a ghost dot. Skipped when no
-    // uncontested winner exists.
-    if (
-      overallWinnerId &&
-      !youAreOverallWinner &&
-      overallWinnerId !== categoryLeaderId
-    ) {
-      const winnerName = nameById.get(overallWinnerId) ?? "Member";
-      items.push({
-        key: "winner",
-        userId: overallWinnerId,
-        label: `Winner · ${winnerName}`,
-        color: chartColorByUser.get(overallWinnerId) ?? colors.leader,
-      });
-    }
-    if (!youAreCategoryLeader && categoryLeaderId) {
-      const leaderName = nameById.get(categoryLeaderId) ?? "Member";
-      items.push({
-        key: "leader",
-        userId: categoryLeaderId,
-        label: `Leader · ${leaderName}`,
-        color:
-          chartColorByUser.get(categoryLeaderId) ?? GHOST_STROKE,
-      });
-    }
-    // "Others" count: everyone NOT already represented above.
-    let accountedFor = 0;
-    if (youInPack) accountedFor++;
-    if (
-      overallWinnerId &&
-      !youAreOverallWinner &&
-      overallWinnerId !== categoryLeaderId
-    ) {
-      accountedFor++;
-    }
-    if (categoryLeaderId && !youAreCategoryLeader) accountedFor++;
-    const otherCount = entries.length - accountedFor;
-    if (otherCount > 0) {
-      items.push({
-        key: "others",
-        label: `${otherCount} ${otherCount === 1 ? "other" : "others"}`,
-        color: GHOST_STROKE,
-      });
-    }
-    return items;
-  })();
+  // Legend derivation (LegendItem type, chartColorByUser, legendItems
+  // IIFE) moved into ChartView.
 
   // Per-category win caption — "{Category} wins · Name n · ..." sorted
   // desc by that category's win count. Members with 0 are included so
@@ -809,7 +507,19 @@ export function PackCompeteView({
     );
   }
 
-  const leaderId = entries[0].user_id;
+  // leaderId removed — the top score strip's PackMemberDisplay now
+  // gets leaderId={undefined} so the leader's ring doesn't go gold.
+  // Rank-1 standing signal stays in the cardRankLeader/cardWinsLeader
+  // text styles.
+
+  // All-zero-wins suppression: when EVERY member is at 0 total wins
+  // (start-of-week / pre-rollover state), there's no meaningful rank
+  // order — calling all three "1st" reads as a bug. Render "—" for
+  // every card's rank ordinal in this state, and suppress the gold
+  // cardRankLeader style (nobody leads at 0–0–0). The win-count "0"
+  // under each name still renders. As soon as any member has ≥1
+  // total_win, normal ordinals + gold-for-#1 return.
+  const allZeroWins = entries.every((e) => (e.total_wins ?? 0) === 0);
 
   return (
     <View style={s.container}>
@@ -826,33 +536,21 @@ export function PackCompeteView({
       >
         {entries.map((entry) => {
           const isMe = entry.user_id === currentUserId;
-          const isLeader = entry.rank === 1;
-          // Bold border iff this card's line is bold on the chart.
-          // cardIsShown handles the "you-always-shown-while-
-          // isolating" rule, so YOUR card gets the same bold border
-          // as any isolated peer — no more "bordered card, ghost
-          // line" mismatch. Resting state (nothing isolated): no
-          // bold borders anywhere; the "you" signal is the quiet
-          // tint + blue name.
-          const showBoldBorder = cardIsShown(entry.user_id);
-          const boldBorderColor = resolvedColorByUser.get(entry.user_id);
+          // isLeader gold treatment is suppressed in the all-zero
+          // state — nobody leads when everyone is at 0 wins.
+          const isLeader = !allZeroWins && entry.rank === 1;
+          // Score-strip cards are non-interactive on tap in the bar-
+          // pivot world (isolate's been removed; the chart it gated
+          // is no longer mounted). A future "tap → member detail
+          // sheet" replaces this gesture — see TODO log 2026-05-30.
           return (
-            <TouchableOpacity
+            <View
               key={entry.user_id}
               style={[
                 s.card,
                 { width: cardWidth },
                 isMe && s.cardSelf,
-                showBoldBorder && {
-                  borderColor: boldBorderColor,
-                  borderWidth: 2,
-                  backgroundColor: C.surfaceRaised,
-                },
               ]}
-              onPress={() => toggleIsolate(entry.user_id)}
-              activeOpacity={0.7}
-              accessibilityRole="button"
-              accessibilityState={{ selected: showBoldBorder }}
             >
               <Text
                 style={[
@@ -861,7 +559,7 @@ export function PackCompeteView({
                 ]}
                 numberOfLines={1}
               >
-                {ordinal(entry.rank)}
+                {allZeroWins ? "—" : ordinal(entry.rank)}
               </Text>
               <PackMemberDisplay
                 userId={entry.user_id}
@@ -871,7 +569,14 @@ export function PackCompeteView({
                 progressPct={100}
                 rank={4 /* >3 suppresses the built-in rank badge */}
                 currentUserId={currentUserId}
-                leaderId={leaderId}
+                // leaderId intentionally undefined — the gold-for-#1
+                // ring conflicts with the gold reservation for the
+                // category-leader visual; the #1 standing signal stays
+                // on the rank ordinal + wins-count text styles
+                // (s.cardRankLeader / s.cardWinsLeader). PackMember-
+                // Display's getRingColor falls back to self-blue (you)
+                // or member-grey (others) for the ring.
+                leaderId={undefined}
                 size={44}
                 strokeWidth={3}
                 showName={false}
@@ -896,7 +601,7 @@ export function PackCompeteView({
               >
                 {entry.total_wins}
               </Text>
-            </TouchableOpacity>
+            </View>
           );
         })}
       </ScrollView>
@@ -935,71 +640,23 @@ export function PackCompeteView({
         })}
       </ScrollView>
 
-      {/* ── Mode segmented control — sets which chart treatment to
-          use. Subtle by design: small, muted unless interacted with.
-          When isolation is active, a "Show all" clear button appears
-          on the left and the segmented control stays on the right.
-          Selection reflects the EFFECTIVE mode (adaptive default OR
-          override). No persistence yet (4c). */}
-      <View style={s.modeRow}>
-        {isolateActive ? (
-          <TouchableOpacity
-            onPress={() => setIsolatedIds(new Set())}
-            hitSlop={8}
-            accessibilityRole="button"
-          >
-            <Text style={s.clearText}>Show all</Text>
-          </TouchableOpacity>
-        ) : (
-          <View />
-        )}
-        <View style={s.modeSegment}>
-          <TouchableOpacity
-            style={[
-              s.modeSeg,
-              mode === "focus" && s.modeSegActive,
-            ]}
-            onPress={() => setModeOverridePersist("focus")}
-            activeOpacity={0.7}
-            accessibilityRole="button"
-            accessibilityState={{ selected: mode === "focus" }}
-          >
-            <Text
-              style={[
-                s.modeSegLabel,
-                mode === "focus" && s.modeSegLabelActive,
-              ]}
-            >
-              You vs leader
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[
-              s.modeSeg,
-              mode === "all" && s.modeSegActive,
-            ]}
-            onPress={() => setModeOverridePersist("all")}
-            activeOpacity={0.7}
-            accessibilityRole="button"
-            accessibilityState={{ selected: mode === "all" }}
-          >
-            <Text
-              style={[
-                s.modeSegLabel,
-                mode === "all" && s.modeSegLabelActive,
-              ]}
-            >
-              All
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      {/* ChartView (line chart + mode toggle + legend) retired from
+          the free Compete tab in the 2026-05-30 bar-pivot. Kept dormant
+          for the future premium Trends extraction. To revert, re-mount
+          here: <ChartView entries={entries} currentUserId={currentUserId}
+          selectedCategory={selectedCategory} memberTrends={memberTrends}
+          pointsByUser={pointsByUser} colorByUser={colorByUser}
+          resolvedColorByUser={resolvedColorByUser} nameById={nameById}
+          overallWinnerId={overallWinnerId} pack={pack} activeRun={activeRun}
+          effectiveEndDate={effectiveEndDate} availWidth={availWidth} />.
+          The score strip's onPress isolate gesture is also gone — see
+          TODO log 2026-05-30 for the future tap-to-member-detail
+          replacement. */}
 
-      {/* ── Chart slot — per-member daily trend for the selected
-          category. The loading gate (isLoading && !hasAnyData) shows
-          the spinner ONLY on the cold first load; subsequent realtime
-          refetches keep the chart visible with the prior data, so the
-          UI doesn't flash a spinner on every daily_scores tick. */}
+      {/* Data slot — strip selector + daily bars + caption. The
+          loading gate (isLoading && !hasAnyData) was for the chart's
+          cold-load spinner; the bars depend on the same data source so
+          it still applies. */}
       <View style={s.chartSlot}>
         {error ? (
           <Text style={s.chartMsg}>Couldn&apos;t load trends</Text>
@@ -1010,61 +667,10 @@ export function PackCompeteView({
           />
         ) : (
           <>
-            {/* Legend ABOVE the chart (3f) so the color/crown legend is
-                visible before scanning the lines. Caption stays below
-                the chart. Final vertical order: tabs → legend → chart
-                → caption. */}
-            {hasAnyData && (
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={s.legendRow}
-              >
-                {legendItems.map((item) => {
-                  const isCrowned =
-                    !!crownUserId && item.userId === crownUserId;
-                  return (
-                    <View key={item.key} style={s.legendItem}>
-                      <View
-                        style={[
-                          s.legendDot,
-                          { backgroundColor: item.color },
-                        ]}
-                      />
-                      <Text
-                        style={[
-                          s.legendLabel,
-                          item.textColor && { color: item.textColor },
-                        ]}
-                      >
-                        {item.label}
-                      </Text>
-                      {isCrowned && (
-                        <Crown
-                          size={12}
-                          color={colors.leader}
-                          strokeWidth={2}
-                        />
-                      )}
-                    </View>
-                  );
-                })}
-              </ScrollView>
-            )}
-            <PackTrendChart
-              series={chartSeries}
-              runStart={activeRun.start_date}
-              runEnd={effectiveEndDate}
-              width={chartWidth}
-              height={240}
-              transitionKey={selectedCategory}
-              formatValue={formatValue}
-              crownUserId={crownUserId}
-            />
             <DailyWinnerStrip
               days={days}
               nameByUser={nameById}
-              colorByUser={resolvedColorByUser}
+              colorByUser={stableColorByUser}
               categoryLabel={CATEGORY_LABELS[selectedCategory]}
               currentUserId={currentUserId}
               selectedDate={selectedDate}
@@ -1098,6 +704,356 @@ export function PackCompeteView({
         )}
       </View>
     </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ChartView (DORMANT) — line chart + mode toggle + legend.
+//
+// Retired from the free Compete tab in the 2026-05-30 bar-pivot pass.
+// Kept here intact so the premium Trends extraction (or a future revert)
+// can re-mount with one line: <ChartView entries={...} ... />.
+//
+// Differences vs the pre-pivot inline version:
+//   • Tap-to-isolate is removed (no consumer left on the free tab).
+//     chartSeries now branches only on mode (All / Focus) + the gold
+//     overall-winner override. Restoring isolate would mean lifting
+//     isolatedIds back into the parent (the cards' onPress is gone) —
+//     intentionally not done here.
+//   • Mode persistence (AsyncStorage `pack:compete_mode:${userId}:${packId}`)
+//     is preserved verbatim so a revert restores per-pack mode memory.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ChartViewProps {
+  entries: GridEntry[];
+  currentUserId: string | undefined;
+  selectedCategory: Category;
+  memberTrends: MemberCategoryTrend[];
+  pointsByUser: Map<string, PackTrendPoint[]>;
+  colorByUser: Map<string, string>;
+  resolvedColorByUser: Map<string, string>;
+  nameById: Map<string, string>;
+  overallWinnerId: string | undefined;
+  pack: Pack;
+  activeRun: Run;
+  effectiveEndDate: string;
+  availWidth: number;
+}
+
+function ChartView({
+  entries,
+  currentUserId,
+  selectedCategory,
+  memberTrends,
+  pointsByUser,
+  colorByUser,
+  resolvedColorByUser,
+  nameById,
+  overallWinnerId,
+  pack,
+  activeRun,
+  effectiveEndDate,
+  availWidth,
+}: ChartViewProps) {
+  // Mode resolution + persistence — mirrors the parent's pre-pivot
+  // behavior verbatim. Adaptive default (small pack → All, big pack →
+  // Focus) overridden by manual toggle. Per-(user, pack) AsyncStorage
+  // memory so a manual choice doesn't bleed between packs.
+  const adaptiveMode: "all" | "focus" =
+    entries.length <= 5 ? "all" : "focus";
+  const [modeOverride, setModeOverride] = useState<null | "all" | "focus">(
+    null,
+  );
+  const hydrationKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = competeModeKey(currentUserId, pack.id);
+    hydrationKeyRef.current = key;
+    if (!key) {
+      setModeOverride(null);
+      return;
+    }
+    let cancelled = false;
+    AsyncStorage.getItem(key)
+      .then((raw) => {
+        if (cancelled) return;
+        if (hydrationKeyRef.current !== key) return;
+        if (raw === "all" || raw === "focus") {
+          setModeOverride(raw);
+        } else {
+          setModeOverride(null);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId, pack.id]);
+  const setModeOverridePersist = useCallback(
+    (next: "all" | "focus") => {
+      setModeOverride(next);
+      const key = competeModeKey(currentUserId, pack.id);
+      if (!key) return;
+      AsyncStorage.setItem(key, next).catch(() => {});
+    },
+    [currentUserId, pack.id],
+  );
+  const mode = modeOverride ?? adaptiveMode;
+
+  // Category leader → crown overlay on the per-category leader's
+  // latest point. Guarded so a leader with zero wins doesn't get
+  // crowned.
+  const categoryLeaderId = entries.reduce(
+    (best, e) =>
+      (e.wins_by_category[selectedCategory] ?? 0) >
+      (best.wins_by_category[selectedCategory] ?? 0)
+        ? e
+        : best,
+    entries[0] ?? null,
+  )?.user_id;
+  const leaderWins =
+    entries.find((e) => e.user_id === categoryLeaderId)
+      ?.wins_by_category[selectedCategory] ?? 0;
+  const crownUserId = leaderWins > 0 ? categoryLeaderId : undefined;
+
+  // Per-member chart series — gold for overall winner (override),
+  // member stable color for you + category-leader in Focus, ghost for
+  // everyone else in Focus, stable colors for everyone in All. Isolate
+  // branch is gone; the dormant chart doesn't need it.
+  const chartSeries: PackTrendSeries[] = entries.map((e) => {
+    const points = pointsByUser.get(e.user_id) ?? [];
+    const isYou = e.user_id === currentUserId;
+    const isCategoryLeader = e.user_id === categoryLeaderId;
+    const isOverallWinner = e.user_id === overallWinnerId;
+    const stable = colorByUser.get(e.user_id) ?? GHOST_STROKE;
+
+    if (isOverallWinner) {
+      return {
+        userId: e.user_id,
+        points,
+        strokeColor: colors.leader,
+        strokeWidth: 2.5,
+        emphasized: true,
+      };
+    }
+
+    if (mode === "focus") {
+      if (isYou || isCategoryLeader) {
+        return {
+          userId: e.user_id,
+          points,
+          strokeColor: stable,
+          strokeWidth: 2.5,
+          emphasized: true,
+        };
+      }
+      return {
+        userId: e.user_id,
+        points,
+        strokeColor: GHOST_STROKE,
+        strokeWidth: 1.5,
+        emphasized: false,
+      };
+    }
+    return {
+      userId: e.user_id,
+      points,
+      strokeColor: stable,
+      strokeWidth: 1.8,
+      emphasized: false,
+    };
+  });
+
+  const hasAnyData = memberTrends.some((m) => m.points.length > 0);
+  const chartWidth = availWidth;
+
+  const formatValue =
+    selectedCategory === "steps"
+      ? (nVal: number) =>
+          nVal >= 1000
+            ? (nVal / 1000).toFixed(1).replace(/\.0$/, "") + "k"
+            : String(Math.round(nVal))
+      : (nVal: number) => String(Math.round(nVal));
+
+  type LegendItem = {
+    key: string;
+    userId?: string;
+    label: string;
+    color: string;
+    textColor?: string;
+  };
+  const chartColorByUser = new Map(
+    chartSeries.map((cs) => [cs.userId, cs.strokeColor]),
+  );
+  const legendItems: LegendItem[] = (() => {
+    if (mode === "all") {
+      return chartSeries.map((cs) => ({
+        key: cs.userId,
+        userId: cs.userId,
+        label: nameById.get(cs.userId) ?? "Member",
+        color: cs.strokeColor,
+        textColor:
+          cs.userId === currentUserId ? colors.self : undefined,
+      }));
+    }
+    // Focus mode
+    const items: LegendItem[] = [];
+    const youInPack = currentUserId
+      ? entries.some((e) => e.user_id === currentUserId)
+      : false;
+    const youAreCategoryLeader =
+      !!currentUserId && currentUserId === categoryLeaderId;
+    const youAreOverallWinner =
+      !!currentUserId && currentUserId === overallWinnerId;
+    if (youInPack && currentUserId) {
+      items.push({
+        key: "you",
+        userId: currentUserId,
+        label: nameById.get(currentUserId) ?? "Member",
+        color: chartColorByUser.get(currentUserId) ?? colors.self,
+        textColor: colors.self,
+      });
+    }
+    if (
+      overallWinnerId &&
+      !youAreOverallWinner &&
+      overallWinnerId !== categoryLeaderId
+    ) {
+      const winnerName = nameById.get(overallWinnerId) ?? "Member";
+      items.push({
+        key: "winner",
+        userId: overallWinnerId,
+        label: `Winner · ${winnerName}`,
+        color: chartColorByUser.get(overallWinnerId) ?? colors.leader,
+      });
+    }
+    if (!youAreCategoryLeader && categoryLeaderId) {
+      const leaderName = nameById.get(categoryLeaderId) ?? "Member";
+      items.push({
+        key: "leader",
+        userId: categoryLeaderId,
+        label: `Leader · ${leaderName}`,
+        color:
+          chartColorByUser.get(categoryLeaderId) ?? GHOST_STROKE,
+      });
+    }
+    let accountedFor = 0;
+    if (youInPack) accountedFor++;
+    if (
+      overallWinnerId &&
+      !youAreOverallWinner &&
+      overallWinnerId !== categoryLeaderId
+    ) {
+      accountedFor++;
+    }
+    if (categoryLeaderId && !youAreCategoryLeader) accountedFor++;
+    const otherCount = entries.length - accountedFor;
+    if (otherCount > 0) {
+      items.push({
+        key: "others",
+        label: `${otherCount} ${otherCount === 1 ? "other" : "others"}`,
+        color: GHOST_STROKE,
+      });
+    }
+    return items;
+  })();
+
+  // Reference resolvedColorByUser so the prop isn't "unused" — it's
+  // here for future re-use (a revert might want to re-introduce
+  // isolate or other per-card visual states that re-key on this).
+  void resolvedColorByUser;
+
+  return (
+    <>
+      {/* Mode segmented control */}
+      <View style={s.modeRow}>
+        <View />
+        <View style={s.modeSegment}>
+          <TouchableOpacity
+            style={[s.modeSeg, mode === "focus" && s.modeSegActive]}
+            onPress={() => setModeOverridePersist("focus")}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityState={{ selected: mode === "focus" }}
+          >
+            <Text
+              style={[
+                s.modeSegLabel,
+                mode === "focus" && s.modeSegLabelActive,
+              ]}
+            >
+              You vs leader
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[s.modeSeg, mode === "all" && s.modeSegActive]}
+            onPress={() => setModeOverridePersist("all")}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityState={{ selected: mode === "all" }}
+          >
+            <Text
+              style={[
+                s.modeSegLabel,
+                mode === "all" && s.modeSegLabelActive,
+              ]}
+            >
+              All
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Legend */}
+      {hasAnyData && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={s.legendRow}
+        >
+          {legendItems.map((item) => {
+            const isCrowned =
+              !!crownUserId && item.userId === crownUserId;
+            return (
+              <View key={item.key} style={s.legendItem}>
+                <View
+                  style={[
+                    s.legendDot,
+                    { backgroundColor: item.color },
+                  ]}
+                />
+                <Text
+                  style={[
+                    s.legendLabel,
+                    item.textColor && { color: item.textColor },
+                  ]}
+                >
+                  {item.label}
+                </Text>
+                {isCrowned && (
+                  <Crown
+                    size={12}
+                    color={colors.leader}
+                    strokeWidth={2}
+                  />
+                )}
+              </View>
+            );
+          })}
+        </ScrollView>
+      )}
+
+      {/* Chart */}
+      <PackTrendChart
+        series={chartSeries}
+        runStart={activeRun.start_date}
+        runEnd={effectiveEndDate}
+        width={chartWidth}
+        height={240}
+        transitionKey={selectedCategory}
+        formatValue={formatValue}
+        crownUserId={crownUserId}
+      />
+    </>
   );
 }
 

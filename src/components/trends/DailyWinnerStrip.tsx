@@ -239,10 +239,12 @@ function Dash({ live }: { live?: boolean }) {
   );
 }
 
-// Settled-day cell: 1 winner → large solid chip; 2 winners → two small
-// chips overlapping; 3+ → two small chips + "+N". Empty → dash. Tie
-// days only ring the tied sub-chip whose winner is the current user.
-// Logic unchanged from the prior strip.
+// Settled-day cell: 1 winner → large solid chip in the winner's color;
+// 2+ winners → one neutral "=N" tie chip (scales cleanly to any tied
+// count: =2 / =3 / =4 / =5+). Empty → dash. The "=N" reads as "tied,"
+// not "×N" (which could be misread as a multiplier). The detail of
+// WHO tied is intentionally omitted at chip size — a future tap-to-
+// expand can surface the tied members.
 function SettledCell({
   winnerUserIds,
   nameByUser,
@@ -266,42 +268,33 @@ function SettledCell({
       />
     );
   }
-  const first = winnerUserIds[0];
-  const second = winnerUserIds[1];
-  const extra = winnerUserIds.length - 2;
+  // Tie chip — single neutral pill, same diameter as a single-winner
+  // chip. SURFACE_RAISED fill + muted-text "=N" so it's visibly
+  // distinct from colored single-winner chips (no member color leaks
+  // in; ties have no single owner to color by).
   return (
     <View
       style={{
-        flexDirection: "row",
+        width: CHIP_LARGE,
+        height: CHIP_LARGE,
+        borderRadius: CHIP_LARGE / 2,
+        backgroundColor: SURFACE_RAISED,
         alignItems: "center",
+        justifyContent: "center",
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: TERTIARY_TEXT,
       }}
     >
-      <SolidChip
-        initial={initialFor(first, nameByUser)}
-        color={colorByUser.get(first) ?? NO_DATA_COLOR}
-        size={CHIP_SMALL}
-        isSelf={!!currentUserId && first === currentUserId}
-      />
-      <View style={{ marginLeft: -6 }}>
-        <SolidChip
-          initial={initialFor(second, nameByUser)}
-          color={colorByUser.get(second) ?? NO_DATA_COLOR}
-          size={CHIP_SMALL}
-          isSelf={!!currentUserId && second === currentUserId}
-        />
-      </View>
-      {extra > 0 && (
-        <Text
-          style={{
-            marginLeft: 2,
-            fontSize: 9,
-            fontWeight: "700",
-            color: NO_DATA_COLOR,
-          }}
-        >
-          +{extra}
-        </Text>
-      )}
+      <Text
+        style={{
+          fontSize: 10,
+          fontWeight: "700",
+          color: NO_DATA_COLOR,
+        }}
+        allowFontScaling={false}
+      >
+        ={winnerUserIds.length}
+      </Text>
     </View>
   );
 }
