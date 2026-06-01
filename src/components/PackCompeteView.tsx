@@ -53,11 +53,10 @@ import { packToday } from "../lib/packDates";
 import { colors } from "../theme/colors";
 import { formatName } from "../lib/displayName";
 import {
-  usePackCategoryTrend,
   type MemberCategoryTrend,
   type PackTrendPoint,
 } from "../hooks/usePackCategoryTrend";
-import { usePackDailyWinners } from "../hooks/usePackDailyWinners";
+import { type WinnersByCategoryByDate } from "../hooks/usePackDailyWinners";
 import {
   PackTrendChart,
   type PackTrendSeries,
@@ -135,6 +134,23 @@ interface PackCompeteViewProps {
   activeRun: Run;
   currentUserId: string | undefined;
   onInvite: () => void;
+  // Trend + winners data lifted to the parent (2026-06-01 loading-flow
+  // fix). Both used to be fetched inside this component via
+  // usePackCategoryTrend + usePackDailyWinners; that serialized them
+  // AFTER the parent's loading gif cleared, producing a staggered paint
+  // (cards instant → bars pop → winner dots pop). Now the parent fires
+  // all 5 hooks concurrently and threads the results down. This
+  // component stays presentational w.r.t. trend + winners.
+  seriesByCategory: Record<Category, MemberCategoryTrend[]>;
+  winnersByCategoryByDate: WinnersByCategoryByDate;
+  // Combined loading flag — true while EITHER hook is still in flight.
+  // Replaces the prior `isLoading` (trend only). The combined gate makes
+  // the chartSlot wait for both, so the bars + winner dots appear
+  // together (single visual pop) instead of bars-then-dots.
+  chartLoading: boolean;
+  // Trend error (winners doesn't surface one to this UI). Renamed from
+  // the prior `error` for prop clarity.
+  chartError: string | null;
 }
 
 // "1st / 2nd / 3rd / Nth" — small helper kept local since this is the
@@ -156,6 +172,10 @@ export function PackCompeteView({
   activeRun,
   currentUserId,
   onInvite,
+  seriesByCategory,
+  winnersByCategoryByDate,
+  chartLoading,
+  chartError,
 }: PackCompeteViewProps) {
   // Profile-open navigation — same pattern PackGridView (line 340),
   // home.tsx (line 203), ChatMessageRow, and FeedItemRow already use.
@@ -195,15 +215,13 @@ export function PackCompeteView({
     n > 0 ? (availWidth - CARD_GAP * (n - 1)) / n : MIN_CARD;
   const cardWidth = Math.max(MIN_CARD, Math.min(MAX_CARD, rawCardWidth));
 
-  // Trend data — fetched here (above the empty-entries return) per
-  // rules-of-hooks. The hook short-circuits on null/falsy runId so an
-  // empty/loading pack doesn't waste a fetch; activeRun is always
-  // defined when we reach this component (the caller already gates on
-  // packData.activeRun).
-  const { seriesByCategory, isLoading, error } = usePackCategoryTrend({
-    packId: pack.id,
-    runId: activeRun.id,
-  });
+  // Trend data + winners are now lifted to the parent (2026-06-01) and
+  // arrive as props (seriesByCategory, winnersByCategoryByDate). The
+  // combined chartLoading / chartError props replace the prior in-line
+  // isLoading / error from usePackCategoryTrend. See the chartSlot gate
+  // below — it now waits for BOTH trend + winners so the bars and the
+  // winner dots in the strip appear together (single paint) instead of
+  // bars-then-dots.
 
   // Mode resolution: small packs default to All (all members visible
   // Mode resolution (All / Focus), the per-(user, pack) AsyncStorage
@@ -322,15 +340,10 @@ export function PackCompeteView({
         ? activeRun.end_date
         : todayInPackTz;
 
-  // Settled per-day winners — used by the DailyWinnerStrip. The hook
-  // fetches the same daily_winners rows usePackCategoryStandings reads
-  // but keeps the score_date dimension. Today is excluded from
-  // daily_winners by design (computed through yesterday only) — live
+  // Settled per-day winners — arrives as a prop now (lifted to the
+  // parent so it fetches in parallel with the gif's own hooks).
+  // Excludes today by design (computed through yesterday only); live
   // today is derived below from seriesByCategory.
-  const { winnersByCategoryByDate } = usePackDailyWinners({
-    packId: pack.id,
-    runId: activeRun.id,
-  });
 
   // Today's live leader for the selected category — derived from
   // seriesByCategory (already-fetched by usePackCategoryTrend) so we
@@ -678,9 +691,9 @@ export function PackCompeteView({
           cold-load spinner; the bars depend on the same data source so
           it still applies. */}
       <View style={s.chartSlot}>
-        {error ? (
+        {chartError ? (
           <Text style={s.chartMsg}>Couldn&apos;t load trends</Text>
-        ) : isLoading && !hasAnyData ? (
+        ) : chartLoading && !hasAnyData ? (
           <ActivityIndicator
             color={C.textSecondary}
             style={{ marginTop: 24 }}
