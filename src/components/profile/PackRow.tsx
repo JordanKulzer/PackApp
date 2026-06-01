@@ -40,6 +40,13 @@ export interface SharedPackDetail {
   viewer_points: number;
   target_points: number;
   viewer_rank: number; // 1-indexed; 0 when no active run
+  // Target's rank in the active run (1-indexed; 0 when no active run).
+  // Mirrors viewer_rank but for the profile's subject. Consumed by the
+  // pack-context summary block in app/user/[id].tsx.
+  target_rank: number;
+  // Target's points on the active run's "today" (pack-timezone date).
+  // 0 is meaningful (logged nothing today vs. logged & scored 0).
+  target_today_points: number;
   member_count: number;
 }
 

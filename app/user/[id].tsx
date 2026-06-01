@@ -93,6 +93,20 @@ function formatStatNumber(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+// Full English ordinal (1 → "1st", 2 → "2nd", 11/12/13 → "11th"…).
+// File-local — PackCompeteView has the same helper, and PackRow has a
+// suffix-only variant used via template; reuse isn't worth a refactor for
+// 9 lines. Consumed by the pack-context summary block only.
+function ordinal(n: number): string {
+  const lastTwo = n % 100;
+  if (lastTwo >= 11 && lastTwo <= 13) return `${n}th`;
+  const last = n % 10;
+  if (last === 1) return `${n}st`;
+  if (last === 2) return `${n}nd`;
+  if (last === 3) return `${n}rd`;
+  return `${n}th`;
+}
+
 function classifyError(message: string): string {
   // Map RPC RAISE EXCEPTION strings to placeholder copy. Voice review
   // refines later; the error variants stay stable contracts.
@@ -126,19 +140,17 @@ export default function UserProfileScreen() {
   // ─────────────────────────────────────────────────────────────────────
   const cancelSuppressionOnNav = useSuppressParentRefetchOnDismiss();
 
-  // packId is currently unused but intentionally retained. The four
-  // in-app callers (PackGridView avatar, Home MemberCard, Chat /
-  // FeedItemRow avatars) still pass `?packId=...` in their navigation
-  // URLs, and the upcoming pack-context-stats (Piece 3) will read it
-  // here — keeping the destructure now means that next pass is a
-  // one-line addition with no re-plumbing of the four callers. The
-  // `void packId;` below makes the "intentionally unused" status
-  // explicit without a lint-suppression directive.
+  // packId carries pack context from the calling surface (PackGridView
+  // avatar, Home MemberCard, Compete bar/card taps, Chat/FeedItemRow
+  // avatars). When present and the profile shares that pack with the
+  // viewer, the pack-context summary block below renders the target's
+  // rank + run points + today's points for that pack's active run.
+  // Other callers omit packId, in which case the summary is suppressed
+  // and the profile renders without it.
   const { id: targetUserId, packId } = useLocalSearchParams<{
     id: string;
     packId?: string;
   }>();
-  void packId;
   const router = useRouter();
   const currentUser = useAuthStore((s) => s.user);
   const [packsExpanded, setPacksExpanded] = useState(false);
@@ -270,6 +282,51 @@ export default function UserProfileScreen() {
               })}
             </Text>
           </View>
+
+          {/* Pack-context summary — when the caller passed `?packId=...`
+              AND that pack is in the viewer's shared list AND has an
+              active run, show the target's standing in that pack's
+              current run (rank, run points, today's points). Lands the
+              viewer in competition context after tapping a Compete
+              bar/card. Suppressed cleanly when packId is absent or the
+              pack has no active run. */}
+          {(() => {
+            const packStat = packId
+              ? profile.shared_packs_detail.find((r) => r.pack_id === packId)
+              : undefined;
+            if (!packStat || !packStat.has_active_run) return null;
+            // All-zero guard mirrors Compete's start-of-run treatment:
+            // showing "1st" on a fresh run when nobody has scored yet is
+            // misleading. Today's value is shown as-is — 0 today is
+            // meaningful, distinct from a fresh-run rank artifact.
+            const rankDisplay =
+              packStat.target_points === 0
+                ? "—"
+                : ordinal(packStat.target_rank);
+            return (
+              <View style={s.section}>
+                <Text style={s.sectionHeader}>{packStat.pack_name}</Text>
+                <View style={s.packSummaryRow}>
+                  <View style={s.packSummaryStat}>
+                    <Text style={s.packSummaryValue}>{rankDisplay}</Text>
+                    <Text style={s.packSummaryLabel}>Rank</Text>
+                  </View>
+                  <View style={s.packSummaryStat}>
+                    <Text style={s.packSummaryValue}>
+                      {packStat.target_points}
+                    </Text>
+                    <Text style={s.packSummaryLabel}>Run points</Text>
+                  </View>
+                  <View style={s.packSummaryStat}>
+                    <Text style={s.packSummaryValue}>
+                      {packStat.target_today_points}
+                    </Text>
+                    <Text style={s.packSummaryLabel}>Today</Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })()}
 
           {/* Streak line — shared component (Pass 22). Active vs broken
               treatment + best suffix gating live in the StreakLine
@@ -497,6 +554,31 @@ const s = StyleSheet.create({
     fontSize: 13,
     fontWeight: "500",
     color: C.accent,
+  },
+  // ── Pack-context summary block (2026-06-01) ───────────────────
+  // Three stats laid out in a single row: rank, run points, today.
+  // Centered numbers (large), secondary labels (small, uppercase tone
+  // via weight not transform — labels are short enough). No card
+  // chrome — the parent section's gap + section header provide
+  // grouping, matching the other sections on this screen.
+  packSummaryRow: {
+    flexDirection: "row",
+    paddingVertical: 8,
+  },
+  packSummaryStat: {
+    flex: 1,
+    alignItems: "center",
+    gap: 4,
+  },
+  packSummaryValue: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: C.textPrimary,
+  },
+  packSummaryLabel: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: C.textSecondary,
   },
   // Trends-section styles (trendsTabRow / trendsTab / trendsTabActive /
   // trendsTabLabel / trendsTabLabelActive / trendsLoadingBox) removed
