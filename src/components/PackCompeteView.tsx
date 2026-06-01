@@ -569,14 +569,17 @@ export function PackCompeteView({
                 progressPct={100}
                 rank={4 /* >3 suppresses the built-in rank badge */}
                 currentUserId={currentUserId}
-                // leaderId intentionally undefined — the gold-for-#1
-                // ring conflicts with the gold reservation for the
-                // category-leader visual; the #1 standing signal stays
-                // on the rank ordinal + wins-count text styles
-                // (s.cardRankLeader / s.cardWinsLeader). PackMember-
-                // Display's getRingColor falls back to self-blue (you)
-                // or member-grey (others) for the ring.
+                // leaderId intentionally undefined — `ringColor` below
+                // provides the explicit palette color, so the leader/
+                // self/member derivation isn't consulted for the ring.
                 leaderId={undefined}
+                // Stable palette color for the avatar ring — matches
+                // the bars + dots + chip initials so the member's
+                // identity reads consistently across the whole Compete
+                // surface. The #1 standing signal stays on the rank
+                // ordinal + wins-count text styles (s.cardRankLeader
+                // / s.cardWinsLeader), independent of this ring color.
+                ringColor={stableColorByUser.get(entry.user_id)}
                 size={44}
                 strokeWidth={3}
                 showName={false}

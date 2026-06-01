@@ -60,6 +60,21 @@ interface PackMemberDisplayProps {
   // PackGridView and other consumers' existing behavior.
   showRank?: boolean;
   avatarUrl?: string | null;
+  // Optional caller-provided ring color. When omitted (default),
+  // PackMemberDisplay derives the ring color from leader/self/member
+  // state via getRingColor — preserving every existing caller's
+  // behavior byte-identically. When provided, the prop wins and
+  // drives both the SVG stroke (animated and static) AND the
+  // initial-text color in its has-points branch. The empty-state
+  // (`!hasPts`) initial text still uses RING_EMPTY_COLOR regardless
+  // of the prop — the prop overrides identity color, not the
+  // empty-state signal.
+  //
+  // Used by the Compete top score strip so the avatar ring matches
+  // the member's stable palette color (consistent with the bars +
+  // dots + chip initials), while other surfaces keep the
+  // leader-gold / self-blue / member-grey derivation.
+  ringColor?: string;
 }
 
 // Dim color for the initial letter when the member has no points yet.
@@ -87,8 +102,17 @@ export function PackMemberDisplay({
   showName = true,
   showRank = true,
   avatarUrl,
+  ringColor: ringColorProp,
 }: PackMemberDisplayProps) {
-  const ringColor = getRingColor(userId, currentUserId, leaderId);
+  // Caller-provided ringColor wins when present; otherwise fall back
+  // to the leader/self/member derivation (existing callers — Home
+  // mini-rings, PackGridView — behave identically because they omit
+  // the prop). Empty-state initial text still uses RING_EMPTY_COLOR
+  // unchanged (see the `hasPts ? ringColor : RING_EMPTY_COLOR`
+  // branch below); the prop only overrides identity color, not the
+  // no-points signal.
+  const ringColor =
+    ringColorProp ?? getRingColor(userId, currentUserId, leaderId);
   const nameColor = getNameColor(userId, currentUserId);
   const hasPts = progressPct > 0;
   const isFirst = rank === 1;
