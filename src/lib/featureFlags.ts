@@ -27,8 +27,10 @@ export const FEATURE_FLAGS = {
   achievementCelebrationSheet: false,
   // 2026-05-24: Per-pack run-rollover recap trigger. When ON, opening a
   // pack whose active run rolled over since the user last opened it (on
-  // this device) navigates to the recap once. Default OFF — flip after a
-  // dogfood pass. Helpers: src/lib/newRunRecap.ts. Trigger lives in
+  // this device) navigates to the recap once. Enabled 2026-06-01 after
+  // dogfood validation (recap reads daily_winners directly — no
+  // winner_id dependency, populated for every completed run; see audit
+  // 2026-06-01). Helpers: src/lib/newRunRecap.ts. Trigger lives in
   // app/(app)/pack/[id].tsx.
-  newRunRecap: false,
+  newRunRecap: true,
 } as const;
