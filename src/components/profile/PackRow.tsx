@@ -38,16 +38,27 @@ export interface SharedPackDetail {
   pack_id: string;
   pack_name: string;
   has_active_run: boolean;
+  // Points-based fields — added by an earlier RPC extension but now DEAD
+  // metric (daily_scores.total_points has no writer since the Categories
+  // Pivot Stage 2A removed the scoring helpers; column is NOT NULL
+  // DEFAULT 0). Kept in the type because the RPC still returns them
+  // until the points→wins sweep removes them server-side. **No UI
+  // surface should read these** — use the wins fields below.
   viewer_points: number;
   target_points: number;
   viewer_rank: number; // 1-indexed; 0 when no active run
-  // Target's rank in the active run (1-indexed; 0 when no active run).
-  // Mirrors viewer_rank but for the profile's subject. Consumed by the
-  // pack-context summary block in app/user/[id].tsx.
   target_rank: number;
-  // Target's points on the active run's "today" (pack-timezone date).
-  // 0 is meaningful (logged nothing today vs. logged & scored 0).
   target_today_points: number;
+  // Wins-based fields — the LIVE metric. Aggregated server-side from
+  // daily_winners over the active run (excludes 'legacy' category to
+  // mirror rollover_expired_runs + usePackCategoryStandings). Drives
+  // the profile sheet's "this week" block + the Shared-packs
+  // head-to-head delta. Added by migration
+  // 20260601c_profile_wins_fields.sql.
+  viewer_wins: number;
+  target_wins: number;
+  viewer_wins_rank: number; // 1-indexed; 0 when no active run
+  target_wins_rank: number;
   // Pack's competition window — used to label the run-total stat on the
   // profile pack-context summary ("This week" / "This month"). Optional
   // at the type level because the RPC field is added via migration
@@ -80,20 +91,32 @@ export function PackRow({ row, isSelf, onPress }: PackRowProps) {
     signalText = userProfile.headToHead.noActiveRun;
     signalColor = C.textTertiary;
   } else if (isSelf) {
+    // Self-view rank uses the wins-based rank now — same LIVE metric
+    // as Compete/standings. The viewer_wins_rank ordinal is correct
+    // when the viewer has wins; 0 (no active run) was already filtered
+    // by the `has_active_run` branch above. The self-view doesn't
+    // need an allZeroWins "—" guard because the rank-of-N format
+    // ("2nd of 5") reads sensibly even at zero wins (the leftmost
+    // tie shows as "1st of N"); the head-to-head deltas below are
+    // where the all-zero noise would have shown.
     signalText = t(userProfile.headToHead.selfRank, {
-      rank: row.viewer_rank,
-      ord: ordinalSuffix(row.viewer_rank),
+      rank: row.viewer_wins_rank,
+      ord: ordinalSuffix(row.viewer_wins_rank),
       count: row.member_count,
     });
     signalColor = C.textSecondary;
-  } else if (row.viewer_points > row.target_points) {
+  } else if (row.viewer_wins > row.target_wins) {
+    const delta = row.viewer_wins - row.target_wins;
     signalText = t(userProfile.headToHead.ahead, {
-      count: row.viewer_points - row.target_points,
+      count: delta,
+      unit: delta === 1 ? "win" : "wins",
     });
     signalColor = C.success;
-  } else if (row.viewer_points < row.target_points) {
+  } else if (row.viewer_wins < row.target_wins) {
+    const delta = row.target_wins - row.viewer_wins;
     signalText = t(userProfile.headToHead.behind, {
-      count: row.target_points - row.viewer_points,
+      count: delta,
+      unit: delta === 1 ? "win" : "wins",
     });
     signalColor = C.danger;
   } else {

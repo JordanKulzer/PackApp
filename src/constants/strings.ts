@@ -540,8 +540,14 @@ export const userProfile = {
     lifetime: "Lifetime",
   },
   headToHead: {
-    ahead: "You +{count}",
-    behind: "Behind {count}",
+    // 2026-06-01 wins switch: head-to-head deltas now interpolate a
+    // {unit} so the metric reads explicitly ("You +2 wins" / "Behind
+    // 1 win"). Caller passes unit = count === 1 ? "win" : "wins" for
+    // singular/plural agreement. Tied stays without a unit — it's a
+    // state, not a count. selfRank's {count} is the member count
+    // (e.g. "2nd of 5"), unit-less by construction.
+    ahead: "You +{count} {unit}",
+    behind: "Behind {count} {unit}",
     tied: "Tied",
     noActiveRun: "No active run",
     // Voice review queue: alternatives "#2 of 5", "Rank 2 of 5", "2nd / 5".

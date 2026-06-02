@@ -297,13 +297,22 @@ export default function UserProfileScreen() {
               ? profile.shared_packs_detail.find((r) => r.pack_id === packId)
               : undefined;
             if (!packStat || !packStat.has_active_run) return null;
-            // All-zero guard mirrors Compete's start-of-run treatment:
-            // showing "1st" on a fresh run when nobody has scored yet is
-            // misleading.
+            // Wins-based "this week" stat (2026-06-01 wins switch). The
+            // prior `target_points`/`target_rank` reads were against a
+            // dead metric (daily_scores.total_points has no writer
+            // since Categories Pivot Stage 2A removed the scoring
+            // helpers). target_wins / target_wins_rank come from the
+            // RPC's daily_winners aggregation — the same LIVE metric
+            // Compete + standings + History show.
+            //
+            // All-zero guard mirrors the rest of the app: when the
+            // target has no wins yet, show "—" instead of an ordinal
+            // (a "1st" on 0 wins is misleading; all-zero members tie
+            // at rank 1 mechanically but nothing's been won).
             const rankDisplay =
-              packStat.target_points === 0
+              packStat.target_wins === 0
                 ? "—"
-                : ordinal(packStat.target_rank);
+                : ordinal(packStat.target_wins_rank);
             // Window label defaults to "This week" when competition_window
             // is missing (e.g., before the 20260601b_profile_competition_window
             // RPC SQL is applied in Studio, the field is undefined on the
@@ -313,6 +322,10 @@ export default function UserProfileScreen() {
               packStat.competition_window === "monthly"
                 ? "This month"
                 : "This week";
+            // Singular "1 win" vs plural "N wins" — same pattern the
+            // standings rows use elsewhere.
+            const winsLabel =
+              packStat.target_wins === 1 ? "win" : "wins";
             return (
               <View style={s.section}>
                 <Text style={s.sectionHeader}>{packStat.pack_name}</Text>
@@ -323,7 +336,7 @@ export default function UserProfileScreen() {
                   </View>
                   <View style={s.packSummaryStat}>
                     <Text style={s.packSummaryValue}>
-                      {packStat.target_points} pts
+                      {packStat.target_wins} {winsLabel}
                     </Text>
                     <Text style={s.packSummaryLabel}>{windowLabel}</Text>
                   </View>
