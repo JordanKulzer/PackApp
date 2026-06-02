@@ -305,12 +305,17 @@ export default function UserProfileScreen() {
             // RPC's daily_winners aggregation — the same LIVE metric
             // Compete + standings + History show.
             //
-            // All-zero guard mirrors the rest of the app: when the
-            // target has no wins yet, show "—" instead of an ordinal
-            // (a "1st" on 0 wins is misleading; all-zero members tie
-            // at rank 1 mechanically but nothing's been won).
+            // Fresh-week guard: show "—" ONLY when the target has 0
+            // wins AND is tied at rank 1. That's the genuine fresh-
+            // week shape — every active member ranks at 1 because
+            // nobody's won yet (post-migration 20260601d, run_wins
+            // covers the full roster with COALESCE(wins, 0), so
+            // everyone gets a real rank). A 0-win member BEHIND a
+            // leader has rank 2+ and should show that real ordinal
+            // ("#2" behind Steven's "#1"), not "—".
             const rankDisplay =
-              packStat.target_wins === 0
+              packStat.target_wins === 0 &&
+              packStat.target_wins_rank === 1
                 ? "—"
                 : ordinal(packStat.target_wins_rank);
             // Window label defaults to "This week" when competition_window
