@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Alert,
   Animated,
@@ -34,6 +34,8 @@ import {
 import { notifyUser } from "../../../src/lib/notifications";
 import { showToast } from "../../../src/lib/toast";
 import { packToday } from "../../../src/lib/packDates";
+import { stableColorForUser } from "../../../src/lib/memberPalette";
+import { dayCellStyles } from "../../../src/components/trends/dayCellTokens";
 import { useAuthStore } from "../../../src/stores/authStore";
 import { usePack } from "../../../src/hooks/usePack";
 import {
@@ -372,6 +374,15 @@ function WeekDetailSheet({
 }) {
   const { user: currentUser } = useCurrentUser();
   const { top } = useSafeAreaInsets();
+  // Day-picker cell sizing — mirrors DailyWinnerStrip's approach so weekly
+  // runs (7 cells) fill the row exactly and monthly runs (28-31 cells)
+  // overflow the horizontal ScrollView and scroll. The section's
+  // paddingHorizontal:16 (×2) consumes 32px of the screen width; the row
+  // gap is 6 between 7 cells = 6 gaps.
+  const { width: detailScreenWidth } = useWindowDimensions();
+  const dayCellWidth = Math.floor(
+    (detailScreenWidth - 32 - 6 * 6) / 7,
+  );
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [dayScores, setDayScores] = useState<DayMemberScore[]>([]);
   const [dayLoading, setDayLoading] = useState(false);
@@ -633,32 +644,50 @@ function WeekDetailSheet({
             {summaryStandings.length === 0 ? (
               <Text style={wdS.emptyHint}>No wins yet</Text>
             ) : (
-              summaryStandings.map((standing) => {
-                const isFirst = standing.rank === 1;
-                const isMe = standing.userId === currentUserId;
-                return (
-                  <View key={standing.userId} style={wdS.standingRow}>
-                    <Text style={[wdS.sRank, isFirst && wdS.sRankGold]}>
-                      #{standing.rank}
-                    </Text>
-                    <Text
-                      style={[wdS.sName, isMe && wdS.sNameSelf]}
-                      numberOfLines={1}
-                    >
-                      {formatName(
-                        isMe && currentUser
-                          ? currentUser.displayName
-                          : (standing.displayName ?? null),
-                        standing.rank,
-                      )}
-                    </Text>
-                    <Text style={[wdS.sPts, isFirst && wdS.sPtsGold]}>
-                      {standing.totalWins}{" "}
-                      {standing.totalWins === 1 ? "win" : "wins"}
-                    </Text>
-                  </View>
+              (() => {
+                // Mirror the Home/Compete allZeroWins → "—" suppression.
+                // On a fresh week (nobody has scored yet) every member is
+                // rank 1 with 0 wins; gilding the leftmost as "#1" reads as
+                // "winning at 0," which it isn't. Footer rows below already
+                // use this neutral treatment (— + neutral "0 wins"); the
+                // ranked block now matches.
+                //
+                // Win-count `sPtsGold` removed entirely (drop the
+                // [isFirst && wdS.sPtsGold] in both states): gilding a
+                // numeric tally double-encoded the rank signal that the
+                // gold ordinal already carries, and competed with the
+                // Crown/winner-name gold reserved for completed-run
+                // overall winners on History.
+                const allZeroWins = summaryStandings.every(
+                  (s) => s.totalWins === 0,
                 );
-              })
+                return summaryStandings.map((standing) => {
+                  const isFirst = !allZeroWins && standing.rank === 1;
+                  const isMe = standing.userId === currentUserId;
+                  return (
+                    <View key={standing.userId} style={wdS.standingRow}>
+                      <Text style={[wdS.sRank, isFirst && wdS.sRankGold]}>
+                        {allZeroWins ? "—" : `#${standing.rank}`}
+                      </Text>
+                      <Text
+                        style={[wdS.sName, isMe && wdS.sNameSelf]}
+                        numberOfLines={1}
+                      >
+                        {formatName(
+                          isMe && currentUser
+                            ? currentUser.displayName
+                            : (standing.displayName ?? null),
+                          standing.rank,
+                        )}
+                      </Text>
+                      <Text style={wdS.sPts}>
+                        {standing.totalWins}{" "}
+                        {standing.totalWins === 1 ? "win" : "wins"}
+                      </Text>
+                    </View>
+                  );
+                });
+              })()
             )}
             {/* Stage B-revised: zero-win members render as full standing
                 rows below the ranked winners — every pack member gets an
@@ -705,6 +734,16 @@ function WeekDetailSheet({
                     : names.length === 2
                       ? `${names[0]} & ${names[1]}`
                       : `${names[0]} & ${names.length - 1} others`;
+                // Self-blue: only fire when the current user is the SOLE
+                // category champion. In a tie (length > 1), the namesLabel
+                // joins multiple members into one Text — coloring the
+                // whole label blue would incorrectly tint the tied
+                // members' names too. Single-winner case mirrors the
+                // standings/breakdown self treatment exactly; tied case
+                // stays neutral (acceptable consistency gap).
+                const isMeSoleChampion =
+                  cw.winnerUserIds.length === 1 &&
+                  cw.winnerUserIds[0] === currentUserId;
                 return (
                   <View key={category} style={wdS.champRow}>
                     <Text style={wdS.champCategory}>
@@ -721,7 +760,13 @@ function WeekDetailSheet({
                         size={14}
                         color={C.textSecondary}
                       />
-                      <Text style={wdS.champName} numberOfLines={1}>
+                      <Text
+                        style={[
+                          wdS.champName,
+                          isMeSoleChampion && { color: colors.self },
+                        ]}
+                        numberOfLines={1}
+                      >
                         {namesLabel}
                       </Text>
                     </View>
@@ -755,13 +800,24 @@ function WeekDetailSheet({
                   const isDisabled = isBeforeRunStart || isFuture;
                   const hasActivity = activeDates.has(day);
 
+                  // Cell visual state composed from the shared day-cell
+                  // tokens: today gets a NEUTRAL WHITE RING (not the prior
+                  // indigo fill); future / before-run-start days get a
+                  // thin tertiary outline (replacing the opacity-0.35
+                  // dimming); selected days get the self-blue border
+                  // overlay (stacks cleanly on any state). The "Mon"/
+                  // "Tue" day-name label + the green activityBar are
+                  // Breakdown-specific and stay below.
                   return (
                     <TouchableOpacity
                       key={day}
                       style={[
-                        wdS.dayBtn,
-                        isSelected && wdS.dayBtnActive,
-                        isDisabled && wdS.dayBtnDisabled,
+                        dayCellStyles.base,
+                        wdS.dayBtnExtras,
+                        { width: dayCellWidth },
+                        isToday && dayCellStyles.today,
+                        isDisabled && dayCellStyles.future,
+                        isSelected && dayCellStyles.selected,
                       ]}
                       onPress={() => !isDisabled && setSelectedDay(day)}
                       disabled={isDisabled}
@@ -770,7 +826,6 @@ function WeekDetailSheet({
                       <Text
                         style={[
                           wdS.dayBtnName,
-                          isSelected && wdS.dayBtnNameActive,
                           isDisabled && wdS.dayBtnTextDisabled,
                         ]}
                       >
@@ -778,21 +833,13 @@ function WeekDetailSheet({
                       </Text>
                       <Text
                         style={[
-                          wdS.dayBtnDate,
-                          isSelected && wdS.dayBtnDateActive,
-                          isDisabled && wdS.dayBtnTextDisabled,
+                          dayCellStyles.dateNum,
+                          isToday && dayCellStyles.dateNumToday,
+                          isDisabled && dayCellStyles.dateNumFuture,
                         ]}
                       >
                         {dateNum}
                       </Text>
-                      {isToday && (
-                        <View
-                          style={[
-                            wdS.todayDot,
-                            isSelected && wdS.todayDotActive,
-                          ]}
-                        />
-                      )}
                       {hasActivity && !isDisabled && (
                         <View style={wdS.activityBar} />
                       )}
@@ -1031,7 +1078,6 @@ const wdS = StyleSheet.create({
   // unified treatment is now name-color.
   sNameSelf: { color: colors.self, fontWeight: "600" },
   sPts: { fontSize: 13, fontWeight: "600", color: C.textTertiary },
-  sPtsGold: { color: colors.leader },
   // Category Champions (completed runs)
   champRow: {
     flexDirection: "row",
@@ -1085,24 +1131,30 @@ const wdS = StyleSheet.create({
   dayBadgeText: {
     fontSize: 10,
     fontWeight: "600",
-    color: colors.leader,
+    // De-golded 2026-06-01 — these badges mark daily-category wins
+    // (one day, one category), which is a smaller achievement than
+    // winning the week. Gold is now reserved for the overall winner
+    // register (History Crown + winnerName, Home champion band).
+    // The pill's surfaceRaised background already differentiates a
+    // "won" state from neutral text; the gold was double-encoding.
+    color: C.textPrimary,
   },
-  // Day picker
+  // Day picker — cell visual language now comes from dayCellTokens
+  // (shared with DailyWinnerStrip on the Compete tab). This block
+  // carries only the Breakdown-specific extras layered on top:
+  //   • dayPickerRow — row layout
+  //   • dayBtnExtras — adds `position: relative` (the activityBar is
+  //     absolutely positioned within the cell) + an internal vertical
+  //     gap between the day-name label and the date number
+  //   • activityBar — the green underline that signals "this day has
+  //     scoreable activity" (Breakdown-only signal; not in the strip)
+  //   • dayBtnName / dayBtnTextDisabled — the "Mon"/"Tue" weekday label
+  //     above the date number (Breakdown shows it; the strip uses
+  //     date-of-month only and so doesn't have one)
   dayPickerRow: { flexDirection: "row", gap: 6, paddingBottom: 14 },
-  dayBtn: {
+  dayBtnExtras: {
     position: "relative",
-    alignItems: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: C.surfaceRaised,
-    minWidth: 42,
     gap: 1,
-  },
-  dayBtnActive: { backgroundColor: C.todayHighlight },
-  dayBtnDisabled: {
-    opacity: 0.35,
-    backgroundColor: "transparent",
   },
   dayBtnTextDisabled: {
     color: C.textTertiary,
@@ -1117,17 +1169,6 @@ const wdS = StyleSheet.create({
     backgroundColor: C.success,
   },
   dayBtnName: { fontSize: 10, fontWeight: "600", color: C.textTertiary },
-  dayBtnNameActive: { color: "#FFFFFF" },
-  dayBtnDate: { fontSize: 14, fontWeight: "700", color: C.textSecondary },
-  dayBtnDateActive: { color: "#FFFFFF" },
-  todayDot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: C.accent,
-    marginTop: 2,
-  },
-  todayDotActive: { backgroundColor: "rgba(255,255,255,0.7)" },
   // Day member cards
   dayList: { gap: 0 },
   memberCard: {
@@ -1210,7 +1251,10 @@ const wdS = StyleSheet.create({
   actWonBadgeText: {
     fontSize: 10,
     fontWeight: "700",
-    color: colors.leader,
+    // De-golded 2026-06-01 — same rationale as dayBadgeText above.
+    // Daily-category wins read as neutral status badges; gold stays
+    // scarce for the overall winner register.
+    color: C.textPrimary,
     letterSpacing: 0.3,
   },
 });
@@ -1711,6 +1755,7 @@ function ChatTab({
   currentUserId,
   packName,
   packTimezone,
+  memberIds,
 }: {
   packId: string;
   currentUserId: string | undefined;
@@ -1718,7 +1763,22 @@ function ChatTab({
   // header subtitle and packTimezone to compute the share's score_date.
   packName: string;
   packTimezone: string;
+  // Pack's active-member roster ids — used to build the cross-surface
+  // palette identity map (stableColorForUser keyed by SORTED user_id,
+  // SAME set as Compete/Home). Threaded down from PackDetailScreen
+  // where packData.members is in scope.
+  memberIds: string[];
 }) {
+  // Build the palette identity map ONCE per memberIds change (not per
+  // render of any individual ChatMessageRow). Same shape as Compete's
+  // stableColorByUser. Forwarded through TimelineRow → ChatMessageRow.
+  const colorByUser = useMemo(
+    () =>
+      new Map<string, string>(
+        memberIds.map((id) => [id, stableColorForUser(id, memberIds)]),
+      ),
+    [memberIds],
+  );
   // usePackTimeline owns sort order + chat_messages fetch + writes.
   // useActivityFeed remains the source of truth for activity-row reactions
   // (optimistic toggles update its state). For each activity TimelineItem we
@@ -2228,6 +2288,7 @@ function ChatTab({
                 onOpenPicker={handleOpenActivityPicker}
                 removePhotoFromItem={removePhotoFromItem}
                 packId={packId}
+                colorByUser={colorByUser}
               />
             );
           }}
@@ -2235,6 +2296,7 @@ function ChatTab({
           onOpenPicker={handleOpenMessagePicker}
           onToggleChatReaction={toggleChatReaction}
           packId={packId}
+          colorByUser={colorByUser}
         />,
       );
 
@@ -3058,6 +3120,10 @@ export default function PackScreen() {
             currentUserId={user?.id}
             packName={pack.name}
             packTimezone={pack.timezone ?? "UTC"}
+            // Same active-member roster id set Compete/Home use, so a
+            // member's chat avatar ring color matches their bar/Home
+            // mini-ring (stableColorForUser keyed by SORTED user_id).
+            memberIds={(packData?.members ?? []).map((m) => m.user_id)}
           />
         </View>
 

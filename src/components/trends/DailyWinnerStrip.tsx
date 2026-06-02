@@ -38,11 +38,11 @@ import {
   Dimensions,
 } from "react-native";
 import { colors } from "../../theme/colors";
+import { DAY_CELL, dayCellStyles } from "./dayCellTokens";
 
 const NO_DATA_COLOR = "#8B949E";
 const TERTIARY_TEXT = "#484F58";
 const SURFACE_RAISED = "#1C2333";
-const TEXT_SECONDARY = "#8B949E";
 // Bright neutral for today's ring + date number. Deliberately NOT
 // gold (winner) or blue (self) — those carry reserved meanings on
 // this surface; today gets its own neutral high-contrast signal.
@@ -54,9 +54,10 @@ const CHIP_LARGE = 22;
 const CHIP_SMALL = 17;
 // Cell width is now computed per render from screen dimensions so 7
 // days fit horizontally on the screen budget (weekly = no scroll;
-// monthly = same cell width, scrolls). Constants below define the
-// gap; the cellWidth derivation happens inside the component.
-const CARD_GAP = 5;
+// monthly = same cell width, scrolls). The gap comes from the shared
+// dayCellTokens module so both day strips (this one + the Daily
+// Breakdown picker) use the same value.
+const CARD_GAP = DAY_CELL.cellGap;
 
 export interface WinnerDay {
   date: string; // YYYY-MM-DD
@@ -384,14 +385,15 @@ export function DailyWinnerStrip({
             <TouchableOpacity
               key={d.date}
               style={[
-                styles.card,
+                dayCellStyles.base,
+                styles.cellExtras,
                 { width: cellWidth },
                 d.isToday
-                  ? styles.cardToday
+                  ? dayCellStyles.today
                   : isFuture
-                    ? styles.cardFuture
+                    ? dayCellStyles.future
                     : null,
-                isSelected && styles.cardSelected,
+                isSelected && dayCellStyles.selected,
               ]}
               onPress={() => onSelectDate?.(d.date)}
               activeOpacity={0.7}
@@ -400,9 +402,9 @@ export function DailyWinnerStrip({
             >
               <Text
                 style={[
-                  styles.dateNum,
-                  d.isToday && styles.dateNumToday,
-                  isFuture && styles.dateNumFuture,
+                  dayCellStyles.dateNum,
+                  d.isToday && dayCellStyles.dateNumToday,
+                  isFuture && dayCellStyles.dateNumFuture,
                 ]}
               >
                 {dayOfMonth(d.date)}
@@ -467,54 +469,13 @@ const styles = StyleSheet.create({
     gap: CARD_GAP,
     paddingBottom: 2,
   },
-  card: {
-    paddingHorizontal: 4,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: SURFACE_RAISED,
-    alignItems: "center",
+  // Strip-specific extras layered onto the shared `dayCellStyles.base`.
+  // The cell-internal gap between dateNum / chipSlot / TODAY caption is
+  // the strip's own vertical rhythm — the Daily Breakdown picker has a
+  // different inner stack (dayName + dateNum + activityBar) and uses
+  // its own gap, so this stays here rather than in the shared tokens.
+  cellExtras: {
     gap: 4,
-    // Default border slot — transparent on settled/past cells so the
-    // selected blue-ring overlay (border change) doesn't shift layout.
-    borderWidth: 1,
-    borderColor: "transparent",
-  },
-  // Today: NEUTRAL BRIGHT RING + transparent bg. Deliberately NOT gold
-  // (winner) or blue (self) — those carry reserved meanings here. The
-  // white ring + the TODAY label + the live-leader chip inside all
-  // together signal "this is now" without the prior indigo-on-blue
-  // muddiness.
-  cardToday: {
-    backgroundColor: "transparent",
-    borderWidth: 2,
-    borderColor: TEXT_PRIMARY,
-  },
-  // Future: thin faint outline + transparent bg. Tappable but visually
-  // dimmed — the user can preview a future day's (empty) bars without
-  // mistaking the cell for one that has data.
-  cardFuture: {
-    backgroundColor: "transparent",
-    borderColor: TERTIARY_TEXT,
-  },
-  // Selected-day ring — applied on the tapped card. Replaces whatever
-  // border the cell carries (today's white / future's tertiary /
-  // default transparent) with the self-blue. The "TODAY" label below
-  // the chip keeps today identifiable even when its white ring is
-  // overridden by the selected-blue border.
-  cardSelected: {
-    borderWidth: 1.5,
-    borderColor: colors.self,
-  },
-  dateNum: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: TEXT_SECONDARY,
-  },
-  dateNumToday: {
-    color: TEXT_PRIMARY,
-  },
-  dateNumFuture: {
-    color: TERTIARY_TEXT,
   },
   // Vertical slot for the winner chip / dash. Fixed height so cards
   // align across the row regardless of which cell type renders

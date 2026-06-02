@@ -40,6 +40,11 @@ interface Props {
   // their pack context is captured in the caller's closure, so this
   // prop doesn't need to forward into that branch.
   packId?: string;
+  // Cross-surface palette identity map. Forwarded to ChatMessageRow
+  // only — system messages don't render avatars, and FeedItemRow's
+  // identity treatment is owned by the activity-rendering callback's
+  // closure. Optional + missing-key tolerant downstream.
+  colorByUser?: Map<string, string>;
 }
 
 export function TimelineRow({
@@ -51,6 +56,7 @@ export function TimelineRow({
   onOpenPicker,
   onToggleChatReaction,
   packId,
+  colorByUser,
 }: Props) {
   if (item.kind === "activity") {
     // Pass 25-followup-E.2.b.iii-fix-2: photo-bearing took_lead rows route
@@ -80,6 +86,7 @@ export function TimelineRow({
       onOpenPicker={onOpenPicker}
       onToggleReaction={onToggleChatReaction}
       packId={packId}
+      colorByUser={colorByUser}
     />
   );
 }

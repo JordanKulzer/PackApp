@@ -47,6 +47,14 @@ interface Props {
   // ChatTab pass it; the prop stays optional so the component degrades
   // cleanly if rendered in a pack-less surface.
   packId?: string;
+  // Cross-surface palette identity — message.user_id → stable palette
+  // color (same map Compete/Home build via stableColorForUser over the
+  // pack's active-member roster). Drives a 1.5px ring around the
+  // avatar so a member's chat avatar carries the same color as their
+  // Compete bar / Home mini-ring. Optional + falls back to a neutral
+  // border color when absent so the component still degrades if a
+  // caller forgets to thread it.
+  colorByUser?: Map<string, string>;
 }
 
 export function ChatMessageRow({
@@ -57,6 +65,7 @@ export function ChatMessageRow({
   onOpenPicker,
   onToggleReaction,
   packId,
+  colorByUser,
 }: Props) {
   const isMe = message.user_id === currentUserId;
   const router = useRouter();
@@ -193,7 +202,14 @@ export function ChatMessageRow({
         <View style={s.avatarSpacer} />
       ) : (
         <Pressable
-          style={s.avatar}
+          style={[
+            s.avatar,
+            // Palette-color ring — cross-surface identity (same color as
+            // Compete bars/dots + Home mini-rings for this member).
+            // Falls back to the dark border token when no map is
+            // threaded (defensive — the prop is optional).
+            { borderColor: colorByUser?.get(message.user_id) ?? "#30363D" },
+          ]}
           onPress={() => {
             const href = packId
               ? `/user/${message.user_id}?packId=${packId}`
@@ -209,7 +225,22 @@ export function ChatMessageRow({
               style={s.avatarImage}
             />
           ) : (
-            <Text style={s.avatarInitial}>{initial}</Text>
+            // Initial color = the member's palette color (same source
+            // as the ring), so a no-photo avatar reads as one
+            // intentional identity unit instead of a white letter
+            // inside a colored ring. Falls back to white when no map
+            // is threaded (defensive, same shape as the ring color).
+            <Text
+              style={[
+                s.avatarInitial,
+                {
+                  color:
+                    colorByUser?.get(message.user_id) ?? "#FFFFFF",
+                },
+              ]}
+            >
+              {initial}
+            </Text>
           )}
         </Pressable>
       )}
@@ -319,6 +350,11 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
+    // Palette identity ring — borderColor is set inline per-render from
+    // colorByUser (see Pressable above). Width is fixed here so the
+    // ring is present whether or not the consumer threads the map
+    // (falls back to a neutral dark grey in the inline borderColor).
+    borderWidth: 1.5,
   },
   avatarSpacer: {
     width: 32,

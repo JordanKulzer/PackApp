@@ -56,6 +56,15 @@ interface Props {
   // Activity feed rows always render inside ChatTab today, which has
   // packId; the prop stays optional for pack-less surfaces.
   packId?: string;
+  // Cross-surface palette identity — item.userId → stable palette color
+  // (same map Compete/Home/Chat build via stableColorForUser over the
+  // pack's active-member roster). Drives a 1.5px ring around the
+  // activity-row avatar so an activity post (steps / workout / share /
+  // photo / daily_winner) carries the same identity color as the
+  // member's typed chat ring, Compete bar/dot, and Home mini-ring.
+  // Optional + falls back to a neutral border color when absent so the
+  // component still degrades if mounted in a pack-less surface.
+  colorByUser?: Map<string, string>;
 }
 
 function ManualBadge() {
@@ -144,6 +153,7 @@ export function FeedItemRow({
   onOpenPicker,
   removePhotoFromItem,
   packId,
+  colorByUser,
 }: Props) {
   const [signedPhotoUrl, setSignedPhotoUrl] = useState<string | null>(null);
   // Bug C fix: native aspect ratio of the signed photo, read via
@@ -242,7 +252,14 @@ export function FeedItemRow({
   return (
     <View style={[s.row, s.rowActivity]}>
       <TouchableOpacity
-        style={s.avatar}
+        style={[
+          s.avatar,
+          // Palette-color ring — cross-surface identity (same color as
+          // the member's chat avatar / Compete bar / Home mini-ring).
+          // Falls back to the dark border token when no map is threaded
+          // (defensive — the prop is optional).
+          { borderColor: colorByUser?.get(item.userId) ?? "#30363D" },
+        ]}
         onPress={() => {
           const href = packId
             ? `/user/${item.userId}?packId=${packId}`
@@ -258,7 +275,17 @@ export function FeedItemRow({
             style={{ width: 32, height: 32, borderRadius: 16 }}
           />
         ) : (
-          <Text style={s.avatarInitial}>{initial}</Text>
+          // Initial color = the member's palette color (same source
+          // as the ring), matching ChatMessageRow's identity-unit
+          // treatment. White fallback when no map.
+          <Text
+            style={[
+              s.avatarInitial,
+              { color: colorByUser?.get(item.userId) ?? "#FFFFFF" },
+            ]}
+          >
+            {initial}
+          </Text>
         )}
       </TouchableOpacity>
       <View style={s.content}>
@@ -476,6 +503,13 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
+    // Palette identity ring — borderColor is set inline per-render from
+    // colorByUser (see TouchableOpacity above). Width is fixed here so
+    // the ring is present whether or not the consumer threads the map
+    // (falls back to a neutral dark grey in the inline borderColor).
+    // Mirrors ChatMessageRow.s.avatar.borderWidth so activity rows and
+    // typed chat rows have identical avatar ring geometry.
+    borderWidth: 1.5,
   },
   avatarInitial: {
     color: "#FFFFFF",
