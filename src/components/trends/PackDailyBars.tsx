@@ -33,6 +33,12 @@ import {
 
 const TEXT_SECONDARY = "#8B949E";
 const SURFACE_BORDER = "#30363D";
+// Baseline stroke — mid-grey, distinctly more visible than the
+// near-invisible SURFACE_BORDER hairline that preceded it. Same value
+// as C.textTertiary in PackCompeteView; kept as a local constant so
+// PackDailyBars stays self-contained (no theme import). The bars now
+// sit on a crisp ground line instead of floating.
+const BASELINE_STROKE = "#484F58";
 
 // Bar geometry — responsive to measured slot width. Bars fill ~65% of
 // their slot, clamped to [BAR_MIN, BAR_MAX]. The clamp mirrors the
@@ -424,9 +430,10 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   baseline: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: SURFACE_BORDER,
+    height: 1.5,
+    backgroundColor: BASELINE_STROKE,
     width: "100%",
+    borderRadius: 1,
   },
   identityRow: {
     flexDirection: "row",
