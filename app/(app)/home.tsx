@@ -7,6 +7,7 @@ import {
   ScrollView,
   TouchableOpacity,
   RefreshControl,
+  Image,
 } from "react-native";
 import { Crown } from "lucide-react-native";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -26,7 +27,7 @@ import {
 import { packToday } from "../../src/lib/packDates";
 import { fetchPreviousRunWinnerIds } from "../../src/hooks/usePackRunHistory";
 import { supabase } from "../../src/lib/supabase";
-import { formatName } from "../../src/lib/displayName";
+import { formatName, getInitial } from "../../src/lib/displayName";
 import { PackMemberDisplay } from "../../src/components/PackMemberDisplay";
 import { stableColorForUser } from "../../src/lib/memberPalette";
 import type { Pack } from "../../src/types/database";
@@ -592,26 +593,38 @@ function DarkPackCard({
   const members = data?.members ?? [];
   const hasActivity = members.length > 0;
 
-  // Status line — inline category-wins copy derived from standings.
-  const statusLine = (() => {
-    if (!standings) return "";
-    const ranked = standings.rankedMembers;
-    if (ranked.length === 0 || ranked.every((r) => r.totalWins === 0)) {
-      return "No wins yet";
-    }
-    const leaderWins = ranked[0].totalWins;
-    const leaders = ranked.filter((r) => r.totalWins === leaderWins);
-    const winsLabel = `${leaderWins} ${leaderWins === 1 ? "win" : "wins"}`;
-    if (leaders.some((r) => r.userId === currentUserId)) {
-      return leaders.length > 1
-        ? `Tied for the lead · ${winsLabel}`
-        : `You're leading · ${winsLabel}`;
-    }
-    const leaderName =
-      members.find((m) => m.user_id === ranked[0].userId)?.display_name ??
-      "Someone";
-    return `${leaderName} leads · ${winsLabel}`;
+  // Current Champion — the held title from the most recent completed run,
+  // reuses the existing previousRunWinnerIds (daily_winners-derived, same
+  // source the crown uses). Persists all run until the next rollover
+  // settles. No new query, no winner_id dependency. Suppressed when:
+  //   - no completed runs yet (previousRunWinnerIds is empty)
+  //   - the winner's roster entry isn't loaded yet (members hasn't
+  //     resolved, or the winner has since left the pack)
+  // Ties (winner_user_ids of length > 1) render as co-champions; the
+  // band shows the first winner's avatar + name-list copy. Sorting the
+  // ids lex first keeps the displayed champion stable across re-renders
+  // (matches the order the crown's wonPreviousRun flag is keyed on).
+  const championDetails = (() => {
+    if (previousRunWinnerIds.length === 0) return null;
+    const sortedIds = [...previousRunWinnerIds].sort();
+    const resolved = sortedIds
+      .map((id) => members.find((m) => m.user_id === id))
+      .filter((m): m is HomeMember => !!m);
+    if (resolved.length === 0) return null;
+    return {
+      primary: resolved[0],
+      coCount: resolved.length - 1,
+      allNames: resolved.map((m) => m.display_name),
+    };
   })();
+
+  // Status line removed 2026-06-01 — every state it could render
+  // ("No wins yet" / "Tied for the lead · N wins" / "You're leading ·
+  // N wins" / "{Name} leads · N wins") restated data already shown
+  // elsewhere on the card: per-member rings + "N wins" captions show
+  // the wins tally, the rank-badge gold #1 / "—" treatment shows
+  // who's leading, and the Current Champion band shows the held
+  // title. A summary line stating it a third time read as redundant.
 
   return (
     <TouchableOpacity
@@ -641,14 +654,61 @@ function DarkPackCard({
             currentUserId={currentUserId}
             packId={pack.id}
           />
-
-          {/* Row 3 — Status: where you stand in the wins race */}
-          {statusLine !== "" && (
-            <Text style={card.status}>{statusLine}</Text>
-          )}
         </>
       ) : (
         <Text style={card.noActivity}>{packsCopy.packCard.quietWeek}</Text>
+      )}
+
+      {/* Current Champion band — held title from the most recent
+          completed run. Persists all run until the next rollover.
+          Mounted OUTSIDE the hasActivity ternary so a pack with a
+          previous champion but a quiet current week still shows it.
+          Flush-bottom: negative-margin into the card's padding so the
+          band spans the full width + sits flush at the rounded bottom
+          (card.container has overflow:hidden so the band's flat top
+          edge clips cleanly at the card radius). */}
+      {championDetails && (
+        <View style={card.championBand}>
+          <View style={card.championAvatarWrap}>
+            {championDetails.primary.avatar_url ? (
+              <Image
+                source={{ uri: championDetails.primary.avatar_url }}
+                style={card.championAvatar}
+              />
+            ) : (
+              <View style={[card.championAvatar, card.championAvatarFallback]}>
+                <Text style={card.championAvatarInitial}>
+                  {getInitial(championDetails.primary.display_name)}
+                </Text>
+              </View>
+            )}
+          </View>
+          <View style={card.championTextCol}>
+            <Text style={card.championLabel}>
+              {championDetails.coCount > 0
+                ? "CO-CHAMPIONS"
+                : "CURRENT CHAMPION"}
+            </Text>
+            <Text style={card.championName} numberOfLines={1}>
+              {championDetails.coCount === 0
+                ? championDetails.primary.display_name
+                : championDetails.coCount === 1
+                  ? `${championDetails.allNames[0]} & ${championDetails.allNames[1]}`
+                  : `${championDetails.allNames[0]} +${championDetails.coCount}`}
+            </Text>
+          </View>
+          {/* Crown color: leaderTextSoft (mid-dark gold) reads cleanly
+              on the light leaderFill band; the bright `colors.leader`
+              is low-contrast against the light fill. The avatar's
+              gold rim above is the one place bright leader gold lives
+              on this band. */}
+          <Crown
+            size={20}
+            color={colors.leaderTextSoft}
+            strokeWidth={2}
+            style={{ marginLeft: 4 }}
+          />
+        </View>
       )}
     </TouchableOpacity>
   );
@@ -663,6 +723,83 @@ const card = StyleSheet.create({
     marginHorizontal: 16,
     marginBottom: 12,
     padding: 16,
+    // overflow: hidden so the Current Champion band's flat top edge
+    // clips at the card's rounded bottom corners. The band uses
+    // negative horizontal + bottom margins to bleed past the card's
+    // padding and sit flush at the card edge.
+    overflow: "hidden",
+  },
+  // ── Current Champion band (held title; gold footer) ───────────
+  // Negative margin-bottom + margin-horizontal = -padding so the band
+  // bleeds to the card's rounded bottom edge. The dark-gold container
+  // (leaderBg) + mid-gold top-border (leaderBorder) + bright-gold text
+  // (leader) mirrors the existing #1 rank badge treatment exactly —
+  // single source of truth for the app's gold visual language.
+  championBand: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginHorizontal: -16,
+    marginBottom: -16,
+    // Tightened 2026-06-01: was 14 — too much air between the rings
+    // and the celebration band, which made the card feel sectioned.
+    // 6 reads as a continuous footer hugging the content above.
+    marginTop: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    // Light warm gold fill — the celebratory register (not the warning-
+    // toned leaderBg). No top border: on a light fill against the dark
+    // card, the fill edge already separates the band cleanly; a
+    // hairline gold rule on top would read like a ruler edge.
+    backgroundColor: colors.leaderFill,
+  },
+  championAvatarWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1.5,
+    // Bright gold ring around the avatar — high-contrast against the
+    // light fill, the one place `colors.leader` reads cleanly here.
+    borderColor: colors.leader,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  championAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+  },
+  championAvatarFallback: {
+    // Match the band fill so the avatar fallback reads as part of the
+    // celebration surface rather than a dark hole inside the gold ring.
+    backgroundColor: colors.leaderFill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  championAvatarInitial: {
+    fontSize: 14,
+    fontWeight: "700",
+    // Dark gold initial on the light fallback — readable contrast.
+    color: colors.leaderTextStrong,
+  },
+  championTextCol: {
+    flex: 1,
+    gap: 2,
+  },
+  championLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.08 * 10,
+    // Mid-dark gold for the secondary label — readable but quieter
+    // than the name beneath it.
+    color: colors.leaderTextSoft,
+  },
+  championName: {
+    fontSize: 14,
+    fontWeight: "700",
+    // Darkest gold for the headline — high contrast on the light fill.
+    color: colors.leaderTextStrong,
   },
   topRow: {
     flexDirection: "row",
@@ -672,7 +809,11 @@ const card = StyleSheet.create({
   },
   packName: {
     flex: 1,
-    fontSize: 16,
+    // Bumped 16→19 (2026-06-01) so the pack title leads the card more
+    // strongly. Weight stays 700, color stays textPrimary (white) —
+    // emphasis through type hierarchy only; gold stays reserved for
+    // the champion band below.
+    fontSize: 19,
     fontWeight: "700",
     color: C.textPrimary,
   },
@@ -686,11 +827,6 @@ const card = StyleSheet.create({
     fontSize: 11,
     fontWeight: "600",
     color: C.textSecondary,
-  },
-  status: {
-    fontSize: 13,
-    color: C.textSecondary,
-    fontWeight: "500",
   },
   urgency: {
     fontSize: 11,

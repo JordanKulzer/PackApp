@@ -18,6 +18,16 @@ export const colors = {
   leader:       "#E3A000",               // amber/gold — whoever is #1
   leaderBg:     "#2A1D00",               // dark container bg for leader badge
   leaderBorder: "#B07D00",               // border for leader badge container
+  // Light warm gold celebration fill + dark-gold text — for surfaces
+  // that need a CELEBRATORY (not warning-toned) gold treatment. The
+  // dark leaderBg above reads as a warning strip on a card; this
+  // lighter ramp is the right register for held-title surfaces (Home
+  // Current Champion band). Text must be the DARK shades on this fill
+  // — leaderTextStrong for primary content (name), leaderTextSoft for
+  // secondary labels — the bright `leader` is low-contrast on light.
+  leaderFill:        "#FAEEDA",          // light warm gold surface
+  leaderTextStrong:  "#633806",          // darkest gold — for primary text on leaderFill
+  leaderTextSoft:    "#854F0B",          // mid-dark gold — for secondary text on leaderFill
   self:         "#2F81F7",               // blue — current user (NAME color on rows)
   // selfBgDim / selfBgLight are RETAINED for non-self-identity uses:
   // selfBgDim → cardPro background, selfBgLight → "Active" badge bg.
