@@ -44,10 +44,7 @@ import { type GridEntry } from "./PackGridView";
 import { Crown } from "lucide-react-native";
 import { PackMemberDisplay } from "./PackMemberDisplay";
 import { CategoryIcon } from "./CategoryIcon";
-import {
-  CATEGORY_LABELS,
-  type Category,
-} from "../lib/categories";
+import { CATEGORY_LABELS, type Category } from "../lib/categories";
 import { getEnabledCategories } from "../lib/packCategories";
 import { packToday } from "../lib/packDates";
 import { colors } from "../theme/colors";
@@ -57,14 +54,8 @@ import {
   type PackTrendPoint,
 } from "../hooks/usePackCategoryTrend";
 import { type WinnersByCategoryByDate } from "../hooks/usePackDailyWinners";
-import {
-  PackTrendChart,
-  type PackTrendSeries,
-} from "./trends/PackTrendChart";
-import {
-  DailyWinnerStrip,
-  type WinnerDay,
-} from "./trends/DailyWinnerStrip";
+import { PackTrendChart, type PackTrendSeries } from "./trends/PackTrendChart";
+import { DailyWinnerStrip, type WinnerDay } from "./trends/DailyWinnerStrip";
 import { PackDailyBars, type DailyBar } from "./trends/PackDailyBars";
 import { MEMBER_PALETTE, stableColorForUser } from "../lib/memberPalette";
 
@@ -181,10 +172,7 @@ export function PackCompeteView({
 
   // Enabled categories drive the tab row. Memoised so the tab list
   // ref is stable across renders that don't change pack config.
-  const enabledCategories = useMemo(
-    () => getEnabledCategories(pack),
-    [pack],
-  );
+  const enabledCategories = useMemo(() => getEnabledCategories(pack), [pack]);
 
   const [selectedCategory, setSelectedCategory] = useState<Category>(
     enabledCategories[0] ?? "steps",
@@ -201,9 +189,28 @@ export function PackCompeteView({
   };
   const availWidth = stripWidth || Dimensions.get("window").width - 32;
   const n = entries.length;
-  const rawCardWidth =
-    n > 0 ? (availWidth - CARD_GAP * (n - 1)) / n : MIN_CARD;
+  const rawCardWidth = n > 0 ? (availWidth - CARD_GAP * (n - 1)) / n : MIN_CARD;
   const cardWidth = Math.max(MIN_CARD, Math.min(MAX_CARD, rawCardWidth));
+  // Explicit strip-surface width — computed deterministically from the
+  // data (n cards × cardWidth + gaps) and capped at the screen's
+  // padding-adjusted budget. This breaks the circular dependency that
+  // crashed the surface 3 times: a horizontal ScrollView doesn't
+  // report a content-derived intrinsic width to its parent, so when
+  // stripSurface was content-sized via flex coercion, the engine
+  // collapsed the wrapper to whatever heuristic it landed on (often a
+  // single card → the 2-card bug, or full screen → the vertical-fill
+  // bug). With an explicit width here, the wrapper is sized once per
+  // render from values we already know.
+  //
+  // n*cardWidth + (n-1)*CARD_GAP = natural content width when all
+  // cards fit without scrolling. screenAvailWidth = screen minus the
+  // s.container paddingHorizontal:16 * 2. min() picks the smaller:
+  //   • few members: contentWidth wins → surface hugs the cards.
+  //   • many members: screenAvailWidth wins → ScrollView scrolls
+  //     within the screen budget.
+  const contentWidth = n > 0 ? n * cardWidth + (n - 1) * CARD_GAP : 0;
+  const screenAvailWidth = Dimensions.get("window").width - 32;
+  const surfaceWidth = Math.min(contentWidth, screenAvailWidth);
 
   // Trend data + winners are now lifted to the parent (2026-06-01) and
   // arrive as props (seriesByCategory, winnersByCategoryByDate). The
@@ -241,9 +248,7 @@ export function PackCompeteView({
   // empty-run case, but the series identity is consistent across
   // category switches).
   const memberTrends = seriesByCategory[selectedCategory] ?? [];
-  const pointsByUser = new Map(
-    memberTrends.map((m) => [m.userId, m.points]),
-  );
+  const pointsByUser = new Map(memberTrends.map((m) => [m.userId, m.points]));
 
   // Stable identity color per member: you = self/blue; everyone else
   // gets a fixed palette slot by their position in rank order. Computed
@@ -259,10 +264,7 @@ export function PackCompeteView({
       if (e.user_id === currentUserId) {
         map.set(e.user_id, colors.self);
       } else {
-        map.set(
-          e.user_id,
-          MEMBER_PALETTE[p++ % MEMBER_PALETTE.length],
-        );
+        map.set(e.user_id, MEMBER_PALETTE[p++ % MEMBER_PALETTE.length]);
       }
     }
     return map;
@@ -354,12 +356,25 @@ export function PackCompeteView({
     return todayValues.filter((t) => t.value === maxV).map((t) => t.userId);
   })();
 
-  // Enumerate run start_date → effectiveEndDate inclusive, one entry
-  // per day. Uses the noon-parse trick to avoid UTC-midnight shifts
-  // (mirrors packDates.currentDayOfRun's approach — there's no
-  // packDates date-add helper, so this is the minimum correct inline
-  // walk). Each step formats back to YYYY-MM-DD via the same
-  // y/m/d-padding pattern packDates.deviceLocalDateOffset uses.
+  // Enumerate run start_date → activeRun.end_date inclusive (the FULL
+  // run, NOT clamped to today) so future days appear in the selector
+  // as faint outline cells. The earlier effectiveEndDate clamp was
+  // for the chart's domain — the selector wants to show the whole
+  // shape of the run from day 1 through the final day, with today
+  // marked and future days dimmed.
+  //
+  // Per cell:
+  //   • isToday: cur === today (live competition slot)
+  //   • isFuture: cur > today (no data yet; tappable but renders empty
+  //     bars below — consistent with existing empty state)
+  //   • winnerUserIds: settled winners from daily_winners; today's
+  //     slot stays empty since today's live state goes through
+  //     liveLeaderIds, and future days have no row in daily_winners
+  //     so the lookup naturally returns []
+  //
+  // Uses the noon-parse trick to avoid UTC-midnight shifts (mirrors
+  // packDates.currentDayOfRun's approach — there's no packDates
+  // date-add helper, so this is the minimum correct inline walk).
   const days: WinnerDay[] = (() => {
     const out: WinnerDay[] = [];
     const winnersForCategory = winnersByCategoryByDate[selectedCategory];
@@ -367,14 +382,14 @@ export function PackCompeteView({
     // Hard cap to defend against a malformed run row (start > end);
     // a normal weekly/monthly run is well under 60 iterations.
     let guard = 0;
-    while (cur <= effectiveEndDate && guard < 120) {
+    while (cur <= activeRun.end_date && guard < 120) {
       const isToday = cur === todayInPackTz;
+      const isFuture = cur > todayInPackTz;
       out.push({
         date: cur,
-        winnerUserIds: isToday
-          ? []
-          : (winnersForCategory.get(cur) ?? []),
+        winnerUserIds: isToday ? [] : (winnersForCategory.get(cur) ?? []),
         isToday,
+        isFuture,
         liveLeaderIds: isToday ? liveLeaderIds : undefined,
       });
       const d = new Date(cur + "T12:00:00");
@@ -387,6 +402,12 @@ export function PackCompeteView({
     }
     return out;
   })();
+
+  // Today's index in the enumerated days — used by DailyWinnerStrip to
+  // auto-scroll the monthly run so today lands centered on mount.
+  // -1 when today is outside the run window (e.g. between runs); the
+  // strip skips its scroll in that case (no-op).
+  const todayIndex = days.findIndex((d) => d.isToday);
 
   // Selected day — drives the strip's selection ring and (Step 2+) the
   // upcoming bar graph. Defaults to today-in-pack-tz; falls back to the
@@ -445,13 +466,15 @@ export function PackCompeteView({
       if (pt) valueByUser.set(m.userId, pt.value);
     }
     return entries
-      .map((e): DailyBar => ({
-        userId: e.user_id,
-        value: valueByUser.get(e.user_id) ?? 0,
-        color: stableColorByUser.get(e.user_id) ?? colors.member,
-        name: nameById.get(e.user_id) ?? "—",
-        avatarUrl: avatarById.get(e.user_id) ?? undefined,
-      }))
+      .map(
+        (e): DailyBar => ({
+          userId: e.user_id,
+          value: valueByUser.get(e.user_id) ?? 0,
+          color: stableColorByUser.get(e.user_id) ?? colors.member,
+          name: nameById.get(e.user_id) ?? "—",
+          avatarUrl: avatarById.get(e.user_id) ?? undefined,
+        }),
+      )
       .sort((a, b) => b.value - a.value);
   })();
 
@@ -465,8 +488,18 @@ export function PackCompeteView({
   // framing (it's still open); past days get a date-specific framing.
   // Date formatted "May 27" from the YYYY-MM-DD without locale parsing.
   const SHORT_MONTHS = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
   ];
   const formatShortDate = (date: string): string => {
     const [, m, d] = date.split("-").map(Number);
@@ -543,91 +576,119 @@ export function PackCompeteView({
           flexGrow:1 + justifyContent:"center" so a small pack centers
           rather than left-aligning with dead space; an overflowing pack
           ignores the centering (content already exceeds the box) and
-          scrolls normally. */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        onLayout={onStripLayout}
-        contentContainerStyle={s.stripContent}
-      >
-        {entries.map((entry) => {
-          const isMe = entry.user_id === currentUserId;
-          // isLeader gold treatment is suppressed in the all-zero
-          // state — nobody leads when everyone is at 0 wins.
-          const isLeader = !allZeroWins && entry.rank === 1;
-          // Score-strip cards open the member's profile modal — same
-          // /user/[id]?packId=... pattern PackGridView, Home,
-          // ChatMessageRow, and FeedItemRow already use. (Replaces
-          // the removed isolate gesture; same TODO from 2026-05-30
-          // is now resolved.)
-          return (
-            <TouchableOpacity
-              key={entry.user_id}
-              style={[
-                s.card,
-                { width: cardWidth },
-                isMe && s.cardSelf,
-              ]}
-              onPress={() => openMemberProfile(entry.user_id)}
-              activeOpacity={0.7}
-              accessibilityRole="button"
-            >
-              <Text
-                style={[
-                  s.cardRank,
-                  isLeader ? s.cardRankLeader : s.cardRankOther,
-                ]}
-                numberOfLines={1}
+          scrolls normally. Wrapped in s.stripSurface — a subtle
+          grouped-content container (bg + radius, no border/shadow/
+          header) that gives the strip collective identity without
+          boxing it heavily. Matches the app's existing
+          grouped-content vocabulary (C.surface family). */}
+      {/* Surface gets an EXPLICIT inline width computed from data
+          (surfaceWidth = min(contentWidth, screenAvailWidth)). The
+          flex engine no longer needs to derive the surface's width
+          from a horizontal ScrollView (which has no intrinsic
+          main-axis width — the cause of the 3 prior regressions:
+          collapse-to-one-card, full-screen-vertical-fill, and
+          full-width-with-empty-bg). The style block carries only
+          visual props + alignSelf:center; width is the inline value. */}
+      <View style={[s.stripSurface, { width: surfaceWidth }]}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          onLayout={onStripLayout}
+          contentContainerStyle={s.stripContent}
+        >
+          {entries.map((entry) => {
+            const isMe = entry.user_id === currentUserId;
+            // isLeader gold treatment is suppressed in the all-zero
+            // state — nobody leads when everyone is at 0 wins.
+            const isLeader = !allZeroWins && entry.rank === 1;
+            // Score-strip cards open the member's profile modal — same
+            // /user/[id]?packId=... pattern PackGridView, Home,
+            // ChatMessageRow, and FeedItemRow already use. (Replaces
+            // the removed isolate gesture; same TODO from 2026-05-30
+            // is now resolved.)
+            return (
+              <TouchableOpacity
+                key={entry.user_id}
+                style={[s.card, { width: cardWidth }, isMe && s.cardSelf]}
+                onPress={() => openMemberProfile(entry.user_id)}
+                activeOpacity={0.7}
+                accessibilityRole="button"
               >
-                {allZeroWins ? "—" : ordinal(entry.rank)}
-              </Text>
-              <PackMemberDisplay
-                userId={entry.user_id}
-                displayName={entry.display_name}
-                // progressPct={100} = full ring; identity-only (color
-                // signal), NOT a progress meter. See header.
-                progressPct={100}
-                rank={4 /* >3 suppresses the built-in rank badge */}
-                currentUserId={currentUserId}
-                // leaderId intentionally undefined — `ringColor` below
-                // provides the explicit palette color, so the leader/
-                // self/member derivation isn't consulted for the ring.
-                leaderId={undefined}
-                // Stable palette color for the avatar ring — matches
-                // the bars + dots + chip initials so the member's
-                // identity reads consistently across the whole Compete
-                // surface. The #1 standing signal stays on the rank
-                // ordinal + wins-count text styles (s.cardRankLeader
-                // / s.cardWinsLeader), independent of this ring color.
-                ringColor={stableColorByUser.get(entry.user_id)}
-                size={44}
-                strokeWidth={3}
-                showName={false}
-                showRank={false}
-                avatarUrl={entry.avatarUrl}
-              />
-              <Text
-                style={[
-                  s.cardName,
-                  { maxWidth: cardWidth - 8 },
-                  isMe && s.cardNameSelf,
-                ]}
-                numberOfLines={1}
-              >
-                {formatName(entry.display_name)}
-              </Text>
-              <Text
-                style={[
-                  s.cardWins,
-                  isLeader ? s.cardWinsLeader : s.cardWinsOther,
-                ]}
-              >
-                {entry.total_wins}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
+                <Text
+                  style={[
+                    s.cardRank,
+                    isLeader ? s.cardRankLeader : s.cardRankOther,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {allZeroWins ? "—" : ordinal(entry.rank)}
+                </Text>
+                <PackMemberDisplay
+                  userId={entry.user_id}
+                  displayName={entry.display_name}
+                  // progressPct={100} = full ring; identity-only (color
+                  // signal), NOT a progress meter. See header.
+                  progressPct={100}
+                  rank={4 /* >3 suppresses the built-in rank badge */}
+                  currentUserId={currentUserId}
+                  // leaderId intentionally undefined — `ringColor` below
+                  // provides the explicit palette color, so the leader/
+                  // self/member derivation isn't consulted for the ring.
+                  leaderId={undefined}
+                  // Stable palette color for the avatar ring — matches
+                  // the bars + dots + chip initials so the member's
+                  // identity reads consistently across the whole Compete
+                  // surface. The #1 standing signal stays on the rank
+                  // ordinal + wins-count text styles (s.cardRankLeader
+                  // / s.cardWinsLeader), independent of this ring color.
+                  ringColor={stableColorByUser.get(entry.user_id)}
+                  size={44}
+                  strokeWidth={3}
+                  showName={false}
+                  showRank={false}
+                  avatarUrl={entry.avatarUrl}
+                />
+                {/* Previous-run champion crown — mirrors Home's MemberCard
+                  treatment (home.tsx:243-250) byte-for-byte (size 12,
+                  colors.leader, strokeWidth 2). Sits INLINE with the
+                  name (same row), not above it, matching Home's
+                  MemberCard layout. Reuses entry.wonPreviousRun already
+                  on every GridEntry — no new data, no new prop. */}
+                <View style={s.cardNameRow}>
+                  {entry.wonPreviousRun && (
+                    <Crown size={12} color={colors.leader} strokeWidth={2} />
+                  )}
+                  <Text
+                    style={[
+                      s.cardName,
+                      {
+                        // Crown takes ~12px + the 3px row gap = 15px
+                        // less horizontal budget for the name when it's
+                        // present, so the name still truncates within
+                        // the card's horizontal padding (cardWidth - 8).
+                        maxWidth:
+                          cardWidth - (entry.wonPreviousRun ? 23 : 8),
+                      },
+                      isMe && s.cardNameSelf,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {formatName(entry.display_name)}
+                  </Text>
+                </View>
+                <Text
+                  style={[
+                    s.cardWins,
+                    isLeader ? s.cardWinsLeader : s.cardWinsOther,
+                  ]}
+                >
+                  {entry.total_wins}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
 
       {/* ── Category tabs — enabled only, in CATEGORIES order, single
           line. Horizontal ScrollView so 4+ pills (or longer labels in a
@@ -653,9 +714,7 @@ export function PackCompeteView({
                 size={14}
                 color={isActive ? C.accent : C.textSecondary}
               />
-              <Text
-                style={[s.tabLabel, isActive && s.tabLabelActive]}
-              >
+              <Text style={[s.tabLabel, isActive && s.tabLabelActive]}>
                 {CATEGORY_LABELS[cat]}
               </Text>
             </TouchableOpacity>
@@ -698,6 +757,7 @@ export function PackCompeteView({
               currentUserId={currentUserId}
               selectedDate={selectedDate}
               onSelectDate={setSelectedDate}
+              todayIndex={todayIndex}
             />
 
             {/* Real bars for the selected (date, category). Reacts to
@@ -783,8 +843,7 @@ function ChartView({
   // behavior verbatim. Adaptive default (small pack → All, big pack →
   // Focus) overridden by manual toggle. Per-(user, pack) AsyncStorage
   // memory so a manual choice doesn't bleed between packs.
-  const adaptiveMode: "all" | "focus" =
-    entries.length <= 5 ? "all" : "focus";
+  const adaptiveMode: "all" | "focus" = entries.length <= 5 ? "all" : "focus";
   const [modeOverride, setModeOverride] = useState<null | "all" | "focus">(
     null,
   );
@@ -835,8 +894,9 @@ function ChartView({
     entries[0] ?? null,
   )?.user_id;
   const leaderWins =
-    entries.find((e) => e.user_id === categoryLeaderId)
-      ?.wins_by_category[selectedCategory] ?? 0;
+    entries.find((e) => e.user_id === categoryLeaderId)?.wins_by_category[
+      selectedCategory
+    ] ?? 0;
   const crownUserId = leaderWins > 0 ? categoryLeaderId : undefined;
 
   // Per-member chart series — gold for overall winner (override),
@@ -915,8 +975,7 @@ function ChartView({
         userId: cs.userId,
         label: nameById.get(cs.userId) ?? "Member",
         color: cs.strokeColor,
-        textColor:
-          cs.userId === currentUserId ? colors.self : undefined,
+        textColor: cs.userId === currentUserId ? colors.self : undefined,
       }));
     }
     // Focus mode
@@ -956,8 +1015,7 @@ function ChartView({
         key: "leader",
         userId: categoryLeaderId,
         label: `Leader · ${leaderName}`,
-        color:
-          chartColorByUser.get(categoryLeaderId) ?? GHOST_STROKE,
+        color: chartColorByUser.get(categoryLeaderId) ?? GHOST_STROKE,
       });
     }
     let accountedFor = 0;
@@ -1000,10 +1058,7 @@ function ChartView({
             accessibilityState={{ selected: mode === "focus" }}
           >
             <Text
-              style={[
-                s.modeSegLabel,
-                mode === "focus" && s.modeSegLabelActive,
-              ]}
+              style={[s.modeSegLabel, mode === "focus" && s.modeSegLabelActive]}
             >
               You vs leader
             </Text>
@@ -1016,10 +1071,7 @@ function ChartView({
             accessibilityState={{ selected: mode === "all" }}
           >
             <Text
-              style={[
-                s.modeSegLabel,
-                mode === "all" && s.modeSegLabelActive,
-              ]}
+              style={[s.modeSegLabel, mode === "all" && s.modeSegLabelActive]}
             >
               All
             </Text>
@@ -1035,16 +1087,10 @@ function ChartView({
           contentContainerStyle={s.legendRow}
         >
           {legendItems.map((item) => {
-            const isCrowned =
-              !!crownUserId && item.userId === crownUserId;
+            const isCrowned = !!crownUserId && item.userId === crownUserId;
             return (
               <View key={item.key} style={s.legendItem}>
-                <View
-                  style={[
-                    s.legendDot,
-                    { backgroundColor: item.color },
-                  ]}
-                />
+                <View style={[s.legendDot, { backgroundColor: item.color }]} />
                 <Text
                   style={[
                     s.legendLabel,
@@ -1054,11 +1100,7 @@ function ChartView({
                   {item.label}
                 </Text>
                 {isCrowned && (
-                  <Crown
-                    size={12}
-                    color={colors.leader}
-                    strokeWidth={2}
-                  />
+                  <Crown size={12} color={colors.leader} strokeWidth={2} />
                 )}
               </View>
             );
@@ -1088,12 +1130,32 @@ const s = StyleSheet.create({
   container: { paddingTop: 12, paddingHorizontal: 16, gap: 16 },
 
   // ── Score strip ──
-  // paddingVertical 6 (was 4) gives the raised/bordered card states
-  // a touch more vertical headroom inside the scroll viewport.
+  // Subtle grouping surface — gives the score strip collective identity
+  // (was loose floating cards on the page bg). C.surface lifts the
+  // group off the page bg without a border/shadow. No vertical padding
+  // here: the surface's height is driven by the ScrollView's intrinsic
+  // height (card height + stripContent's existing paddingVertical 6),
+  // so the surface hugs the cards directly rather than adding a halo
+  // above and below them.
+  stripSurface: {
+    backgroundColor: C.surface,
+    borderRadius: 12,
+    // Width is set inline per render (see surfaceWidth in the render
+    // body) — computed from n × cardWidth + gaps, capped at the
+    // screen's padding-adjusted budget. The style block carries only
+    // the visual props + cross-axis centering. No flexDirection/
+    // alignItems/flex/height here — those were failed attempts to get
+    // the flex engine to derive the surface width from a horizontal
+    // ScrollView (which has no intrinsic main-axis width), each of
+    // which introduced a different regression.
+    alignSelf: "center",
+  },
+  // No flexGrow: the contentContainer takes its natural width (sum of
+  // card widths + gaps) instead of stretching to the ScrollView's
+  // viewport. Combined with stripSurface's content-driven sizing, this
+  // makes the raised background end at the last card.
   stripContent: {
-    flexGrow: 1,
     justifyContent: "center",
-    paddingVertical: 6,
     gap: CARD_GAP,
   },
   card: {
@@ -1119,6 +1181,14 @@ const s = StyleSheet.create({
   },
   cardRankLeader: { color: colors.leader },
   cardRankOther: { color: C.textSecondary },
+  // Horizontal row wrapping the crown + name so they sit inline within
+  // the card's vertical stack (matches Home's MemberCard layout where
+  // the crown is alongside the name, not stacked above it).
+  cardNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+  },
   cardName: {
     fontSize: 11,
     color: C.textSecondary,
