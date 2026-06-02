@@ -13,9 +13,14 @@
 // the English fragments live inline here rather than in strings.ts. The
 // period word ("week" / "month") comes off pack.competition_window.
 
-import React from "react";
-import { View, Text, StyleSheet } from "react-native";
+import React, { useEffect, useState } from "react";
+import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import type { Pack } from "../types/database";
+import {
+  dismissBanner,
+  getDismissedTimestamp,
+} from "../lib/pendingBannerDismissal";
 
 interface Props {
   pack: Pack;
@@ -100,13 +105,59 @@ function buildCopy(changes: CategoryDir[], period: "week" | "month"): string {
 }
 
 export function PendingCategoryBanner({ pack }: Props) {
+  // Per-pack dismissal — value stored = pack.pending_changes_at at
+  // dismiss time. Keyed on pack.id; null on first mount until the
+  // AsyncStorage read resolves (banner is briefly visible if it would
+  // otherwise be dismissed — acceptable; the read is a single tick).
+  const [dismissedAt, setDismissedAt] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getDismissedTimestamp(pack.id).then((v) => {
+      if (!cancelled) setDismissedAt(v);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [pack.id]);
+
   const changes = buildChanges(pack);
   if (changes.length === 0) return null;
+
+  // Dismissal gate — suppress ONLY when the user previously dismissed
+  // THIS exact notice instance (matched by pending_changes_at). A new
+  // pending change refreshes pending_changes_at, the stored value no
+  // longer matches, and the banner re-shows automatically.
+  if (
+    pack.pending_changes_at != null &&
+    dismissedAt === pack.pending_changes_at
+  ) {
+    return null;
+  }
+
   const period = pack.competition_window === "monthly" ? "month" : "week";
   const text = buildCopy(changes, period);
+
+  const onDismiss = () => {
+    if (pack.pending_changes_at == null) return;
+    // Optimistic local hide + persisted dismissal. The async write is
+    // fire-and-forget (fail-silent in the helper); local state hides
+    // the banner immediately so the tap is responsive.
+    setDismissedAt(pack.pending_changes_at);
+    void dismissBanner(pack.id, pack.pending_changes_at);
+  };
+
   return (
     <View style={s.wrap}>
       <Text style={s.text}>{text}</Text>
+      <TouchableOpacity
+        onPress={onDismiss}
+        hitSlop={12}
+        accessibilityRole="button"
+        accessibilityLabel="Dismiss"
+        style={s.dismissBtn}
+      >
+        <Ionicons name="close" size={20} color="#8B949E" />
+      </TouchableOpacity>
     </View>
   );
 }
@@ -123,10 +174,22 @@ const s = StyleSheet.create({
     borderColor: "#30363D",
     paddingHorizontal: 16,
     paddingVertical: 10,
+    // Row layout so the dismiss X sits at the right edge while the
+    // notice text takes the remaining width.
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
   },
   text: {
+    flex: 1,
     fontSize: 13,
     color: "#E6EDF3",
     lineHeight: 18,
+  },
+  dismissBtn: {
+    // Square slot for the close icon; padding adds a touch of
+    // breathing room without expanding the band's vertical footprint
+    // (band's paddingVertical:10 already centers the 20px icon).
+    padding: 2,
   },
 });
