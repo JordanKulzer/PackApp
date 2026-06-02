@@ -25,6 +25,10 @@ import {
   setSentryUser,
   wrap as sentryWrap,
 } from "../src/lib/sentry";
+import {
+  initRevenueCat,
+  logOutRevenueCat,
+} from "../src/lib/revenuecat";
 
 // Sentry first so init failures elsewhere (analytics, etc.) get captured.
 // Both inits are no-ops in DEV (Sentry: enabled: !__DEV__; PostHog: disabled: __DEV__).
@@ -43,6 +47,15 @@ function RootLayout() {
   // ── Single auth/session source of truth ──────────────────────────────────
   useEffect(() => {
     setLoading(true);
+
+    // RevenueCat: anon-configure at the earliest safe boot moment so any
+    // getCustomerInfo()/isPro() read later in the lifecycle hits a
+    // configured SDK. initRevenueCat() guards against double-configure
+    // internally (module-level flag), so this is safe across hot-reload
+    // and across the second logIn call below. The configure path itself
+    // is anonymous; per-user logIn fires once the session resolves.
+    initRevenueCat();
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setSentryUser(session?.user?.id ?? null);
@@ -51,6 +64,9 @@ function RootLayout() {
       if (session?.user) {
         identify(session.user.id);
         ensureUserProfile(session.user.id, session.user);
+        // RevenueCat: log in the restored user so getCustomerInfo()
+        // returns their entitlements (not the anon profile).
+        initRevenueCat(session.user.id);
       }
     });
 
@@ -70,12 +86,23 @@ function RootLayout() {
       // next anonymous session doesn't get linked to the prior user.
       if (event === "SIGNED_IN" && session?.user) {
         identify(session.user.id);
+        // RevenueCat: log in this user so their entitlements key the
+        // SDK. TOKEN_REFRESHED is intentionally NOT included — refreshing
+        // an access token doesn't change the user identity, and
+        // Purchases.logIn does network work we don't need to redo.
+        initRevenueCat(session.user.id);
         // initNotifications() is now triggered explicitly from the
         // onboarding primer screen (or Profile → Notifications) so users
         // see the in-app context before the iOS dialog fires.
       }
       if (event === "SIGNED_OUT") {
         reset();
+        // RevenueCat: clear the per-user identity so a shared device
+        // doesn't leak Pro entitlements across accounts. The SDK falls
+        // back to an anonymous profile until the next logIn.
+        // Fire-and-forget — logOutRevenueCat is async but the auth
+        // callback's contract is sync.
+        void logOutRevenueCat();
       }
     });
 

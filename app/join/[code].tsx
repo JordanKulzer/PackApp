@@ -17,6 +17,7 @@ import { analytics } from "../../src/lib/analytics";
 import { notifyPackMembers } from "../../src/lib/notifications";
 import { fallbacks } from "../../src/constants/strings";
 import { FREE_PACK_LIMIT, FREE_MEMBER_LIMIT } from "../../src/lib/revenuecat";
+import { useIsPro } from "../../src/hooks/useIsPro";
 import type { Pack } from "../../src/types/database";
 import { BrandColors } from "../../src/constants/brand";
 
@@ -27,6 +28,11 @@ export default function JoinPack() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
   const { user: currentUser } = useCurrentUser();
+  // Pro status from the canonical hook (RevenueCat + dev override).
+  // The prior `users.subscription_tier` select below was a dead-column
+  // read — the column never gets written, so it was always "free" and
+  // the cap blocked real Pros / dev-override users from joining.
+  const { isPro } = useIsPro();
   const [status, setStatus] = useState<JoinStatus>("loading");
   const [pack, setPack] = useState<Pack | null>(null);
   const [memberCount, setMemberCount] = useState(0);
@@ -85,22 +91,16 @@ export default function JoinPack() {
       return;
     }
 
-    // Check free tier pack limit
+    // Check free tier pack limit — Pro status comes from the canonical
+    // useIsPro() hook (see component scope), not from the dead
+    // users.subscription_tier column. Pack-count query stays as-is.
     const { count: userPackCount } = await supabase
       .from("pack_members")
       .select("*", { count: "exact", head: true })
       .eq("user_id", user.id)
       .eq("is_active", true);
 
-    const { data: userData } = await supabase
-      .from("users")
-      .select("subscription_tier")
-      .eq("id", user.id)
-      .single();
-
-    const tier = userData?.subscription_tier ?? "free";
-
-    if (tier === "free" && (userPackCount ?? 0) >= FREE_PACK_LIMIT) {
+    if (!isPro && (userPackCount ?? 0) >= FREE_PACK_LIMIT) {
       setStatus("found");
       Alert.alert(
         "Pack limit reached",

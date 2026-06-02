@@ -10,11 +10,28 @@ const RC_API_KEY_IOS = process.env.EXPO_PUBLIC_REVENUECAT_IOS_KEY ?? "";
 // Legacy one-time product identifier — still honored for grandfathered users
 const LEGACY_PRODUCT_ID = "pack_pro_lifetime";
 
+// Module-level "configured" flag — Purchases.configure() is documented as
+// safe to call multiple times, but on hot-reload / fast-refresh in dev the
+// SDK can warn and the configure call does network work that adds latency.
+// This guard runs the configure path exactly once per JS context. logIn /
+// logOut paths below bypass the guard since they're per-user state changes,
+// not SDK boot.
+let rcConfigured = false;
+
+// Boot + per-user login entry point. Safe to call from multiple
+// auth-lifecycle moments:
+//   • initRevenueCat()         — anon boot configure (run once at app start).
+//   • initRevenueCat(user.id)  — configure (if not yet) + logIn the user.
+// Subsequent calls with the same user are no-ops aside from logIn's
+// SDK-internal short-circuit. Use logOutRevenueCat() on sign-out.
 export function initRevenueCat(userId?: string): void {
-  if (__DEV__) {
-    Purchases.setLogLevel(LOG_LEVEL.DEBUG);
+  if (!rcConfigured) {
+    if (__DEV__) {
+      Purchases.setLogLevel(LOG_LEVEL.DEBUG);
+    }
+    Purchases.configure({ apiKey: RC_API_KEY_IOS });
+    rcConfigured = true;
   }
-  Purchases.configure({ apiKey: RC_API_KEY_IOS });
   if (userId) {
     Purchases.logIn(userId);
   }

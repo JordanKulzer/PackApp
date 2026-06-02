@@ -15,7 +15,11 @@ import {
   Platform,
   Switch,
 } from "react-native";
-import { setProOverride, useProOverride } from "../../../src/hooks/useIsPro";
+import {
+  setProOverride,
+  useIsPro,
+  useProOverride,
+} from "../../../src/hooks/useIsPro";
 import { ConfirmDialog } from "../../../src/components/ConfirmDialog";
 import { showToast } from "../../../src/lib/toast";
 import * as Application from "expo-application";
@@ -438,7 +442,13 @@ export default function Profile() {
     }
   };
 
-  const isPro = profile?.subscription_tier === "pro";
+  // Pro status from the canonical hook (RevenueCat entitlement +
+  // legacy-lifetime grandfathering + dev override). The prior
+  // `profile?.subscription_tier === "pro"` read was a dead column —
+  // nothing writes `users.subscription_tier`, so it was always "free"
+  // and the Profile tier line stayed "Free Tier · Upgrade" even for
+  // real Pros / when the dev override was on.
+  const { isPro } = useIsPro();
   const appVersion = Application.nativeApplicationVersion ?? "1.0.0";
   const buildNumber = Application.nativeBuildVersion ?? "1";
 
