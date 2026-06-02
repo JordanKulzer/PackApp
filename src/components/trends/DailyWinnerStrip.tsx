@@ -35,6 +35,7 @@ import {
   Animated,
   Easing,
   AccessibilityInfo,
+  Dimensions,
 } from "react-native";
 import { colors } from "../../theme/colors";
 
@@ -42,18 +43,29 @@ const NO_DATA_COLOR = "#8B949E";
 const TERTIARY_TEXT = "#484F58";
 const SURFACE_RAISED = "#1C2333";
 const TEXT_SECONDARY = "#8B949E";
+// Bright neutral for today's ring + date number. Deliberately NOT
+// gold (winner) or blue (self) — those carry reserved meanings on
+// this surface; today gets its own neutral high-contrast signal.
+const TEXT_PRIMARY = "#E6EDF3";
 // Self-identity blue, matches src/theme/colors.ts colors.self.
 const SELF_RING_COLOR = "#2F81F7";
 
 const CHIP_LARGE = 22;
 const CHIP_SMALL = 17;
-const CARD_MIN_WIDTH = 48;
-const CARD_GAP = 6;
+// Cell width is now computed per render from screen dimensions so 7
+// days fit horizontally on the screen budget (weekly = no scroll;
+// monthly = same cell width, scrolls). Constants below define the
+// gap; the cellWidth derivation happens inside the component.
+const CARD_GAP = 5;
 
 export interface WinnerDay {
   date: string; // YYYY-MM-DD
   winnerUserIds: string[]; // settled winners (0, 1, or many for a tie)
   isToday: boolean;
+  // True iff date > today-in-pack-tz. Drives the faint outline cell
+  // treatment for days that haven't happened yet (no data, still
+  // tappable so the user can preview the empty bar state).
+  isFuture?: boolean;
   liveLeaderIds?: string[]; // for today only
 }
 
@@ -80,6 +92,13 @@ interface Props {
   // them get unselectable strip (existing behavior).
   selectedDate?: string;
   onSelectDate?: (date: string) => void;
+  // Index of today's cell in `days`. When >= 0, the strip auto-scrolls
+  // to center today on mount (the monthly focus — today lands in the
+  // middle with past days scrollable to the left, future to the
+  // right). Weekly packs (7 cells, no scroll) treat this as a no-op
+  // since all cells already fit on screen. -1 (today outside run
+  // window) skips the scroll entirely.
+  todayIndex?: number;
 }
 
 // Day-of-month from a YYYY-MM-DD without locale parsing. No zero-pad —
@@ -307,8 +326,19 @@ export function DailyWinnerStrip({
   currentUserId,
   selectedDate,
   onSelectDate,
+  todayIndex,
 }: Props) {
   const scrollRef = useRef<ScrollView>(null);
+
+  // Per-render cell sizing — 7 cells fit the screen budget for weekly
+  // packs (no scroll); monthly packs use the same cell width and
+  // overflow horizontally (scrolls). Recomputed each render so device
+  // rotation / dimension changes pick up automatically.
+  const screenAvailWidth = Dimensions.get("window").width - 32;
+  const cellWidth = Math.floor(
+    (screenAvailWidth - 6 * CARD_GAP) / 7,
+  );
+  const cellStride = cellWidth + CARD_GAP;
 
   if (days.length === 0) {
     return null;
@@ -326,24 +356,41 @@ export function DailyWinnerStrip({
         horizontal
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.row}
-        // Auto-position to today (the rightmost card) on mount. Firing on
-        // content-size-change is the canonical "scroll to end after
-        // layout" pattern — runs once after the cards measure their
-        // intrinsic widths, then no-ops on subsequent identical sizes.
-        // `animated: false` so the user doesn't see the scroll animation
-        // when the strip first appears.
-        onContentSizeChange={() =>
-          scrollRef.current?.scrollToEnd({ animated: false })
-        }
+        // Auto-scroll to center today on mount. Fires on
+        // content-size-change (RN's canonical "scroll after layout"
+        // hook — runs once after cells measure, then no-ops on
+        // identical content sizes). The math:
+        //   • Today's cell left edge = todayIndex * cellStride.
+        //   • Plus half cellWidth = today's center.
+        //   • Minus half the visible viewport = scroll x that lands
+        //     today in the middle.
+        //   • Clamp to 0 so weekly packs (today fits without scrolling)
+        //     don't try to scroll negative.
+        // Skipped when todayIndex is missing / -1 (today outside run
+        // window — defensive).
+        onContentSizeChange={(contentWidth) => {
+          if (typeof todayIndex !== "number" || todayIndex < 0) return;
+          const center = todayIndex * cellStride + cellWidth / 2;
+          const target = center - screenAvailWidth / 2;
+          const maxScroll = Math.max(0, contentWidth - screenAvailWidth);
+          const x = Math.max(0, Math.min(maxScroll, target));
+          scrollRef.current?.scrollTo({ x, animated: false });
+        }}
       >
         {days.map((d) => {
           const isSelected = !!selectedDate && d.date === selectedDate;
+          const isFuture = !!d.isFuture;
           return (
             <TouchableOpacity
               key={d.date}
               style={[
                 styles.card,
-                d.isToday && styles.cardToday,
+                { width: cellWidth },
+                d.isToday
+                  ? styles.cardToday
+                  : isFuture
+                    ? styles.cardFuture
+                    : null,
                 isSelected && styles.cardSelected,
               ]}
               onPress={() => onSelectDate?.(d.date)}
@@ -355,6 +402,7 @@ export function DailyWinnerStrip({
                 style={[
                   styles.dateNum,
                   d.isToday && styles.dateNumToday,
+                  isFuture && styles.dateNumFuture,
                 ]}
               >
                 {dayOfMonth(d.date)}
@@ -376,6 +424,12 @@ export function DailyWinnerStrip({
                     <Dash live />
                   )
                 ) : (
+                  // Settled and future days share content semantics:
+                  // SettledCell returns Dash on empty winnerUserIds,
+                  // which is correct for both past-no-winner (rare)
+                  // and future (always no winner). The cell-level
+                  // styling (cardFuture vs default) carries the
+                  // visual distinction.
                   <SettledCell
                     winnerUserIds={d.winnerUserIds}
                     nameByUser={nameByUser}
@@ -384,6 +438,11 @@ export function DailyWinnerStrip({
                   />
                 )}
               </View>
+              {d.isToday && (
+                <Text style={styles.todayLabel} allowFontScaling={false}>
+                  TODAY
+                </Text>
+              )}
             </TouchableOpacity>
           );
         })}
@@ -400,33 +459,48 @@ const styles = StyleSheet.create({
     color: NO_DATA_COLOR,
     marginBottom: 6,
   },
-  // Mirrors the History day-picker's row styling
-  // (pack/[id].tsx:1083-1114) — same gap, same card padding/bg/radius,
-  // same minWidth — so the two surfaces feel consistent.
+  // Cell row layout. Width per cell is set inline (cellWidth — see
+  // component body) so 7 cells fit the screen budget for weekly packs;
+  // monthly uses the same width and overflows horizontally to scroll.
   row: {
     flexDirection: "row",
     gap: CARD_GAP,
     paddingBottom: 2,
   },
   card: {
-    minWidth: CARD_MIN_WIDTH,
-    paddingHorizontal: 10,
+    paddingHorizontal: 4,
     paddingVertical: 8,
     borderRadius: 10,
     backgroundColor: SURFACE_RAISED,
     alignItems: "center",
     gap: 4,
+    // Default border slot — transparent on settled/past cells so the
+    // selected blue-ring overlay (border change) doesn't shift layout.
+    borderWidth: 1,
+    borderColor: "transparent",
   },
+  // Today: NEUTRAL BRIGHT RING + transparent bg. Deliberately NOT gold
+  // (winner) or blue (self) — those carry reserved meanings here. The
+  // white ring + the TODAY label + the live-leader chip inside all
+  // together signal "this is now" without the prior indigo-on-blue
+  // muddiness.
   cardToday: {
-    // Indigo today-highlight (colors.todayHighlight) — deliberately NOT
-    // colors.accent (#2563EB) which is too close to colors.self
-    // (#2F81F7), the self-ring color. A self-as-live-leader chip on top
-    // of this card needs the ring to read clearly.
-    backgroundColor: colors.todayHighlight,
+    backgroundColor: "transparent",
+    borderWidth: 2,
+    borderColor: TEXT_PRIMARY,
   },
-  // Selected-day ring — applied on the tapped card. Uses different style
-  // properties (border) than cardToday (background), so the two stack
-  // cleanly when today IS the selected day: indigo bg + blue ring.
+  // Future: thin faint outline + transparent bg. Tappable but visually
+  // dimmed — the user can preview a future day's (empty) bars without
+  // mistaking the cell for one that has data.
+  cardFuture: {
+    backgroundColor: "transparent",
+    borderColor: TERTIARY_TEXT,
+  },
+  // Selected-day ring — applied on the tapped card. Replaces whatever
+  // border the cell carries (today's white / future's tertiary /
+  // default transparent) with the self-blue. The "TODAY" label below
+  // the chip keeps today identifiable even when its white ring is
+  // overridden by the selected-blue border.
   cardSelected: {
     borderWidth: 1.5,
     borderColor: colors.self,
@@ -437,7 +511,10 @@ const styles = StyleSheet.create({
     color: TEXT_SECONDARY,
   },
   dateNumToday: {
-    color: "#FFFFFF",
+    color: TEXT_PRIMARY,
+  },
+  dateNumFuture: {
+    color: TERTIARY_TEXT,
   },
   // Vertical slot for the winner chip / dash. Fixed height so cards
   // align across the row regardless of which cell type renders
@@ -447,5 +524,15 @@ const styles = StyleSheet.create({
     height: CHIP_LARGE + 2,
     alignItems: "center",
     justifyContent: "center",
+  },
+  // "TODAY" caption below today's chip slot — preserves today's
+  // identity even when the selected-blue border overrides the white
+  // ring (e.g. when the user taps today's cell). Tertiary letter
+  // spacing matches the section title's voice.
+  todayLabel: {
+    fontSize: 8,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    color: TEXT_PRIMARY,
   },
 });
