@@ -114,7 +114,10 @@ export const analytics = {
   packLeft: (props: {
     pack_member_count_at_leave: number;
     days_in_pack: number;
-    points_earned_in_pack: number;
+    // points_earned_in_pack dropped 2026-06-01 — daily_scores.total_points
+    // has no writer in the current sync paths (Categories Pivot Stage 2A
+    // removed the scoring helpers), so the field always reported 0.
+    // PostHog event schema lost the property along with it.
   }) => capture("pack_left", props),
 
   // 12th event — owner-deletion is a different signal from pack_left because

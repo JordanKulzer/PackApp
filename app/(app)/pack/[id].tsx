@@ -3275,22 +3275,23 @@ export default function PackScreen() {
         onConfirm={async () => {
           if (!user?.id || !id) return;
           try {
-            // Pass 9 funnel — capture pack_left properties BEFORE the leave,
-            // since some queries (joined_at, points totals) require the
+            // Pass 9 funnel — capture pack_left properties BEFORE the
+            // leave, since some queries (joined_at) require the
             // membership row that the leave call deactivates.
-            const [memberRes, pointsRes] = await Promise.all([
-              supabase
-                .from("pack_members")
-                .select("joined_at")
-                .eq("pack_id", id)
-                .eq("user_id", user.id)
-                .maybeSingle(),
-              supabase
-                .from("daily_scores")
-                .select("total_points, runs!inner(pack_id)")
-                .eq("user_id", user.id)
-                .eq("runs.pack_id", id),
-            ]);
+            //
+            // Goal-removal Part 3 / Categories Pivot Stage 2A clean-up
+            // (2026-06-01): the daily_scores total_points sum that
+            // populated `points_earned_in_pack` was a dead metric — the
+            // column has no writer in the current sync paths, so the
+            // event always reported 0. Field + query dropped here +
+            // from analytics.packLeft's type. The funnel keeps the two
+            // working signals (member-count-at-leave + days-in-pack).
+            const memberRes = await supabase
+              .from("pack_members")
+              .select("joined_at")
+              .eq("pack_id", id)
+              .eq("user_id", user.id)
+              .maybeSingle();
             const { count: memberCount } = await supabase
               .from("pack_members")
               .select("id", { count: "exact", head: true })
@@ -3300,17 +3301,12 @@ export default function PackScreen() {
             const daysInPack = joinedAt
               ? Math.max(0, Math.floor((Date.now() - new Date(joinedAt).getTime()) / 86400000))
               : 0;
-            const pointsEarned = (pointsRes.data ?? []).reduce(
-              (sum, row: { total_points: number | null }) => sum + (row.total_points ?? 0),
-              0,
-            );
 
             await leavePack(user.id, id);
 
             analytics.packLeft({
               pack_member_count_at_leave: memberCount ?? 0,
               days_in_pack: daysInPack,
-              points_earned_in_pack: pointsEarned,
             });
 
             setShowLeaveConfirm(false);

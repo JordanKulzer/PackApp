@@ -108,10 +108,12 @@ export interface DailyScore {
   total_points: number;
   streak_days: number;
   streak_multiplier: number;
-  steps_achieved: boolean;
-  workout_achieved: boolean;
-  calories_achieved: boolean;
-  water_achieved: boolean;
+  // *_achieved booleans dropped 2026-06-01: Goal-removal Part 3a/3b
+  // already stopped writing them and no UI consumer remains
+  // (grep .steps_achieved / .workout_achieved / .calories_achieved /
+  // .water_achieved across src+app returns only stale comments).
+  // Type-level removal here; DB column drop deferred to a later
+  // sweep migration alongside total_points + streak_multiplier.
   steps_count: number;
   calories_count: number;
   workout_count: number;
@@ -182,17 +184,3 @@ export interface ChatMessage {
   photo_url?: string | null;
 }
 
-// Leaderboard row — joined query result
-export interface LeaderboardEntry {
-  user_id: string;
-  display_name: string;
-  avatar_url: string | null;
-  total_points: number;
-  streak_days: number;
-  streak_multiplier: number;
-  steps_achieved: boolean;
-  workout_achieved: boolean;
-  calories_achieved: boolean;
-  water_achieved: boolean;
-  rank: number;
-}
